@@ -32,22 +32,30 @@ import {
 
 interface InteractiveFloorplanProps {
   room: Room;
+  rooms?: Room[];
+  activeRoomId?: string;
   selectedId: string | null;
   selectedType: 'room' | 'tent' | 'item' | null;
   onSelectRoom: () => void;
   onSelectTent: (tentId: string) => void;
   onSelectItem: (itemId: string, parentTentId?: string) => void;
+  onSelectActiveRoom?: (roomId: string) => void;
+  onOpenAddRoom?: () => void;
   onDeleteTent?: (tentId: string) => void;
   onDeleteItem?: (itemId: string, parentTentId?: string | null) => void;
 }
 
 export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
   room,
+  rooms = [],
+  activeRoomId,
   selectedId,
   selectedType,
   onSelectRoom,
   onSelectTent,
   onSelectItem,
+  onSelectActiveRoom,
+  onOpenAddRoom,
   onDeleteTent,
   onDeleteItem,
 }) => {
@@ -166,6 +174,31 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {rooms && rooms.length > 1 && (
+            <select
+              value={room.id}
+              onChange={e => onSelectActiveRoom?.(e.target.value)}
+              className="bg-zinc-950 border border-zinc-750 text-xs text-emerald-400 font-semibold rounded-lg px-2.5 py-1 focus:outline-none focus:border-emerald-500"
+              title="Switch Active Room"
+            >
+              {rooms.map(r => (
+                <option key={r.id} value={r.id}>
+                  {r.name} ({r.dimensions.length}′×{r.dimensions.width}′)
+                </option>
+              ))}
+            </select>
+          )}
+
+          {onOpenAddRoom && (
+            <button
+              onClick={onOpenAddRoom}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium border border-zinc-700 bg-zinc-800 text-emerald-400 hover:bg-zinc-750 transition-colors"
+              title="Add New Room"
+            >
+              + Room
+            </button>
+          )}
+
           <button
             onClick={onSelectRoom}
             className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${

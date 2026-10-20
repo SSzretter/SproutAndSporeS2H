@@ -9,6 +9,8 @@ interface LocationModalProps {
   isOpen: boolean;
   onClose: () => void;
   onUpdateLocation: (newLocation: OutdoorLocation) => Promise<void>;
+  outdoorCo2Ppm?: number;
+  onUpdateOutdoorCo2?: (co2Ppm: number) => void;
 }
 
 const PRESET_ZIPS = [
@@ -22,14 +24,24 @@ const PRESET_ZIPS = [
   { zip: '98101', label: 'Seattle, WA', desc: 'Puget Sound / Temperate Maritime' },
 ];
 
+const CO2_PRESETS = [
+  { ppm: 410, label: 'Rural / Forest', desc: 'Pristine coastal or high canopy' },
+  { ppm: 420, label: 'Global Standard', desc: 'Current modern atmosphere' },
+  { ppm: 440, label: 'Suburban', desc: 'Residential neighborhood' },
+  { ppm: 480, label: 'Urban Traffic', desc: 'Dense metropolitan corridor' },
+];
+
 export const LocationModal: React.FC<LocationModalProps> = ({
   currentLocation,
   simTime,
   isOpen,
   onClose,
   onUpdateLocation,
+  outdoorCo2Ppm = 420,
+  onUpdateOutdoorCo2,
 }) => {
   const [zipInput, setZipInput] = useState(currentLocation.zipCode || '01507');
+  const [co2Input, setCo2Input] = useState<number>(outdoorCo2Ppm);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -80,9 +92,16 @@ export const LocationModal: React.FC<LocationModalProps> = ({
     }
   };
 
+  const handleApplyCo2 = (ppm: number) => {
+    setCo2Input(ppm);
+    if (onUpdateOutdoorCo2) {
+      onUpdateOutdoorCo2(ppm);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl text-zinc-100 space-y-5">
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl text-zinc-100 space-y-5 my-8">
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-2">
@@ -90,8 +109,8 @@ export const LocationModal: React.FC<LocationModalProps> = ({
               <MapPin className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-zinc-100">Outdoor Location &amp; Weather Feed</h3>
-              <p className="text-xs text-zinc-400">Set ZIP code for live hourly outdoor weather data</p>
+              <h3 className="text-base font-bold text-zinc-100">Outdoor Location &amp; Atmospheric Weather</h3>
+              <p className="text-xs text-zinc-400">Outdoor ambient climate &amp; background CO₂ baseline</p>
             </div>
           </div>
           <button
@@ -125,6 +144,57 @@ export const LocationModal: React.FC<LocationModalProps> = ({
             <span className="text-[10px] text-zinc-500 block mt-1 font-mono">
               Zero redundant calls
             </span>
+          </div>
+        </div>
+
+        {/* Outdoor Atmospheric Baseline CO2 Section */}
+        <div className="bg-zinc-950/90 border border-zinc-800 p-3.5 rounded-xl space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                <span>Outdoor Ambient Baseline CO₂</span>
+              </label>
+              <p className="text-[11px] text-zinc-400">
+                Fresh air infiltration baseline drawn into all facility lung rooms.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min="380"
+                max="750"
+                step="5"
+                value={co2Input}
+                onChange={e => {
+                  const val = parseInt(e.target.value) || 420;
+                  setCo2Input(val);
+                  if (onUpdateOutdoorCo2) onUpdateOutdoorCo2(val);
+                }}
+                className="w-20 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1 text-right text-xs font-mono font-bold text-emerald-400 focus:outline-none focus:border-emerald-500"
+              />
+              <span className="text-xs font-mono text-zinc-500">PPM</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+            {CO2_PRESETS.map(preset => {
+              const isActive = co2Input === preset.ppm;
+              return (
+                <button
+                  key={preset.ppm}
+                  type="button"
+                  onClick={() => handleApplyCo2(preset.ppm)}
+                  className={`px-2 py-1.5 rounded-lg border text-left transition-all ${
+                    isActive
+                      ? 'bg-emerald-950/70 border-emerald-500/80 text-emerald-300'
+                      : 'bg-zinc-900 border-zinc-800 hover:border-zinc-700 text-zinc-400'
+                  }`}
+                >
+                  <div className="text-[11px] font-bold font-mono">{preset.ppm} PPM</div>
+                  <div className="text-[9px] text-zinc-400 truncate">{preset.label}</div>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -174,7 +244,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({
           <span className="text-[11px] font-semibold text-zinc-400 block">
             Or Quick-Select Cultivation Climate Region:
           </span>
-          <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+          <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
             {PRESET_ZIPS.map(p => {
               const isSelected = currentLocation.zipCode === p.zip;
               return (

@@ -322,10 +322,12 @@ export function createDefaultSimulationState(): SimulationState {
     speed: 1, // 1x normal speed
     outside,
     outdoorLocation: DEFAULT_OUTDOOR_LOCATION,
+    rooms: [initialRoom],
+    activeRoomId: initialRoom.id,
     room: initialRoom,
     tempUnit: 'F',
     selectedType: 'room',
-    selectedId: 'room-main',
+    selectedId: initialRoom.id,
     selectedParentTentId: null,
     journal: [
       {
@@ -366,6 +368,23 @@ export function loadSimulation(): SimulationState {
       };
     }
 
+    // Migration for multi-room support
+    if (!state.rooms || !Array.isArray(state.rooms) || state.rooms.length === 0) {
+      state.rooms = [state.room];
+      state.activeRoomId = state.room.id;
+    } else {
+      if (!state.activeRoomId) {
+        state.activeRoomId = state.rooms[0].id;
+      }
+      const active = state.rooms.find(r => r.id === state.activeRoomId);
+      if (active) {
+        state.room = active;
+      } else {
+        state.room = state.rooms[0];
+        state.activeRoomId = state.rooms[0].id;
+      }
+    }
+
     if (!state.room.constructionStandard) {
       state.room.constructionStandard = 'colonial_2005';
       state.room.wallRValue = 19;
@@ -389,22 +408,30 @@ export function loadSimulation(): SimulationState {
       state.room.climate.co2Ppm = 420;
     }
 
-    state.room.tents = state.room.tents.map(t => ({
-      ...t,
-      climate: {
-        ...t.climate,
-        co2Ppm: t.climate.co2Ppm || (t.items.some(i => i.category === 'mushroom') ? 820 : 1100)
-      },
-      items: t.items.map(i => {
-        if (i.category === 'plant') {
-          return {
-            ...i,
-            rootTempF: (i as PlantItem).rootTempF || 68.2
-          };
-        }
-        return i;
-      })
-    }));
+    state.room.tents = state.room.tents.map(t => {
+      let tentCo2 = t.climate.co2Ppm;
+      if (!tentCo2 || tentCo2 < 350) {
+        tentCo2 = t.items.some(i => i.category === 'mushroom') 
+          ? 820 
+          : Math.max(380, state.room.climate.co2Ppm - 30);
+      }
+      return {
+        ...t,
+        climate: {
+          ...t.climate,
+          co2Ppm: tentCo2
+        },
+        items: t.items.map(i => {
+          if (i.category === 'plant') {
+            return {
+              ...i,
+              rootTempF: (i as PlantItem).rootTempF || 68.2
+            };
+          }
+          return i;
+        })
+      };
+    });
 
     return state;
   } catch (err) {

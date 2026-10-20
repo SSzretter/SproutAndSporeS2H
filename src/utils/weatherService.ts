@@ -333,10 +333,15 @@ export async function getCachedHourlyWeather(
  */
 export function getOutdoorConditionsForSimTime(
   cachedPackage: CachedWeatherPackage | null,
-  simTime: number
+  simTime: number,
+  customCo2Ppm?: number
 ): OutsideConditions {
   if (!cachedPackage || !cachedPackage.hourly || cachedPackage.hourly.length === 0) {
-    return simulateOutsideConditions(simTime);
+    const simCond = simulateOutsideConditions(simTime);
+    if (typeof customCo2Ppm === 'number' && customCo2Ppm > 0) {
+      simCond.co2Ppm = customCo2Ppm;
+    }
+    return simCond;
   }
 
   const hourly = cachedPackage.hourly;
@@ -405,7 +410,7 @@ export function getOutdoorConditionsForSimTime(
     tempC: interpTempC,
     rh: interpRH,
     lightPPFD,
-    co2Ppm: 420, // Atmospheric ambient baseline
+    co2Ppm: typeof customCo2Ppm === 'number' && customCo2Ppm > 0 ? customCo2Ppm : 420, // Atmospheric ambient baseline
     weather: finalWeather,
     windMph: currentHourData.windMph,
     pressureHpa: currentHourData.pressureHpa,

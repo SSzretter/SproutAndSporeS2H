@@ -217,7 +217,9 @@ export interface SimulationState {
   speed: number; // 0 = paused, 1, 5, 30, 120, 720
   outside: OutsideConditions;
   outdoorLocation: OutdoorLocation;
-  room: Room;
+  rooms?: Room[]; // All facility rooms
+  activeRoomId?: string; // Currently active room ID
+  room: Room; // Active room (for backwards compatibility and direct access)
   tempUnit: 'F' | 'C';
   selectedType: 'room' | 'tent' | 'item' | null;
   selectedId: string | null;

@@ -448,24 +448,81 @@ export function simulateEnvironmentTick(
       }
     });
 
-    // Effective air changes: at 50% setting of a 200 CFM fan in 100 cu ft tent, tent air replaces quickly
-    const fanFraction = (Math.max(4, exhaustFanSetting) / 100);
-    const airExchangeFraction = Math.min(0.92, fanFraction * 0.22 * (elapsedMinutes / 5));
+    // Effective air changes per minute:
+    // In a typical 4x4 or 3x3 tent (100-200 cu ft), an inline fan (100-250 CFM) at 50% moves ~75-125 CFM.
+    // That corresponds to ~0.5 to 1.0 air exchanges per minute!
+    const fanFraction = exhaustFanSetting / 100;
+    const airExchangeFraction = Math.min(0.95, 1 - Math.exp(-Math.max(0.04, fanFraction * 0.45) * elapsedMinutes));
     tTempF += (roomTempF - tTempF) * airExchangeFraction;
     tRH += (roomRH - tRH) * airExchangeFraction;
-    tCo2 += (roomCo2 - tCo2) * airExchangeFraction;
 
     // Heat & humidity return to lung room (discharge into the host room)
     const exhaustHeatToRoom = (tTempF - roomTempF) * airExchangeFraction * (tentVolCuFt / roomVolCuFt);
     roomTempF += exhaustHeatToRoom * 0.2;
 
-    // CO2 Inoculation / Supplementation via electronic regulator
-    if (co2RegulatorActive && co2RegulatorTarget) {
-      if (tLightPPFD > 100 && tCo2 < co2RegulatorTarget) {
-        // Solenoid injects CO2 to hold target level under light
-        tCo2 = Math.min(co2RegulatorTarget, tCo2 + 25 * (elapsedMinutes / 5));
+    // 4. CANOPY CO2 MASS BALANCE & EXPONENTIAL DECAY
+    // Continuous ventilation continuously pulls in host room air (roomCo2, e.g. 420 PPM).
+    // Living plants absorb CO2 under light; mushrooms & occupants emit CO2.
+    const livingPlants = tent.items.filter(i => i.category === 'plant' && !(i as PlantItem).isHarvested) as PlantItem[];
+    const livingMushrooms = tent.items.filter(i => i.category === 'mushroom' && !(i as MushroomItem).isHarvested) as MushroomItem[];
+    const isDay = tLightPPFD > 80;
+
+    let tCo2Target = roomCo2;
+
+    if (co2RegulatorActive && co2RegulatorTarget && isDay) {
+      // Solenoid regulator injects gas to hold target under light (e.g. 1200 PPM)
+      tCo2Target = co2RegulatorTarget;
+    } else if (livingMushrooms.length > 0) {
+      // Mushroom cellular respiration (emit CO2 24/7)
+      // Active FAE fan (50%) maintains healthy ~650-950 PPM; low fan allows CO2 to build up (1200-2500 PPM)
+      const shroomBoost = (livingMushrooms.length * 160) / Math.max(0.2, fanFraction * 0.8 + 0.1);
+      tCo2Target = roomCo2 + Math.min(2200, shroomBoost);
+    } else if (livingPlants.length > 0) {
+      if (isDay) {
+        // Daylight photosynthesis carbon assimilation:
+        // Plants absorb CO2, but incoming room air continuously replenishes the canopy.
+        // With active ventilation running, drawdown is realistically 20 to 40 PPM below room air.
+        // Only a completely sealed unventilated tent (fan = 0%) can pull CO2 down near compensation point (~200 PPM).
+        const healthyPlantsCount = livingPlants.filter(p => p.soilMoisture > 15 && p.health > 25).length;
+        const lightIntensityFactor = Math.min(1.2, tLightPPFD / 750);
+        
+        let maxDrawdownPpm = 30;
+        if (exhaustFanSetting >= 50) {
+          maxDrawdownPpm = 20 + healthyPlantsCount * 2.5; // ~25-35 PPM drawdown (e.g. 385-395 PPM when room is 420)
+        } else if (exhaustFanSetting >= 20) {
+          maxDrawdownPpm = 35 + healthyPlantsCount * 4.0; // ~45-60 PPM drawdown
+        } else if (exhaustFanSetting > 0) {
+          maxDrawdownPpm = 55 + healthyPlantsCount * 6.0; // ~65-85 PPM drawdown
+        } else {
+          maxDrawdownPpm = 210; // Sealed tent without ventilation draws down near compensation point
+        }
+
+        const plantDrawdown = Math.min(maxDrawdownPpm, maxDrawdownPpm * lightIntensityFactor);
+        tCo2Target = Math.max(200, roomCo2 - plantDrawdown);
+      } else {
+        // Night respiration: plants gently release slight CO2 (+5 to 12 PPM above room air)
+        tCo2Target = roomCo2 + Math.min(15, livingPlants.length * 2.5);
       }
     }
+
+    // Account for occupants if inside tent
+    let tentOccupantLitersPerHour = 0;
+    tent.items.forEach(i => {
+      if (i.category === 'person' || i.category === 'pet') {
+        tentOccupantLitersPerHour += (i as any).co2RateLitersPerHour || 0;
+      }
+    });
+    if (tentOccupantLitersPerHour > 0) {
+      const occupantPpmBoost = (tentOccupantLitersPerHour * 20) / Math.max(0.2, fanFraction * 0.8 + 0.1);
+      tCo2Target += Math.min(1200, occupantPpmBoost);
+    }
+
+    // Exponential approach toward steady-state equilibrium:
+    // C(t) = C_target + (C_0 - C_target) * exp(-k * t)
+    const kCo2Exchange = Math.max(0.04, fanFraction * 0.35 + 0.05);
+    const co2DecayFraction = 1 - Math.exp(-kCo2Exchange * elapsedMinutes);
+    tCo2 = tCo2 + (tCo2Target - tCo2) * co2DecayFraction;
+    tCo2 = Math.max(200, Math.min(5000, Math.round(tCo2)));
 
     // Update items inside tent (Plants & Mushrooms)
     const updatedItems = tent.items.map(item => {
@@ -493,15 +550,8 @@ export function simulateEnvironmentTick(
           tRH += 0.15 * (elapsedMinutes / 10);
         }
 
-        // C. Photosynthesis CO2 Assimilation:
-        // Plants absorb carbon dioxide under light!
-        if (isDay && plant.soilMoisture > 15) {
-          const assimilationRate = (tLightPPFD / 1000) * 8 * (elapsedMinutes / 10);
-          tCo2 = Math.max(220, tCo2 - assimilationRate);
-        } else {
-          // Night respiration: slight CO2 release
-          tCo2 += 1.0 * (elapsedMinutes / 10);
-        }
+        // C. Photosynthesis Carbon Utilization:
+        // Canopy CO2 is continuously calculated via ventilation mass balance and Rubisco kinetics.
 
         // D. Health & Environmental Stress
         const tentVpd = calculateVPD(tTempF, tRH, tLightPPFD);
@@ -569,8 +619,8 @@ export function simulateEnvironmentTick(
       } else if (item.category === 'mushroom') {
         const shroom = { ...item };
 
-        // Fungi cellular respiration: MUSHROOMS CONSTANTLY EMIT CO2!
-        tCo2 += 3.5 * (elapsedMinutes / 10);
+        // Fungi cellular respiration:
+        // Canopy CO2 enrichment is continuously calculated via ventilation mass balance.
 
         let healthDelta = 0;
         // High humidity requirement

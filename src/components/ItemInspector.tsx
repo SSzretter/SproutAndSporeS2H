@@ -48,6 +48,8 @@ import { TENT_CATALOG } from '../utils/tentCatalog';
 
 interface ItemInspectorProps {
   room: Room;
+  rooms?: Room[];
+  outdoorCo2Ppm?: number;
   selectedType: 'room' | 'tent' | 'item' | null;
   selectedId: string | null;
   selectedParentTentId?: string | null;
@@ -57,6 +59,9 @@ interface ItemInspectorProps {
   onUpdateItem: (item: Item, parentTentId?: string | null) => void;
   onDeleteTent: (tentId: string) => void;
   onDeleteItem: (itemId: string, parentTentId?: string | null) => void;
+  onDeleteRoom?: (roomId: string) => void;
+  onOpenAddRoom?: () => void;
+  onOpenLocationModal?: () => void;
   onSelectRoom: () => void;
   onSelectTent: (tentId: string) => void;
   onSelectItem: (itemId: string, parentTentId?: string | null) => void;
@@ -67,6 +72,8 @@ interface ItemInspectorProps {
 
 export const ItemInspector: React.FC<ItemInspectorProps> = ({
   room,
+  rooms = [],
+  outdoorCo2Ppm = 420,
   selectedType,
   selectedId,
   selectedParentTentId,
@@ -76,6 +83,9 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   onUpdateItem,
   onDeleteTent,
   onDeleteItem,
+  onDeleteRoom,
+  onOpenAddRoom,
+  onOpenLocationModal,
   onSelectRoom,
   onSelectTent,
   onSelectItem,
@@ -87,6 +97,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   const [editedName, setEditedName] = useState('');
   const [filterTab, setFilterTab] = useState<'all' | 'tents' | 'plants' | 'mushrooms' | 'equipment' | 'people' | 'pets'>('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDeleteRoomConfirm, setShowDeleteRoomConfirm] = useState(false);
   const [quickItemToDelete, setQuickItemToDelete] = useState<{ id: string; name: string; kind: 'tent' | 'item'; parentTentId?: string | null } | null>(null);
 
   // Find currently selected tent if any
