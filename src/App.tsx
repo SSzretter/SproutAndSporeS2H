@@ -47,7 +47,7 @@ export default function App() {
       if (isMounted) {
         weatherPackageRef.current = pkg;
         // Align current outside conditions with cached hourly dataset
-        const currentOutside = getOutdoorConditionsForSimTime(pkg, state.simTime);
+        const currentOutside = getOutdoorConditionsForSimTime(pkg, state.simTime, state.outside.co2Ppm);
         setState(prev => ({
           ...prev,
           outside: currentOutside
@@ -78,7 +78,7 @@ export default function App() {
       const newSimTime = cur.simTime + elapsedMinutes * 60 * 1000;
 
       // Pull outdoor conditions from cached hourly dataset (zero repeated HTTP requests!)
-      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime);
+      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, cur.outside.co2Ppm);
 
       // Run thermodynamics & biology tick
       const { room: updatedRoom, events } = simulateEnvironmentTick(
@@ -123,7 +123,7 @@ export default function App() {
     setState(prev => {
       const elapsedMinutes = hours * 60;
       const newSimTime = prev.simTime + elapsedMinutes * 60 * 1000;
-      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime);
+      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, prev.outside.co2Ppm);
       const { room: updatedRoom } = simulateEnvironmentTick(
         prev.room,
         newOutside,
@@ -157,7 +157,7 @@ export default function App() {
     weatherPackageRef.current = pkg;
 
     setState(prev => {
-      const currentOutside = getOutdoorConditionsForSimTime(pkg, prev.simTime);
+      const currentOutside = getOutdoorConditionsForSimTime(pkg, prev.simTime, prev.outside.co2Ppm);
       return {
         ...prev,
         outdoorLocation: newLocation,
@@ -170,6 +170,37 @@ export default function App() {
             type: 'info',
             title: 'Outdoor Location Updated',
             message: `Bound facility atmospheric envelope to ZIP ${newLocation.zipCode} (${newLocation.cityName}, ${newLocation.state}). Loaded authentic seasonal weather.`
+          }
+        ]
+      };
+    });
+  }, []);
+
+  // Update Outdoor Atmospheric CO2 Baseline
+  const handleUpdateOutdoorCo2 = useCallback((ppm: number) => {
+    setState(prev => {
+      const newOutside = { ...prev.outside, co2Ppm: ppm };
+      return {
+        ...prev,
+        outside: newOutside,
+        room: {
+          ...prev.room,
+          roomCo2BaselinePpm: ppm,
+          climate: { ...prev.room.climate, co2Ppm: ppm }
+        },
+        rooms: prev.rooms?.map(r => ({
+          ...r,
+          roomCo2BaselinePpm: ppm,
+          climate: { ...r.climate, co2Ppm: ppm }
+        })) ?? [],
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'action',
+            title: 'Outdoor CO₂ Baseline Updated',
+            message: `Atmospheric CO₂ baseline set to ${ppm} PPM. All rooms will equilibrate to this fresh-air infiltration value.`
           }
         ]
       };
@@ -566,6 +597,8 @@ export default function App() {
         {/* Item & Room Inspector Panel */}
         <ItemInspector
           room={state.room}
+          rooms={state.rooms}
+          outdoorCo2Ppm={state.outside.co2Ppm}
           selectedType={state.selectedType}
           selectedId={state.selectedId}
           selectedParentTentId={state.selectedParentTentId}
@@ -578,6 +611,7 @@ export default function App() {
           onUpdateItem={handleUpdateItem}
           onDeleteItem={handleDeleteItem}
           onDeleteTent={handleDeleteTent}
+          onOpenLocationModal={() => setIsLocationModalOpen(true)}
           onOpenAddItem={(tentId) => {
             setAddModalTentId(tentId || null);
             setIsAddModalOpen(true);
@@ -607,6 +641,8 @@ export default function App() {
         isOpen={isLocationModalOpen}
         onClose={() => setIsLocationModalOpen(false)}
         onUpdateLocation={handleUpdateOutdoorLocation}
+        outdoorCo2Ppm={state.outside.co2Ppm}
+        onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
       />
 
       {/* Harvest Log Vault Modal */}

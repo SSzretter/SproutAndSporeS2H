@@ -350,19 +350,18 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     </select>
                   </div>
                   <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Outdoor Air Baseline CO₂:</span>
-                    <div className="flex items-center gap-1.5 font-mono text-emerald-400 font-bold">
-                      <input
-                        type="number"
-                        min="380"
-                        max="800"
-                        step="10"
-                        value={room.roomCo2BaselinePpm || 420}
-                        onChange={e => onUpdateRoom({ ...room, roomCo2BaselinePpm: parseInt(e.target.value) || 420 })}
-                        className="w-16 bg-zinc-950 border border-zinc-750 rounded px-1 py-0.5 text-right text-[11px] text-zinc-100"
-                      />
-                      <span className="text-[10px] text-zinc-500">PPM</span>
-                    </div>
+                    <span>Outdoor Ambient CO₂ Baseline:</span>
+                    {onOpenLocationModal ? (
+                      <button
+                        onClick={onOpenLocationModal}
+                        className="font-mono text-sky-400 font-bold hover:text-sky-300 hover:bg-sky-950/40 border border-sky-800/50 rounded px-2 py-0.5 transition-colors text-xs"
+                        title="Click to edit Outdoor Atmospheric CO₂ in the Location modal"
+                      >
+                        {outdoorCo2Ppm || 420} PPM
+                      </button>
+                    ) : (
+                      <span className="font-mono text-emerald-400 font-bold">{outdoorCo2Ppm || 420} PPM</span>
+                    )}
                   </div>
                   <div className="text-[10px] text-zinc-400 bg-zinc-950/60 p-2 rounded border border-zinc-850">
                     {(() => {
