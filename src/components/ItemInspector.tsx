@@ -27,7 +27,14 @@ import {
   User,
   Dog,
   Cat,
-  Heart
+  Heart,
+  Shield,
+  ShieldCheck,
+  Clock,
+  Timer,
+  SlidersHorizontal,
+  Layers,
+  Power
 } from 'lucide-react';
 import { 
   Room, 
@@ -41,10 +48,15 @@ import {
   PetItem,
   PetType,
   Dimensions, 
-  ConstructionStandard 
+  ConstructionStandard,
+  ControllerPriority,
+  EquipmentControlMode,
+  EquipmentAutoTriggers
 } from '../types/sim';
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
+import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
+import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime } from '../utils/plantLifecycle';
 
 interface ItemInspectorProps {
   room: Room;
@@ -68,6 +80,7 @@ interface ItemInspectorProps {
   onOpenAddItem: (tentId?: string) => void;
   onHarvestPlant: (plant: PlantItem, tentId?: string) => void;
   onHarvestMushroom: (mushroom: MushroomItem, tentId?: string) => void;
+  simTime?: number;
 }
 
 export const ItemInspector: React.FC<ItemInspectorProps> = ({
@@ -78,6 +91,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   selectedId,
   selectedParentTentId,
   tempUnit,
+  simTime,
   onUpdateRoom,
   onUpdateTent,
   onUpdateItem,
@@ -234,9 +248,33 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </button>
                 </div>
               )}
-              <span className="text-xs text-zinc-400 font-mono">
-                {room.tents.length} Tents Active · {room.items.length} Direct Items
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-400 font-mono hidden sm:inline">
+                  {room.tents.length} Tents Active · {room.items.length} Direct Items
+                </span>
+                {onOpenAddRoom && (
+                  <button
+                    type="button"
+                    onClick={onOpenAddRoom}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-850 hover:bg-zinc-750 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors"
+                    title="Add a new room to facility"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>+ Room</span>
+                  </button>
+                )}
+                {onDeleteRoom && rooms.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteRoomConfirm(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 text-xs font-medium border border-rose-800/60 transition-colors"
+                    title={`Delete room: ${room.name}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Delete Room</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Editable Dimensions: L x W x H */}
@@ -350,18 +388,20 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     </select>
                   </div>
                   <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Outdoor Ambient CO₂ Baseline:</span>
-                    {onOpenLocationModal ? (
-                      <button
-                        onClick={onOpenLocationModal}
-                        className="font-mono text-sky-400 font-bold hover:text-sky-300 hover:bg-sky-950/40 border border-sky-800/50 rounded px-2 py-0.5 transition-colors text-xs"
-                        title="Click to edit Outdoor Atmospheric CO₂ in the Location modal"
-                      >
-                        {outdoorCo2Ppm || 420} PPM
-                      </button>
-                    ) : (
-                      <span className="font-mono text-emerald-400 font-bold">{outdoorCo2Ppm || 420} PPM</span>
-                    )}
+                    <span>Outdoor Air Infiltration CO₂:</span>
+                    <div className="flex items-center gap-1.5 font-mono text-emerald-400 font-bold">
+                      <span>{outdoorCo2Ppm} PPM</span>
+                      {onOpenLocationModal && (
+                        <button
+                          type="button"
+                          onClick={onOpenLocationModal}
+                          className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-sans font-normal border border-zinc-700 transition-colors"
+                          title="Configure Outdoor Atmospheric Baseline in Weather Settings"
+                        >
+                          Change
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="text-[10px] text-zinc-400 bg-zinc-950/60 p-2 rounded border border-zinc-850">
                     {(() => {
@@ -888,34 +928,90 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
               </div>
             </div>
 
-            {/* Exhaust Fan Master Speed & Lung Air Exchange */}
-            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <Wind className="w-4 h-4 text-cyan-400" />
-                <div>
-                  <span className="text-xs font-semibold text-zinc-200">Exhaust Air Exchange with Host Room</span>
-                  <p className="text-[10px] text-zinc-450">Pulls conditioned lung room air in through mesh bottom intakes</p>
+            {/* Exhaust Fan Master Speed & Lung Air Exchange with Live Controller Arbitration */}
+            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <Wind className="w-4 h-4 text-cyan-400" />
+                  <div>
+                    <span className="text-xs font-semibold text-zinc-200">Exhaust Air Exchange with Host Room</span>
+                    <p className="text-[10px] text-zinc-400">Pulls conditioned lung room air in through mesh bottom intakes</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={currentTent.exhaustFanSpeed}
+                    onChange={e => {
+                      if (currentTent) {
+                        onUpdateTent({
+                          ...currentTent,
+                          exhaustFanSpeed: parseInt(e.target.value)
+                        });
+                      }
+                    }}
+                    className="w-28 accent-emerald-500 cursor-pointer"
+                  />
+                  <div className="text-right">
+                    <span className="font-mono text-xs font-bold text-emerald-400 block">
+                      {currentTent.exhaustFanSpeed}%
+                    </span>
+                    {currentTent.effectiveFanSpeed !== undefined && currentTent.effectiveFanSpeed !== currentTent.exhaustFanSpeed && (
+                      <span className="text-[9px] font-mono text-cyan-300 block">
+                        Live: {currentTent.effectiveFanSpeed}%
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={currentTent.exhaustFanSpeed}
-                  onChange={e => {
-                    if (currentTent) {
-                      onUpdateTent({
-                        ...currentTent,
-                        exhaustFanSpeed: parseInt(e.target.value)
-                      });
-                    }
-                  }}
-                  className="w-28 accent-emerald-500 cursor-pointer"
-                />
-                <span className="font-mono text-xs font-bold text-emerald-400 w-9 text-right">
-                  {currentTent.exhaustFanSpeed}%
-                </span>
+
+              {/* Central Controller Coordination & Conflict Priority */}
+              <div className="pt-2 border-t border-zinc-850 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-200">
+                    <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Central Controller Priority:</span>
+                  </div>
+                  <select
+                    value={currentTent.controllerPriority || (isShroomTent ? 'humidity_first' : 'balanced_auto')}
+                    onChange={e => {
+                      if (currentTent) {
+                        onUpdateTent({
+                          ...currentTent,
+                          controllerPriority: e.target.value as ControllerPriority
+                        });
+                      }
+                    }}
+                    className="bg-zinc-900 border border-zinc-750 focus:border-indigo-500 rounded-lg px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none"
+                  >
+                    <option value="humidity_first">💧 Humidity First (Mushrooms / Seedlings / Clones)</option>
+                    <option value="balanced_auto">⚖️ Balanced Auto (Smooth VPD Coordination)</option>
+                    <option value="temperature_first">🌡️ Temperature First (High Heat Relief)</option>
+                    <option value="co2_enrichment">💨 CO₂ Enrichment (Bottled Gas Retention)</option>
+                  </select>
+                </div>
+
+                {/* Live Active Conflict Protection & Interlocks Banner */}
+                {currentTent.activeInterlocks && currentTent.activeInterlocks.length > 0 ? (
+                  <div className="bg-indigo-950/40 border border-indigo-800/60 rounded-lg p-2 text-xs space-y-1">
+                    <div className="flex items-center gap-1.5 text-indigo-300 font-semibold text-[11px]">
+                      <ShieldAlert className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <span>Active Controller Conflict Protections:</span>
+                    </div>
+                    <ul className="space-y-0.5 pl-5 list-disc text-[11px] text-zinc-300 font-mono">
+                      {currentTent.activeInterlocks.map((msg, idx) => (
+                        <li key={idx} className="leading-tight">{msg}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-400/90 font-mono bg-emerald-950/20 border border-emerald-900/30 rounded-lg px-2.5 py-1">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>Central Controller Interlock Active • All devices coordinated without fighting</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1602,161 +1698,563 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
         </div>
 
         {/* SPECIFIC ACTIONS & GAUGES BASED ON ITEM TYPE */}
-        {currentItem.category === 'plant' && (
-          <div className="bg-zinc-950/80 border border-emerald-950 rounded-xl p-4 space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-              <div className="flex items-center gap-2">
-                <Flower2 className="w-5 h-5 text-emerald-400" />
-                <h4 className="text-sm font-bold text-zinc-100">Botanical Vigor, Roots &amp; Photosynthesis</h4>
-              </div>
-              <span className="text-xs font-mono uppercase px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">
-                Stage: {currentItem.stage} ({currentItem.stageProgress.toFixed(0)}%)
-              </span>
-            </div>
+        {currentItem.category === 'plant' && (() => {
+          const plant = currentItem as PlantItem;
+          const enclosureClimate = currentTent?.climate || room.climate;
+          const isSeed = (plant.propagationType || 'seed') === 'seed';
+          
+          // Get photoperiod hours
+          const growLight = (currentTent?.items || room.items).find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
+          let photoperiodHours = 18;
+          if (growLight?.schedule?.enabled) {
+            const on = growLight.schedule.onHour;
+            const off = growLight.schedule.offHour;
+            photoperiodHours = off > on ? (off - on) : (24 - on + off);
+          } else if (growLight && !growLight.powerOn) {
+            photoperiodHours = 0;
+          } else if (growLight && growLight.powerOn) {
+            photoperiodHours = 24;
+          }
 
-            {/* Meters Grid: Health, Soil Moisture, Root Zone Temp, and CO2 Photosynthesis */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                  <span>Plant Health</span>
-                  <span className="font-mono font-bold text-emerald-400">{currentItem.health}%</span>
+          // Evaluate live suitability
+          const suitability = evaluatePlantStageSuitability(
+            plant,
+            enclosureClimate,
+            plant.rootTempF || 68,
+            photoperiodHours
+          );
+
+          // Expected days for current stage
+          let expectedDays = DEFAULT_STAGE_DURATIONS[plant.stage] || 30;
+          if (plant.stage === 'germination' && plant.germinationDaysExpected) expectedDays = plant.germinationDaysExpected;
+          else if (plant.stage === 'rooting' && plant.rootingDaysExpected) expectedDays = plant.rootingDaysExpected;
+          else if (plant.stage === 'seedling' && plant.seedlingDaysExpected) expectedDays = plant.seedlingDaysExpected;
+          else if (plant.stage === 'mature_seedling' && plant.matureSeedlingDaysExpected) expectedDays = plant.matureSeedlingDaysExpected;
+          else if (plant.stage === 'vegetative' && plant.vegetativeDaysExpected) expectedDays = plant.vegetativeDaysExpected;
+          else if (plant.stage === 'flowering' && plant.floweringDaysExpected) expectedDays = plant.floweringDaysExpected;
+          else if (plant.stage === 'ripening' && plant.ripeningDaysExpected) expectedDays = plant.ripeningDaysExpected;
+
+          const currentStageDays = plant.currentStageDays || 0;
+          const req = plant.stageRequirements?.[plant.stage] || DEFAULT_STAGE_REQUIREMENTS[plant.stage];
+
+          const milestones = [
+            {
+              id: 'planted',
+              label: isSeed ? 'Planted for Germination' : 'Cutting Taken for Rooting',
+              date: plant.keyDates?.plantedDate,
+              icon: isSeed ? '🌱' : '✂️',
+              reached: true
+            },
+            {
+              id: isSeed ? 'sprouted' : 'rooted',
+              label: isSeed ? 'Sprouted / Emerged' : 'Roots Struck / Callus',
+              date: isSeed ? plant.keyDates?.sproutedDate : plant.keyDates?.rootedDate,
+              icon: '🌱',
+              reached: Boolean(isSeed ? plant.keyDates?.sproutedDate : plant.keyDates?.rootedDate) || (plant.stage !== 'germination' && plant.stage !== 'rooting')
+            },
+            {
+              id: 'seedling',
+              label: 'Early Seedling',
+              date: plant.keyDates?.seedlingDate,
+              icon: '🌿',
+              reached: Boolean(plant.keyDates?.seedlingDate) || (plant.stage !== 'germination' && plant.stage !== 'rooting')
+            },
+            {
+              id: 'mature_seedling',
+              label: 'Mature Seedling',
+              date: plant.keyDates?.matureSeedlingDate,
+              icon: '🪴',
+              reached: Boolean(plant.keyDates?.matureSeedlingDate) || ['vegetative', 'flowering', 'ripening', 'ready'].includes(plant.stage)
+            },
+            {
+              id: 'vegetative',
+              label: 'Vegetative Canopy',
+              date: plant.keyDates?.vegetativeDate,
+              icon: '🌿',
+              reached: Boolean(plant.keyDates?.vegetativeDate) || ['flowering', 'ripening', 'ready'].includes(plant.stage)
+            },
+            {
+              id: 'flowering',
+              label: 'Flowering Bloom',
+              date: plant.keyDates?.floweringDate,
+              icon: '🌸',
+              reached: Boolean(plant.keyDates?.floweringDate) || ['ripening', 'ready'].includes(plant.stage)
+            },
+            {
+              id: 'ripening',
+              label: 'Ripening / Trichomes',
+              date: plant.keyDates?.ripeningDate,
+              icon: '✨',
+              reached: Boolean(plant.keyDates?.ripeningDate) || plant.stage === 'ready'
+            },
+            {
+              id: 'ready',
+              label: 'Ready for Harvest',
+              date: plant.keyDates?.readyDate,
+              icon: '🏆',
+              reached: Boolean(plant.keyDates?.readyDate) || plant.stage === 'ready'
+            }
+          ];
+
+          return (
+            <div className="space-y-4">
+              {/* 1. Botanical Vigor & Root Telemetry Card */}
+              <div className="bg-zinc-950/80 border border-emerald-950 rounded-xl p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Flower2 className="w-5 h-5 text-emerald-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                        <span>{plant.name}</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-300 font-normal">
+                          {isSeed ? '🌱 From Seed' : '✂️ From Cutting'}
+                        </span>
+                      </h4>
+                      <span className="text-[11px] text-zinc-400">
+                        {plant.species} · {plant.strainName} · Age: {plant.ageDays.toFixed(1)} Days
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono uppercase px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">
+                      {plant.stage.replace('_', ' ')} ({plant.stageProgress.toFixed(0)}%)
+                    </span>
+                  </div>
                 </div>
-                <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full rounded-full transition-all ${
-                      currentItem.health > 80 ? 'bg-emerald-500' : currentItem.health > 50 ? 'bg-amber-500' : 'bg-rose-500'
-                    }`} 
-                    style={{ width: `${currentItem.health}%` }} 
-                  />
+
+                {/* Meters Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                      <span>Plant Health</span>
+                      <span className="font-mono font-bold text-emerald-400">{plant.health}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full rounded-full transition-all ${
+                          plant.health > 80 ? 'bg-emerald-500' : plant.health > 50 ? 'bg-amber-500' : 'bg-rose-500'
+                        }`} 
+                        style={{ width: `${plant.health}%` }} 
+                      />
+                    </div>
+                    <span className="text-[10px] text-zinc-500 mt-1 block">
+                      {plant.health > 85 ? 'Vigorous cellular respiration' : 'Slight stress detected'}
+                    </span>
+                  </div>
+
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                      <span>Soil Moisture</span>
+                      <span className="font-mono font-bold text-cyan-400">{plant.soilMoisture.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-cyan-500 rounded-full transition-all"
+                        style={{ width: `${plant.soilMoisture}%` }} 
+                      />
+                    </div>
+                    <span className="text-[10px] text-zinc-500 mt-1 block">
+                      {plant.soilMoisture < 25 ? '⚠️ Soil dry! Water required' : 'Optimal root zone hydration'}
+                    </span>
+                  </div>
+
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                      <span>Root Zone Temp</span>
+                      <span className="font-mono font-bold text-amber-400">
+                        {plant.rootTempF ? `${plant.rootTempF.toFixed(1)}°F` : '68.0°F'}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-amber-500 rounded-full transition-all"
+                        style={{ width: `${Math.max(10, Math.min(100, ((plant.rootTempF || 68) - 50) * 2.5))}%` }} 
+                      />
+                    </div>
+                    <span className="text-[10px] text-zinc-400 mt-1 block">
+                      {(plant.rootTempF || 68) >= 65 && (plant.rootTempF || 68) <= 76 
+                        ? '✓ Ideal nutrient absorption' 
+                        : (plant.rootTempF || 68) < 65 
+                          ? '❄ Chilly root zone' 
+                          : '▲ Warm root zone'}
+                    </span>
+                  </div>
+
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                      <span>CO₂ Photosynthesis</span>
+                      <span className="font-mono font-bold text-emerald-400">
+                        {currentTent?.climate.co2Ppm ? `${currentTent.climate.co2Ppm} PPM` : 'Enriched'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] font-semibold text-emerald-300 mt-1">
+                      {(currentTent?.climate.co2Ppm || 1000) >= 1000 
+                        ? '🚀 +25% Supercharged Growth' 
+                        : (currentTent?.climate.co2Ppm || 600) < 400 
+                          ? '⚠️ Stomata CO₂ Depletion' 
+                          : 'Standard Atmospheric'}
+                    </div>
+                    <span className="text-[10px] text-zinc-500 mt-1 block">
+                      Yield: {plant.yieldPotentialGrams.toFixed(0)}g
+                    </span>
+                  </div>
                 </div>
-                <span className="text-[10px] text-zinc-500 mt-1 block">
-                  {currentItem.health > 85 ? 'Vigorous cellular respiration' : 'Slight stress detected'}
-                </span>
+
+                {/* Interactive Crop Actions */}
+                <div className="pt-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => {
+                      onUpdateItem({
+                        ...plant,
+                        soilMoisture: Math.min(95, plant.soilMoisture + 35),
+                        rootTempF: Math.max(65, ((plant as PlantItem).rootTempF || 70) - 2.5),
+                        health: Math.min(100, plant.health + 5),
+                        lastWateredTime: Date.now()
+                      }, selectedParentTentId);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-medium transition-all shadow-md shadow-cyan-950/40"
+                  >
+                    <Droplets className="w-4 h-4" />
+                    <span>Water Pot &amp; Cool Roots (+35%)</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onUpdateItem({
+                        ...plant,
+                        soilMoisture: Math.min(95, plant.soilMoisture + 20),
+                        nutrientLevel: 'balanced',
+                        health: Math.min(100, plant.health + 8),
+                      }, selectedParentTentId);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-medium transition-all shadow-md shadow-emerald-950/40"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Feed Organic Nutrients</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onUpdateItem({
+                        ...plant,
+                        canopyWidthInches: plant.canopyWidthInches + 2.5,
+                        yieldPotentialGrams: plant.yieldPotentialGrams + 15,
+                      }, selectedParentTentId);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors"
+                  >
+                    <Scissors className="w-4 h-4 text-amber-400" />
+                    <span>Prune / Top Canopy</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onHarvestPlant(plant, currentTent?.id);
+                    }}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
+                      plant.stage === 'ready' || plant.stage === 'ripening'
+                        ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/50 animate-pulse'
+                        : 'bg-zinc-800 hover:bg-amber-950/60 hover:text-amber-300 text-zinc-400 border border-zinc-700'
+                    }`}
+                  >
+                    <Award className="w-4 h-4" />
+                    <span>Harvest Crop ({plant.yieldPotentialGrams.toFixed(0)}g)</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                  <span>Soil Moisture</span>
-                  <span className="font-mono font-bold text-cyan-400">{currentItem.soilMoisture.toFixed(0)}%</span>
+              {/* 2. Key Dates & Botanical Lifecycle Timeline Card */}
+              <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-teal-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-zinc-100">Lifecycle Milestones &amp; Tracked Dates</h4>
+                      <p className="text-[11px] text-zinc-400">
+                        Historical record of sowing/cutting dates and stage transition milestones
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-mono text-zinc-400">Days in Current Stage:</span>
+                    <span className="ml-1 text-xs font-mono font-bold text-teal-300">
+                      {currentStageDays.toFixed(1)} / {expectedDays} Days
+                    </span>
+                  </div>
                 </div>
-                <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-cyan-500 rounded-full transition-all"
-                    style={{ width: `${currentItem.soilMoisture}%` }} 
-                  />
+
+                {/* Current Stage Progress Bar */}
+                <div className="space-y-1.5 bg-zinc-900/80 p-3 rounded-xl border border-zinc-800">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-teal-400" />
+                      Active Stage: <span className="text-teal-300 uppercase">{plant.stage.replace('_', ' ')}</span>
+                    </span>
+                    <span className="font-mono text-xs font-bold text-teal-300">
+                      {plant.stageProgress.toFixed(0)}% Completed
+                    </span>
+                  </div>
+                  <div className="h-2.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full transition-all duration-300"
+                      style={{ width: `${plant.stageProgress}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono">
+                    <span>Rate: {suitability.overallScore.toFixed(2)}x base speed</span>
+                    <span>Remaining in Stage: ~{Math.max(0, expectedDays - currentStageDays).toFixed(1)} days</span>
+                  </div>
                 </div>
-                <span className="text-[10px] text-zinc-500 mt-1 block">
-                  {currentItem.soilMoisture < 25 ? '⚠️ Soil dry! Water required' : 'Optimal root zone hydration'}
-                </span>
+
+                {/* Milestone Dates Timeline */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  {milestones.map((m, idx) => {
+                    const isCurrentStage = 
+                      (m.id === 'planted' && (plant.stage === 'germination' || plant.stage === 'rooting')) ||
+                      (m.id === (isSeed ? 'sprouted' : 'rooted') && (plant.stage === 'germination' || plant.stage === 'rooting')) ||
+                      (m.id === plant.stage);
+
+                    return (
+                      <div 
+                        key={m.id}
+                        className={`p-2.5 rounded-xl border transition-all ${
+                          isCurrentStage
+                            ? 'bg-teal-950/60 border-teal-500 ring-1 ring-teal-500/40 text-teal-100'
+                            : m.date
+                              ? 'bg-zinc-900/90 border-emerald-900/60 text-zinc-200'
+                              : 'bg-zinc-950/60 border-zinc-850 text-zinc-500'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                            #{idx + 1}
+                          </span>
+                          <span className="text-xs">
+                            {m.date ? (
+                              <span className="text-emerald-400 font-bold flex items-center gap-1 text-[10px]">
+                                <Check className="w-3 h-3" /> Logged
+                              </span>
+                            ) : isCurrentStage ? (
+                              <span className="text-teal-400 font-bold text-[10px] animate-pulse">
+                                ● In Progress
+                              </span>
+                            ) : (
+                              <span className="text-zinc-600 text-[10px]">Upcoming</span>
+                            )}
+                          </span>
+                        </div>
+                        <div className="text-xs font-semibold flex items-center gap-1.5 mb-1 truncate">
+                          <span>{m.icon}</span>
+                          <span className="truncate">{m.label}</span>
+                        </div>
+                        <div className="text-[10px] font-mono text-zinc-400 truncate">
+                          {m.date ? formatSimDateTime(m.date) : 'Pending milestone'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Quick Stage Override Controls */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-zinc-850 text-xs">
+                  <span className="text-zinc-400 text-[11px]">Manual Lifecycle Stage Controls:</span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {[
+                      { id: isSeed ? 'germination' : 'rooting', label: isSeed ? 'Germinate' : 'Root' },
+                      { id: 'seedling', label: 'Seedling' },
+                      { id: 'mature_seedling', label: 'Mature' },
+                      { id: 'vegetative', label: 'Veg' },
+                      { id: 'flowering', label: 'Flower' },
+                      { id: 'ripening', label: 'Ripen' },
+                      { id: 'ready', label: 'Ready' }
+                    ].map(st => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => {
+                          const now = simTime || Date.now();
+                          const updatedDates: PlantKeyDates = { ...(plant.keyDates || { plantedDate: now }) };
+                          if (st.id === 'seedling') {
+                            if (isSeed) updatedDates.sproutedDate = updatedDates.sproutedDate || now;
+                            else updatedDates.rootedDate = updatedDates.rootedDate || now;
+                            updatedDates.seedlingDate = updatedDates.seedlingDate || now;
+                          } else if (st.id === 'mature_seedling') {
+                            updatedDates.matureSeedlingDate = updatedDates.matureSeedlingDate || now;
+                          } else if (st.id === 'vegetative') {
+                            updatedDates.vegetativeDate = updatedDates.vegetativeDate || now;
+                          } else if (st.id === 'flowering') {
+                            updatedDates.floweringDate = updatedDates.floweringDate || now;
+                          } else if (st.id === 'ripening') {
+                            updatedDates.ripeningDate = updatedDates.ripeningDate || now;
+                          } else if (st.id === 'ready') {
+                            updatedDates.readyDate = updatedDates.readyDate || now;
+                          }
+
+                          onUpdateItem({
+                            ...plant,
+                            stage: st.id as PlantStage,
+                            stageProgress: 0,
+                            currentStageDays: 0,
+                            keyDates: updatedDates
+                          }, selectedParentTentId);
+                        }}
+                        className={`px-2 py-1 rounded text-[11px] font-mono transition-colors ${
+                          plant.stage === st.id
+                            ? 'bg-teal-700 text-white font-bold'
+                            : 'bg-zinc-850 hover:bg-zinc-800 text-zinc-300'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
-              {/* ROOT ZONE TEMPERATURE */}
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                  <span>Root Zone Temp</span>
-                  <span className="font-mono font-bold text-amber-400">
-                    {currentItem.rootTempF ? `${currentItem.rootTempF.toFixed(1)}°F` : '68.0°F'}
+              {/* 3. Stage Conditions vs Live Enclosure Environment Audit */}
+              <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Sliders className="w-5 h-5 text-amber-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-zinc-100">
+                        Stage Condition Requirements &amp; Live Physics Audit
+                      </h4>
+                      <p className="text-[11px] text-zinc-400">{req.summary}</p>
+                    </div>
+                  </div>
+                  <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded-full ${
+                    suitability.status === 'optimal'
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                      : suitability.status === 'acceptable'
+                        ? 'bg-teal-950 text-teal-300 border border-teal-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                  }`}>
+                    {suitability.overallScore.toFixed(2)}x Growth Rate ({suitability.status.toUpperCase()})
                   </span>
                 </div>
-                <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-amber-500 rounded-full transition-all"
-                    style={{ width: `${Math.max(10, Math.min(100, ((currentItem.rootTempF || 68) - 50) * 2.5))}%` }} 
-                  />
-                </div>
-                <span className="text-[10px] text-zinc-400 mt-1 block">
-                  {(currentItem.rootTempF || 68) >= 65 && (currentItem.rootTempF || 68) <= 72 
-                    ? '✓ Ideal nutrient absorption' 
-                    : (currentItem.rootTempF || 68) < 65 
-                      ? '❄ Chilly root zone' 
-                      : '▲ Warm root zone'}
-                </span>
-              </div>
 
-              {/* CO2 PHOTOSYNTHESIS STATUS */}
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                  <span>CO₂ Photosynthesis</span>
-                  <span className="font-mono font-bold text-emerald-400">
-                    {currentTent?.climate.co2Ppm ? `${currentTent.climate.co2Ppm} PPM` : 'Enriched'}
-                  </span>
+                {/* Audit Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+                  {/* Temp */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">Air Temp</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {enclosureClimate.tempF.toFixed(1)}°F
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Target: {req.tempMinF}-{req.tempMaxF}°F
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.tempStatus === 'ideal' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-rose-950 text-rose-400'
+                    }`}>
+                      {suitability.tempStatus.replace('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Humidity */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">Humidity (RH)</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {enclosureClimate.rh}%
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Target: {req.rhMin}-{req.rhMax}%
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.rhStatus === 'ideal' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-amber-950 text-amber-400'
+                    }`}>
+                      {suitability.rhStatus.replace('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* VPD */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">VPD Deficit</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {enclosureClimate.vpdKpa} kPa
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Target: {req.vpdMin}-{req.vpdMax} kPa
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.vpdStatus === 'ideal' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-amber-950 text-amber-400'
+                    }`}>
+                      {suitability.vpdStatus.replace('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* PPFD */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">Light PPFD</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {enclosureClimate.lightPPFD} μmol
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Opt: ~{req.ppfdOptimal} μmol
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.ppfdStatus === 'ideal' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-rose-950 text-rose-400'
+                    }`}>
+                      {suitability.ppfdStatus.replace('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Root Zone */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">Root Zone Temp</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {(plant.rootTempF || 68).toFixed(1)}°F
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Target: 68-75°F
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.rootTempStatus === 'ideal' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-amber-950 text-amber-400'
+                    }`}>
+                      {suitability.rootTempStatus.toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Photoperiod */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] text-zinc-400 font-medium block">Photoperiod</span>
+                    <div className="font-mono font-bold text-zinc-100 text-sm">
+                      {photoperiodHours}h Light
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400">
+                      Req: {req.targetPhotoperiodHours}h Light
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
+                      suitability.photoperiodStatus === 'aligned' 
+                        ? 'bg-emerald-950 text-emerald-400' 
+                        : 'bg-rose-950 text-rose-400'
+                    }`}>
+                      {suitability.photoperiodStatus === 'aligned' ? 'ALIGNED' : 'MISALIGNED'}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-[11px] font-semibold text-emerald-300 mt-1">
-                  {(currentTent?.climate.co2Ppm || 1000) >= 1000 
-                    ? '🚀 +25% Supercharged Growth' 
-                    : (currentTent?.climate.co2Ppm || 600) < 400 
-                      ? '⚠️ Stomata CO₂ Depletion' 
-                      : 'Standard Atmospheric'}
-                </div>
-                <span className="text-[10px] text-zinc-500 mt-1 block">
-                  Yield: {currentItem.yieldPotentialGrams.toFixed(0)}g
-                </span>
+
+                {suitability.limitingFactor && (
+                  <div className="p-2.5 bg-amber-950/30 border border-amber-900/50 rounded-lg text-xs text-amber-300 flex items-center gap-2">
+                    <span className="font-bold">⚠️ Limiting Factor:</span>
+                    <span>{suitability.limitingFactor}</span>
+                  </div>
+                )}
               </div>
             </div>
-
-            {/* Interactive Crop Actions */}
-            <div className="pt-2 flex flex-wrap items-center gap-3">
-              <button
-                onClick={() => {
-                  onUpdateItem({
-                    ...currentItem,
-                    soilMoisture: Math.min(95, currentItem.soilMoisture + 35),
-                    rootTempF: Math.max(65, ((currentItem as PlantItem).rootTempF || 70) - 2.5),
-                    health: Math.min(100, currentItem.health + 5),
-                    lastWateredTime: Date.now()
-                  }, selectedParentTentId);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-medium transition-all shadow-md shadow-cyan-950/40"
-              >
-                <Droplets className="w-4 h-4" />
-                <span>Water Pot &amp; Cool Roots (+35%)</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  onUpdateItem({
-                    ...currentItem,
-                    soilMoisture: Math.min(95, currentItem.soilMoisture + 20),
-                    nutrientLevel: 'balanced',
-                    health: Math.min(100, currentItem.health + 8),
-                  }, selectedParentTentId);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-medium transition-all shadow-md shadow-emerald-950/40"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Feed Organic Nutrients</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  onUpdateItem({
-                    ...currentItem,
-                    canopyWidthInches: currentItem.canopyWidthInches + 2.5,
-                    yieldPotentialGrams: currentItem.yieldPotentialGrams + 15,
-                  }, selectedParentTentId);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors"
-              >
-                <Scissors className="w-4 h-4 text-amber-400" />
-                <span>Prune / Top Canopy</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  onHarvestPlant(currentItem as PlantItem, currentTent?.id);
-                }}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
-                  currentItem.stage === 'ready' || currentItem.stage === 'ripening'
-                    ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/50 animate-pulse'
-                    : 'bg-zinc-800 hover:bg-amber-950/60 hover:text-amber-300 text-zinc-400 border border-zinc-700'
-                }`}
-              >
-                <Award className="w-4 h-4" />
-                <span>Harvest Crop ({currentItem.yieldPotentialGrams.toFixed(0)}g)</span>
-              </button>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {currentItem.category === 'mushroom' && (
           <div className="bg-zinc-950/80 border border-amber-950 rounded-xl p-4 space-y-4">
@@ -1869,179 +2367,715 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
           </div>
         )}
 
-        {currentItem.category === 'equipment' && (
-          <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-4 space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-              <div className="flex items-center gap-2">
-                <Zap className="w-5 h-5 text-yellow-400" />
-                <h4 className="text-sm font-bold text-zinc-100">Equipment Controls &amp; Settings</h4>
-              </div>
-              <button
-                onClick={() => {
-                  onUpdateItem({
-                    ...currentItem,
-                    powerOn: !currentItem.powerOn
-                  }, selectedParentTentId);
-                }}
-                className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                  currentItem.powerOn
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-950/40'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
-                }`}
-              >
-                {currentItem.powerOn ? 'POWER: ON' : 'POWER: OFF'}
-              </button>
-            </div>
+        {currentItem.category === 'equipment' && (() => {
+          const eq = currentItem as EquipmentItem;
+          const currentMode = eq.controlMode || 'auto';
+          const triggers = eq.autoTriggers || {};
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Setting Slider */}
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-2">
-                <div className="flex justify-between text-xs text-zinc-300">
-                  <span>Output Power / Speed Setting</span>
-                  <span className="font-mono font-bold text-emerald-400">{currentItem.setting}%</span>
+          // Helper for hour labels
+          const formatHour = (h: number) => {
+            const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+            const ampm = h < 12 ? 'AM' : 'PM';
+            return `${h.toString().padStart(2, '0')}:00 (${h12} ${ampm})`;
+          };
+
+          // Calculate daylight hours
+          const onH = eq.schedule?.onHour ?? 6;
+          const offH = eq.schedule?.offHour ?? 0;
+          let dayLength = offH >= onH ? offH - onH : (24 - onH + offH);
+          if (dayLength === 0) dayLength = 24;
+          const nightLength = 24 - dayLength;
+
+          return (
+            <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-4 space-y-4">
+              {/* Header with Power Switch & Controller Status */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className={`p-1.5 rounded-lg ${eq.powerOn ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-zinc-800 text-zinc-500'}`}>
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                      {eq.name}
+                      <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                        {eq.type.replace('_', ' ')}
+                      </span>
+                    </h4>
+                    <span className="text-xs text-zinc-400 font-mono">
+                      Rated Draw: {eq.powerWatts}W • Actual: {Math.round(eq.powerWatts * ((eq.effectiveSetting ?? eq.setting) / 100))}W
+                    </span>
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={currentItem.setting}
-                  onChange={e => {
-                    onUpdateItem({
-                      ...currentItem,
-                      setting: parseInt(e.target.value)
-                    }, selectedParentTentId);
-                  }}
-                  className="w-full accent-emerald-500 cursor-pointer"
-                />
-                <span className="text-[10px] text-zinc-500 block">
-                  Power Consumption: {Math.round(currentItem.powerWatts * (currentItem.setting / 100))} Watts
-                </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      onUpdateItem({
+                        ...eq,
+                        powerOn: !eq.powerOn
+                      }, selectedParentTentId);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 ${
+                      eq.powerOn
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40 ring-1 ring-emerald-400/50'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    }`}
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>{eq.powerOn ? 'POWER: ON' : 'POWER: OFF'}</span>
+                  </button>
+                </div>
               </div>
 
-              {/* CO2 Regulator Target Setpoint */}
-              {currentItem.type === 'co2_regulator' && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-2">
+              {/* Central Controller Arbitration Status Banner */}
+              {eq.powerOn && (
+                <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <div>
+                      <span className="font-semibold text-zinc-300">Controller State:</span>
+                      <p className="text-[11px] font-mono text-zinc-400">
+                        {eq.interlockStatus || (eq.effectiveSetting !== undefined ? `Running at ${eq.effectiveSetting}% output` : 'Active and responding')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-zinc-400">Effective Output:</span>
+                    <span className={`font-mono text-sm font-bold px-2.5 py-0.5 rounded ${
+                      (eq.effectiveSetting ?? eq.setting) > 0 
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-zinc-800 text-zinc-400'
+                    }`}>
+                      {eq.effectiveSetting ?? eq.setting}%
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* 1. GROW LIGHT PHOTOPERIOD & DIMMER CONTROLS */}
+              {eq.type === 'grow_light' && (
+                <div className="space-y-4">
+                  {/* Master Dimming Slider */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex justify-between text-xs text-zinc-200">
+                      <span className="font-semibold flex items-center gap-1.5">
+                        <Sun className="w-4 h-4 text-amber-400" />
+                        LED Intensity Dimmer
+                      </span>
+                      <span className="font-mono font-bold text-amber-400">{eq.setting}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={eq.setting}
+                      onChange={e => {
+                        onUpdateItem({
+                          ...eq,
+                          setting: parseInt(e.target.value)
+                        }, selectedParentTentId);
+                      }}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                      <span>Low Propagation (20-40%)</span>
+                      <span>Vegetative (50-70%)</span>
+                      <span>Peak Bloom (80-100%)</span>
+                    </div>
+                  </div>
+
+                  {/* Fully Editable Schedule Controls */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                        <Clock className="w-4 h-4 text-amber-400" />
+                        <span>Light Photoperiod Schedule</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onUpdateItem({
+                              ...eq,
+                              schedule: {
+                                enabled: !(eq.schedule?.enabled ?? true),
+                                onHour: eq.schedule?.onHour ?? 6,
+                                offHour: eq.schedule?.offHour ?? 0
+                              }
+                            }, selectedParentTentId);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold transition-all ${
+                            (eq.schedule?.enabled ?? true)
+                              ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                              : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          {(eq.schedule?.enabled ?? true) ? 'Schedule: ACTIVE' : 'Schedule: 24/0 ALWAYS ON'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {(eq.schedule?.enabled ?? true) && (
+                      <div className="space-y-3 pt-1">
+                        {/* Day/Night Ratio Badge */}
+                        <div className="flex items-center justify-between bg-zinc-950/70 border border-zinc-800 rounded-lg p-2.5 text-xs">
+                          <span className="text-zinc-400">Calculated Photoperiod:</span>
+                          <span className="font-mono font-bold text-amber-300">
+                            ☀️ {dayLength}h DAY / 🌙 {nightLength}h NIGHT
+                          </span>
+                        </div>
+
+                        {/* Exact On / Off Hour Selectors */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-mono uppercase text-zinc-400 flex items-center gap-1">
+                              <span>Light Turn-ON Time</span>
+                            </label>
+                            <select
+                              value={eq.schedule?.onHour ?? 6}
+                              onChange={e => {
+                                const newOn = parseInt(e.target.value);
+                                onUpdateItem({
+                                  ...eq,
+                                  schedule: {
+                                    enabled: true,
+                                    onHour: newOn,
+                                    offHour: eq.schedule?.offHour ?? 0
+                                  }
+                                }, selectedParentTentId);
+                              }}
+                              className="w-full bg-zinc-950 border border-zinc-750 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none"
+                            >
+                              {Array.from({ length: 24 }, (_, i) => (
+                                <option key={i} value={i}>
+                                  {formatHour(i)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-mono uppercase text-zinc-400 flex items-center gap-1">
+                              <span>Light Turn-OFF Time</span>
+                            </label>
+                            <select
+                              value={eq.schedule?.offHour ?? 0}
+                              onChange={e => {
+                                const newOff = parseInt(e.target.value);
+                                onUpdateItem({
+                                  ...eq,
+                                  schedule: {
+                                    enabled: true,
+                                    onHour: eq.schedule?.onHour ?? 6,
+                                    offHour: newOff
+                                  }
+                                }, selectedParentTentId);
+                              }}
+                              className="w-full bg-zinc-950 border border-zinc-750 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none"
+                            >
+                              {Array.from({ length: 24 }, (_, i) => (
+                                <option key={i} value={i}>
+                                  {formatHour(i)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Quick Presets */}
+                        <div className="space-y-1 pt-1">
+                          <span className="text-[10px] font-mono text-zinc-500 uppercase block">Quick Presets:</span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {[
+                              { label: '18/6 Veg', on: 6, off: 0 },
+                              { label: '12/12 Bloom', on: 8, off: 20 },
+                              { label: '20/4 Auto', on: 4, off: 0 },
+                              { label: '10/14 Ripen', on: 9, off: 19 },
+                              { label: '12/12 Myco', on: 7, off: 19 },
+                            ].map(preset => (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                onClick={() => {
+                                  onUpdateItem({
+                                    ...eq,
+                                    schedule: { enabled: true, onHour: preset.on, offHour: preset.off }
+                                  }, selectedParentTentId);
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-all ${
+                                  eq.schedule?.enabled && eq.schedule.onHour === preset.on && eq.schedule.offHour === preset.off
+                                    ? 'bg-amber-500 text-black font-bold'
+                                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-750'
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. EXHAUST FAN INTELLIGENT TRIGGERS & CONFLICT SAFEGUARDS */}
+              {eq.type === 'exhaust_fan' && (
+                <div className="space-y-4">
+                  {/* Mode Selector Tabs */}
+                  <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 p-1.5 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateItem({
+                          ...eq,
+                          controlMode: 'auto'
+                        }, selectedParentTentId);
+                      }}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                        currentMode === 'auto'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Smart Auto Triggers</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateItem({
+                          ...eq,
+                          controlMode: 'cycle'
+                        }, selectedParentTentId);
+                      }}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                        currentMode === 'cycle'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Timer className="w-3.5 h-3.5" />
+                      <span>FAE Cycle Timer</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateItem({
+                          ...eq,
+                          controlMode: 'manual'
+                        }, selectedParentTentId);
+                      }}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                        currentMode === 'manual'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      <span>Manual Fixed Speed</span>
+                    </button>
+                  </div>
+
+                  {/* AUTO SMART TRIGGER SETPOINTS */}
+                  {currentMode === 'auto' && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+                      <div>
+                        <h5 className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                          <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+                          Environmental Trigger Setpoints (Intelligent Activation)
+                        </h5>
+                        <p className="text-[11px] text-zinc-400 mt-0.5">
+                          Fan automatically turns on or ramps speed only when canopy needs heat evacuation, excess humidity venting, or fresh CO₂ exchange.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                        {/* High Temp Trigger */}
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-2">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-300 flex items-center gap-1">
+                              <Thermometer className="w-3.5 h-3.5 text-rose-400" />
+                              High Temp Trigger
+                            </span>
+                            <span className="font-mono font-bold text-rose-400">{triggers.tempTriggerHighF ?? 78}°F</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="68"
+                            max="90"
+                            value={triggers.tempTriggerHighF ?? 78}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  tempTriggerHighF: parseInt(e.target.value)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-rose-500 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 block">Ramps speed to exhaust excess heat to lung room</span>
+                        </div>
+
+                        {/* High RH Trigger */}
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-2">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-300 flex items-center gap-1">
+                              <Droplets className="w-3.5 h-3.5 text-cyan-400" />
+                              High Humidity Trigger
+                            </span>
+                            <span className="font-mono font-bold text-cyan-400">{triggers.rhTriggerHigh ?? 68}% RH</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="50"
+                            max="98"
+                            value={triggers.rhTriggerHigh ?? 68}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  rhTriggerHigh: parseInt(e.target.value)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-cyan-500 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 block">Exhausts wet air if canopy exceeds ceiling limit</span>
+                        </div>
+
+                        {/* Low RH Floor Protection */}
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-2">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-300 flex items-center gap-1">
+                              <ShieldCheck className="w-3.5 h-3.5 text-teal-400" />
+                              Low RH Safeguard Floor
+                            </span>
+                            <span className="font-mono font-bold text-teal-400">{triggers.rhTriggerLow ?? 45}% RH</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="30"
+                            max="90"
+                            value={triggers.rhTriggerLow ?? 45}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  rhTriggerLow: parseInt(e.target.value)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-teal-500 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 block">Throttles fan down if tent is dry to prevent desiccation</span>
+                        </div>
+
+                        {/* High CO2 Trigger (FAE for mushrooms) */}
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-2">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-300 flex items-center gap-1">
+                              <Wind className="w-3.5 h-3.5 text-purple-400" />
+                              High CO₂ FAE Trigger
+                            </span>
+                            <span className="font-mono font-bold text-purple-400">{triggers.co2TriggerHighPpm ?? 950} PPM</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="600"
+                            max="2000"
+                            step="50"
+                            value={triggers.co2TriggerHighPpm ?? 950}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  co2TriggerHighPpm: parseInt(e.target.value)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-purple-500 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 block">Evacuates heavy CO2 to trigger healthy mushroom pinheads</span>
+                        </div>
+                      </div>
+
+                      {/* Speed Bounds */}
+                      <div className="grid grid-cols-2 gap-4 pt-2 border-t border-zinc-800/80">
+                        <div>
+                          <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                            <span>Idle Min Speed</span>
+                            <span className="font-mono font-bold text-zinc-200">{triggers.minSpeedPercent ?? 0}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="40"
+                            value={triggers.minSpeedPercent ?? 0}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  minSpeedPercent: parseInt(e.target.value)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-emerald-500 cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                            <span>Max Speed Ceiling</span>
+                            <span className="font-mono font-bold text-zinc-200">{triggers.maxSpeedPercent ?? eq.setting}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="30"
+                            max="100"
+                            value={triggers.maxSpeedPercent ?? eq.setting}
+                            onChange={e => {
+                              const val = parseInt(e.target.value);
+                              onUpdateItem({
+                                ...eq,
+                                setting: val,
+                                autoTriggers: {
+                                  ...triggers,
+                                  maxSpeedPercent: val
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-emerald-500 cursor-pointer"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CYCLE TIMER CONTROLS */}
+                  {currentMode === 'cycle' && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+                      <div>
+                        <h5 className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                          <Timer className="w-4 h-4 text-emerald-400" />
+                          Intermittent FAE Cycle Timing
+                        </h5>
+                        <p className="text-[11px] text-zinc-400 mt-0.5">
+                          Runs for X minutes every Y minutes to refresh oxygen without exhausting humidity.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-1">
+                          <label className="text-[10px] font-mono text-zinc-400 uppercase">Run Duration (Mins)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="60"
+                            value={triggers.cycleOnMinutes ?? 3}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  cycleOnMinutes: Math.max(1, parseInt(e.target.value) || 1)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                          />
+                        </div>
+
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-1">
+                          <label className="text-[10px] font-mono text-zinc-400 uppercase">Pause Interval (Mins)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="120"
+                            value={triggers.cycleOffMinutes ?? 15}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                autoTriggers: {
+                                  ...triggers,
+                                  cycleOffMinutes: Math.max(1, parseInt(e.target.value) || 1)
+                                }
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                          />
+                        </div>
+
+                        <div className="bg-zinc-950/70 border border-zinc-800 rounded-lg p-3 space-y-1">
+                          <label className="text-[10px] font-mono text-zinc-400 uppercase">Pulse Speed Setting</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min="10"
+                              max="100"
+                              value={eq.setting}
+                              onChange={e => {
+                                onUpdateItem({
+                                  ...eq,
+                                  setting: parseInt(e.target.value)
+                                }, selectedParentTentId);
+                              }}
+                              className="w-full accent-emerald-500 cursor-pointer"
+                            />
+                            <span className="font-mono text-xs font-bold text-emerald-400">{eq.setting}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MANUAL SPEED SLIDER */}
+                  {currentMode === 'manual' && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                      <div className="flex justify-between text-xs text-zinc-300">
+                        <span>Fixed Manual Fan Speed</span>
+                        <span className="font-mono font-bold text-emerald-400">{eq.setting}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={eq.setting}
+                        onChange={e => {
+                          onUpdateItem({
+                            ...eq,
+                            setting: parseInt(e.target.value)
+                          }, selectedParentTentId);
+                        }}
+                        className="w-full accent-emerald-500 cursor-pointer"
+                      />
+                      <span className="text-[10px] text-zinc-500 block">
+                        Runs continuously at this fixed percentage without automatic sensor modulation.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 3. HUMIDIFIER & DEHUMIDIFIER CONTROLS */}
+              {(eq.type === 'humidifier' || eq.type === 'dehumidifier') && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>Target Humidity Set-Point</span>
+                      <span className="font-mono font-bold text-cyan-400">{eq.targetRh ?? 60}% RH</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="30"
+                      max="98"
+                      value={eq.targetRh ?? 60}
+                      onChange={e => {
+                        onUpdateItem({
+                          ...eq,
+                          targetRh: parseInt(e.target.value)
+                        }, selectedParentTentId);
+                      }}
+                      className="w-full accent-cyan-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                      <span>Veg (60-70%)</span>
+                      <span>Flower (45-55%)</span>
+                      <span>Mushroom (85-95%)</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>Output Mist Rate / Capacity</span>
+                      <span className="font-mono font-bold text-cyan-400">{eq.setting}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={eq.setting}
+                      onChange={e => {
+                        onUpdateItem({
+                          ...eq,
+                          setting: parseInt(e.target.value)
+                        }, selectedParentTentId);
+                      }}
+                      className="w-full accent-cyan-500 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-zinc-500 block">
+                      Power Consumption: {Math.round(eq.powerWatts * (eq.setting / 100))} Watts
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* 4. CO2 REGULATOR SOLENOID CONTROLS */}
+              {eq.type === 'co2_regulator' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
                   <div className="flex justify-between text-xs text-zinc-300">
                     <span>Target CO₂ Enriched Level</span>
-                    <span className="font-mono font-bold text-emerald-400">{currentItem.targetCo2Ppm ?? 1200} PPM</span>
+                    <span className="font-mono font-bold text-purple-400">{eq.targetCo2Ppm ?? 1200} PPM</span>
                   </div>
                   <input
                     type="range"
                     min="400"
                     max="2000"
                     step="50"
-                    value={currentItem.targetCo2Ppm ?? 1200}
+                    value={eq.targetCo2Ppm ?? 1200}
                     onChange={e => {
                       onUpdateItem({
-                        ...currentItem,
+                        ...eq,
                         targetCo2Ppm: parseInt(e.target.value)
                       }, selectedParentTentId);
                     }}
-                    className="w-full accent-emerald-500 cursor-pointer"
+                    className="w-full accent-purple-500 cursor-pointer"
                   />
-                  <div className="flex justify-between text-[10px] text-zinc-500">
-                    <span>Atmospheric (420)</span>
+                  <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                    <span>Atmospheric Clean Air (420)</span>
                     <span>High PPFD Bloom (1200-1500)</span>
                   </div>
-                </div>
-              )}
-
-              {/* Light Photoperiod Schedule */}
-              {currentItem.type === 'grow_light' && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-2">
-                  <div className="flex justify-between text-xs text-zinc-300">
-                    <span>Photoperiod Schedule</span>
-                    <span className="font-mono text-amber-400 text-xs">
-                      {currentItem.schedule?.enabled ? `${currentItem.schedule.onHour}:00 - ${currentItem.schedule.offHour}:00` : '24/0 Continuous'}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 pt-1">
-                    <button
-                      onClick={() => {
-                        onUpdateItem({
-                          ...currentItem,
-                          schedule: { enabled: true, onHour: 6, offHour: 0 } // 18/6
-                        }, selectedParentTentId);
-                      }}
-                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-750 text-xs font-mono text-zinc-300"
-                    >
-                      18/6 (Veg)
-                    </button>
-                    <button
-                      onClick={() => {
-                        onUpdateItem({
-                          ...currentItem,
-                          schedule: { enabled: true, onHour: 8, offHour: 20 } // 12/12
-                        }, selectedParentTentId);
-                      }}
-                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-750 text-xs font-mono text-zinc-300"
-                    >
-                      12/12 (Bloom)
-                    </button>
-                    <button
-                      onClick={() => {
-                        onUpdateItem({
-                          ...currentItem,
-                          schedule: { enabled: false, onHour: 0, offHour: 24 } // 24/0
-                        }, selectedParentTentId);
-                      }}
-                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-750 text-xs font-mono text-zinc-300"
-                    >
-                      24/0 (Clone)
-                    </button>
+                  <div className="text-[10px] text-indigo-400/90 font-mono pt-1">
+                    🔒 Interlock Active: Solenoid automatically pauses exhaust fan while injecting to retain bottled CO₂ gas.
                   </div>
                 </div>
               )}
 
-              {/* Target RH for humidifiers/dehumidifiers */}
-              {(currentItem.type === 'humidifier' || currentItem.type === 'dehumidifier') && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-2">
+              {/* 5. HEATER THERMOSTAT */}
+              {eq.type === 'heater' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
                   <div className="flex justify-between text-xs text-zinc-300">
-                    <span>Target Humidity Set-Point</span>
-                    <span className="font-mono font-bold text-cyan-400">{currentItem.targetRh ?? 60}% RH</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="30"
-                    max="95"
-                    value={currentItem.targetRh ?? 60}
-                    onChange={e => {
-                      onUpdateItem({
-                        ...currentItem,
-                        targetRh: parseInt(e.target.value)
-                      }, selectedParentTentId);
-                    }}
-                    className="w-full accent-cyan-500 cursor-pointer"
-                  />
-                </div>
-              )}
-
-              {/* Heater Thermostat */}
-              {currentItem.type === 'heater' && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-2">
-                  <div className="flex justify-between text-xs text-zinc-300">
-                    <span>Target Temperature</span>
-                    <span className="font-mono font-bold text-amber-400">{currentItem.targetTempF ?? 74}°F</span>
+                    <span>Thermostat Target Temperature</span>
+                    <span className="font-mono font-bold text-amber-400">{eq.targetTempF ?? 74}°F</span>
                   </div>
                   <input
                     type="range"
                     min="60"
                     max="90"
-                    value={currentItem.targetTempF ?? 74}
+                    value={eq.targetTempF ?? 74}
                     onChange={e => {
                       onUpdateItem({
-                        ...currentItem,
+                        ...eq,
                         targetTempF: parseInt(e.target.value)
                       }, selectedParentTentId);
                     }}
                     className="w-full accent-amber-500 cursor-pointer"
                   />
+                  <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                    <span>Cool Night (65°F)</span>
+                    <span>Comfort (72-76°F)</span>
+                    <span>Warm (82°F)</span>
+                  </div>
                 </div>
               )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* SPECIFIC ACTIONS & GAUGES FOR PERSON */}
         {currentItem.category === 'person' && (() => {
@@ -2279,6 +3313,40 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-medium transition-colors shadow-lg shadow-rose-900/30"
                 >
                   Confirm Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Room Confirmation Modal */}
+        {showDeleteRoomConfirm && onDeleteRoom && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl text-zinc-100">
+              <h3 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-rose-400" />
+                Delete Room: {room.name}?
+              </h3>
+              <p className="text-sm text-zinc-400 mt-2">
+                Are you sure you want to delete this room? All {room.tents.length} tents, crops, mushrooms, and equipment located in this room will be permanently removed.
+              </p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteRoomConfirm(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDeleteRoom(room.id);
+                    setShowDeleteRoomConfirm(false);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-medium transition-colors shadow-lg shadow-rose-900/30"
+                >
+                  Confirm Delete Room
                 </button>
               </div>
             </div>

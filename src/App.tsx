@@ -9,7 +9,8 @@ import {
   EquipmentItem, 
   HarvestRecord, 
   JournalEntry, 
-  OutdoorLocation 
+  OutdoorLocation,
+  OutsideConditions 
 } from './types/sim';
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
@@ -22,11 +23,13 @@ import { AddItemModal } from './components/AddItemModal';
 import { HarvestLogModal } from './components/HarvestLogModal';
 import { GrowJournal } from './components/GrowJournal';
 import { LocationModal } from './components/LocationModal';
+import { AddRoomModal } from './components/AddRoomModal';
 
 export default function App() {
   const [state, setState] = useState<SimulationState>(() => loadSimulation());
   const [lastSavedAt, setLastSavedAt] = useState<number>(Date.now());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isAddRoomModalOpen, setIsAddRoomModalOpen] = useState(false);
   const [addModalTentId, setAddModalTentId] = useState<string | null>(null);
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
@@ -47,7 +50,7 @@ export default function App() {
       if (isMounted) {
         weatherPackageRef.current = pkg;
         // Align current outside conditions with cached hourly dataset
-        const currentOutside = getOutdoorConditionsForSimTime(pkg, state.simTime, state.outside.co2Ppm);
+        const currentOutside = getOutdoorConditionsForSimTime(pkg, state.simTime);
         setState(prev => ({
           ...prev,
           outside: currentOutside
@@ -64,7 +67,7 @@ export default function App() {
   useEffect(() => {
     saveSimulation(state);
     setLastSavedAt(Date.now());
-  }, [state.room, state.outside, state.outdoorLocation, state.tempUnit, state.harvests]);
+  }, [state.room, state.rooms, state.activeRoomId, state.outside, state.outdoorLocation, state.tempUnit, state.harvests]);
 
   // Main Simulation Loop
   useEffect(() => {
@@ -78,20 +81,31 @@ export default function App() {
       const newSimTime = cur.simTime + elapsedMinutes * 60 * 1000;
 
       // Pull outdoor conditions from cached hourly dataset (zero repeated HTTP requests!)
-      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, cur.outside.co2Ppm);
+      const customCo2 = cur.outdoorLocation?.customCo2Ppm ?? cur.outside?.co2Ppm;
+      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, customCo2);
 
-      // Run thermodynamics & biology tick
-      const { room: updatedRoom, events } = simulateEnvironmentTick(
-        cur.room,
-        newOutside,
-        newSimTime,
-        elapsedMinutes
-      );
+      // Run thermodynamics & biology tick across all facility rooms
+      const currentRooms = cur.rooms && cur.rooms.length > 0 ? cur.rooms : [cur.room];
+      let activeRoomEvents: any[] = [];
+      const updatedRooms = currentRooms.map(rm => {
+        const { room: simRoom, events } = simulateEnvironmentTick(
+          rm,
+          newOutside,
+          newSimTime,
+          elapsedMinutes
+        );
+        if (rm.id === (cur.activeRoomId || cur.room.id)) {
+          activeRoomEvents = events;
+        }
+        return simRoom;
+      });
 
-      // Append any tick events to journal
+      const updatedActiveRoom = updatedRooms.find(r => r.id === (cur.activeRoomId || cur.room.id)) || updatedRooms[0];
+
+      // Append any tick events from active room to journal
       let updatedJournal = cur.journal;
-      if (events.length > 0) {
-        const newEntries: JournalEntry[] = events.map(e => ({
+      if (activeRoomEvents.length > 0) {
+        const newEntries: JournalEntry[] = activeRoomEvents.map(e => ({
           id: `j-${Date.now()}-${Math.random()}`,
           time: newSimTime,
           type: e.type,
@@ -105,7 +119,8 @@ export default function App() {
         ...prev,
         simTime: newSimTime,
         outside: newOutside,
-        room: updatedRoom,
+        rooms: updatedRooms,
+        room: updatedActiveRoom,
         journal: updatedJournal
       }));
     }, 1000);
@@ -123,19 +138,27 @@ export default function App() {
     setState(prev => {
       const elapsedMinutes = hours * 60;
       const newSimTime = prev.simTime + elapsedMinutes * 60 * 1000;
-      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, prev.outside.co2Ppm);
-      const { room: updatedRoom } = simulateEnvironmentTick(
-        prev.room,
-        newOutside,
-        newSimTime,
-        elapsedMinutes
-      );
+      const customCo2 = prev.outdoorLocation?.customCo2Ppm ?? prev.outside?.co2Ppm;
+      const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, customCo2);
+      
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(rm => {
+        const { room: simRoom } = simulateEnvironmentTick(
+          rm,
+          newOutside,
+          newSimTime,
+          elapsedMinutes
+        );
+        return simRoom;
+      });
+      const updatedActiveRoom = updatedRooms.find(r => r.id === (prev.activeRoomId || prev.room.id)) || updatedRooms[0];
 
       return {
         ...prev,
         simTime: newSimTime,
         outside: newOutside,
-        room: updatedRoom,
+        rooms: updatedRooms,
+        room: updatedActiveRoom,
         journal: [
           ...prev.journal,
           {
@@ -157,7 +180,7 @@ export default function App() {
     weatherPackageRef.current = pkg;
 
     setState(prev => {
-      const currentOutside = getOutdoorConditionsForSimTime(pkg, prev.simTime, prev.outside.co2Ppm);
+      const currentOutside = getOutdoorConditionsForSimTime(pkg, prev.simTime);
       return {
         ...prev,
         outdoorLocation: newLocation,
@@ -170,37 +193,6 @@ export default function App() {
             type: 'info',
             title: 'Outdoor Location Updated',
             message: `Bound facility atmospheric envelope to ZIP ${newLocation.zipCode} (${newLocation.cityName}, ${newLocation.state}). Loaded authentic seasonal weather.`
-          }
-        ]
-      };
-    });
-  }, []);
-
-  // Update Outdoor Atmospheric CO2 Baseline
-  const handleUpdateOutdoorCo2 = useCallback((ppm: number) => {
-    setState(prev => {
-      const newOutside = { ...prev.outside, co2Ppm: ppm };
-      return {
-        ...prev,
-        outside: newOutside,
-        room: {
-          ...prev.room,
-          roomCo2BaselinePpm: ppm,
-          climate: { ...prev.room.climate, co2Ppm: ppm }
-        },
-        rooms: prev.rooms?.map(r => ({
-          ...r,
-          roomCo2BaselinePpm: ppm,
-          climate: { ...r.climate, co2Ppm: ppm }
-        })) ?? [],
-        journal: [
-          ...prev.journal,
-          {
-            id: `j-${Date.now()}`,
-            time: prev.simTime,
-            type: 'action',
-            title: 'Outdoor CO₂ Baseline Updated',
-            message: `Atmospheric CO₂ baseline set to ${ppm} PPM. All rooms will equilibrate to this fresh-air infiltration value.`
           }
         ]
       };
@@ -278,52 +270,67 @@ export default function App() {
 
   // Update Room
   const handleUpdateRoom = useCallback((updatedRoom: Room) => {
-    setState(prev => ({
-      ...prev,
-      room: updatedRoom
-    }));
+    setState(prev => {
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+      return {
+        ...prev,
+        room: updatedRoom,
+        rooms: updatedRooms
+      };
+    });
   }, []);
 
   // Update Tent
   const handleUpdateTent = useCallback((updatedTent: Tent) => {
-    setState(prev => ({
-      ...prev,
-      room: {
+    setState(prev => {
+      const updatedRoom = {
         ...prev.room,
         tents: prev.room.tents.map(t => t.id === updatedTent.id ? updatedTent : t)
-      }
-    }));
+      };
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+      return {
+        ...prev,
+        room: updatedRoom,
+        rooms: updatedRooms
+      };
+    });
   }, []);
 
   // Update Item (Plant, Mushroom, or Equipment)
   const handleUpdateItem = useCallback((updatedItem: Item, parentTentId?: string | null) => {
     setState(prev => {
+      let updatedRoom: Room;
       if (parentTentId) {
-        return {
-          ...prev,
-          room: {
-            ...prev.room,
-            tents: prev.room.tents.map(t => {
-              if (t.id === parentTentId) {
-                return {
-                  ...t,
-                  items: t.items.map(i => i.id === updatedItem.id ? updatedItem : i)
-                };
-              }
-              return t;
-            })
-          }
+        updatedRoom = {
+          ...prev.room,
+          tents: prev.room.tents.map(t => {
+            if (t.id === parentTentId) {
+              return {
+                ...t,
+                items: t.items.map(i => i.id === updatedItem.id ? updatedItem : i)
+              };
+            }
+            return t;
+          })
         };
       } else {
         // Freestanding in room
-        return {
-          ...prev,
-          room: {
-            ...prev.room,
-            items: prev.room.items.map(i => i.id === updatedItem.id ? updatedItem : i)
-          }
+        updatedRoom = {
+          ...prev.room,
+          items: prev.room.items.map(i => i.id === updatedItem.id ? updatedItem : i)
         };
       }
+
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+
+      return {
+        ...prev,
+        room: updatedRoom,
+        rooms: updatedRooms
+      };
     });
   }, []);
 
@@ -345,9 +352,13 @@ export default function App() {
         updatedRoom.items = updatedRoom.items.filter(i => i.id !== itemId);
       }
 
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+
       return {
         ...prev,
         room: updatedRoom,
+        rooms: updatedRooms,
         selectedType: parentTentId ? 'tent' : 'room',
         selectedId: parentTentId || prev.room.id,
         selectedParentTentId: null
@@ -357,40 +368,54 @@ export default function App() {
 
   // Delete Tent
   const handleDeleteTent = useCallback((tentId: string) => {
-    setState(prev => ({
-      ...prev,
-      room: {
+    setState(prev => {
+      const updatedRoom = {
         ...prev.room,
         tents: prev.room.tents.filter(t => t.id !== tentId)
-      },
-      selectedType: 'room',
-      selectedId: prev.room.id,
-      selectedParentTentId: null
-    }));
+      };
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+
+      return {
+        ...prev,
+        room: updatedRoom,
+        rooms: updatedRooms,
+        selectedType: 'room',
+        selectedId: prev.room.id,
+        selectedParentTentId: null
+      };
+    });
   }, []);
 
   // Add Tent
   const handleAddTent = useCallback((newTent: Tent) => {
-    setState(prev => ({
-      ...prev,
-      room: {
+    setState(prev => {
+      const updatedRoom = {
         ...prev.room,
         tents: [...prev.room.tents, newTent]
-      },
-      selectedType: 'tent',
-      selectedId: newTent.id,
-      selectedParentTentId: null,
-      journal: [
-        ...prev.journal,
-        {
-          id: `j-${Date.now()}`,
-          time: prev.simTime,
-          type: 'success',
-          title: 'Tent Deployed',
-          message: `${newTent.name} added to ${prev.room.name}.`
-        }
-      ]
-    }));
+      };
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+
+      return {
+        ...prev,
+        room: updatedRoom,
+        rooms: updatedRooms,
+        selectedType: 'tent',
+        selectedId: newTent.id,
+        selectedParentTentId: null,
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'success',
+            title: 'Tent Deployed',
+            message: `${newTent.name} added to ${prev.room.name}.`
+          }
+        ]
+      };
+    });
   }, []);
 
   // Add Item
@@ -411,9 +436,13 @@ export default function App() {
         updatedRoom.items = [...updatedRoom.items, newItem];
       }
 
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+
       return {
         ...prev,
         room: updatedRoom,
+        rooms: updatedRooms,
         selectedType: 'item',
         selectedId: newItem.id,
         selectedParentTentId: tentId || null,
@@ -425,6 +454,112 @@ export default function App() {
             type: 'info',
             title: `Item Added`,
             message: `${newItem.name} introduced into ${tentId ? 'tent' : 'room'}.`
+          }
+        ]
+      };
+    });
+  }, []);
+
+  // Add Room
+  const handleAddRoom = useCallback((newRoom: Room) => {
+    setState(prev => {
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = [...currentRooms, newRoom];
+      return {
+        ...prev,
+        rooms: updatedRooms,
+        activeRoomId: newRoom.id,
+        room: newRoom,
+        selectedType: 'room',
+        selectedId: newRoom.id,
+        selectedParentTentId: null,
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'action',
+            title: 'Room Constructed',
+            message: `Added new room "${newRoom.name}" (${newRoom.dimensions.length}′×${newRoom.dimensions.width}′×${newRoom.dimensions.height}′) to facility.`
+          }
+        ]
+      };
+    });
+    setIsAddRoomModalOpen(false);
+  }, []);
+
+  // Delete Room
+  const handleDeleteRoom = useCallback((roomId: string) => {
+    setState(prev => {
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      if (currentRooms.length <= 1) return prev;
+
+      const deletedRoom = currentRooms.find(r => r.id === roomId);
+      const remainingRooms = currentRooms.filter(r => r.id !== roomId);
+      const nextActiveRoom = prev.activeRoomId === roomId ? remainingRooms[0] : (currentRooms.find(r => r.id === prev.activeRoomId) || remainingRooms[0]);
+
+      return {
+        ...prev,
+        rooms: remainingRooms,
+        activeRoomId: nextActiveRoom.id,
+        room: nextActiveRoom,
+        selectedType: 'room',
+        selectedId: nextActiveRoom.id,
+        selectedParentTentId: null,
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'warning',
+            title: 'Room Decommissioned',
+            message: `Removed room "${deletedRoom?.name || roomId}" from facility.`
+          }
+        ]
+      };
+    });
+  }, []);
+
+  // Select Active Room
+  const handleSelectActiveRoom = useCallback((roomId: string) => {
+    setState(prev => {
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const targetRoom = currentRooms.find(r => r.id === roomId);
+      if (!targetRoom) return prev;
+      return {
+        ...prev,
+        activeRoomId: roomId,
+        room: targetRoom,
+        selectedType: 'room',
+        selectedId: roomId,
+        selectedParentTentId: null
+      };
+    });
+  }, []);
+
+  // Update Outdoor Ambient Baseline CO2
+  const handleUpdateOutdoorCo2 = useCallback((co2Ppm: number) => {
+    setState(prev => {
+      const updatedOutside: OutsideConditions = {
+        ...prev.outside,
+        co2Ppm
+      };
+      const updatedLocation: OutdoorLocation = {
+        ...prev.outdoorLocation,
+        customCo2Ppm: co2Ppm
+      };
+      return {
+        ...prev,
+        outside: updatedOutside,
+        outdoorLocation: updatedLocation,
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'action',
+            title: 'Outdoor Ambient CO₂ Calibrated',
+            message: `Adjusted atmospheric background baseline to ${co2Ppm} PPM.`
           }
         ]
       };
@@ -537,17 +672,23 @@ export default function App() {
           outside={state.outside}
           outdoorLocation={state.outdoorLocation}
           room={state.room}
+          rooms={state.rooms || [state.room]}
+          activeRoomId={state.activeRoomId || state.room.id}
           selectedId={state.selectedId}
           selectedType={state.selectedType}
           tempUnit={state.tempUnit}
           onSelectRoom={handleSelectRoom}
           onSelectTent={handleSelectTent}
+          onSelectActiveRoom={handleSelectActiveRoom}
+          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+          onDeleteRoom={handleDeleteRoom}
           onOpenAddTent={() => {
             setAddModalTentId(null);
             setIsAddModalOpen(true);
           }}
           onOpenLocationModal={() => setIsLocationModalOpen(true)}
           onDeleteTent={handleDeleteTent}
+          onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
         />
 
         {/* View Switcher Tabs: Climate Overview vs 2D Layout Plan */}
@@ -584,11 +725,15 @@ export default function App() {
         {activeTab === 'floorplan' && (
           <InteractiveFloorplan
             room={state.room}
+            rooms={state.rooms || [state.room]}
+            activeRoomId={state.activeRoomId || state.room.id}
             selectedId={state.selectedId}
             selectedType={state.selectedType}
             onSelectRoom={handleSelectRoom}
             onSelectTent={handleSelectTent}
             onSelectItem={handleSelectItem}
+            onSelectActiveRoom={handleSelectActiveRoom}
+            onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
             onDeleteTent={handleDeleteTent}
             onDeleteItem={handleDeleteItem}
           />
@@ -597,8 +742,8 @@ export default function App() {
         {/* Item & Room Inspector Panel */}
         <ItemInspector
           room={state.room}
-          rooms={state.rooms}
-          outdoorCo2Ppm={state.outside.co2Ppm}
+          rooms={state.rooms || [state.room]}
+          outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
           selectedType={state.selectedType}
           selectedId={state.selectedId}
           selectedParentTentId={state.selectedParentTentId}
@@ -611,6 +756,8 @@ export default function App() {
           onUpdateItem={handleUpdateItem}
           onDeleteItem={handleDeleteItem}
           onDeleteTent={handleDeleteTent}
+          onDeleteRoom={handleDeleteRoom}
+          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
           onOpenLocationModal={() => setIsLocationModalOpen(true)}
           onOpenAddItem={(tentId) => {
             setAddModalTentId(tentId || null);
@@ -618,6 +765,7 @@ export default function App() {
           }}
           onHarvestPlant={handleHarvestPlant}
           onHarvestMushroom={handleHarvestMushroom}
+          simTime={state.simTime}
         />
 
         {/* Cultivation Journal Drawer */}
@@ -629,9 +777,18 @@ export default function App() {
         room={state.room}
         targetTentId={addModalTentId}
         isOpen={isAddModalOpen}
+        simTime={state.simTime}
         onClose={() => setIsAddModalOpen(false)}
         onAddTent={handleAddTent}
         onAddItem={handleAddItem}
+      />
+
+      {/* Add Room Modal */}
+      <AddRoomModal
+        isOpen={isAddRoomModalOpen}
+        onClose={() => setIsAddRoomModalOpen(false)}
+        onAddRoom={handleAddRoom}
+        outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
       />
 
       {/* Location / Zip Code Modal */}
@@ -641,7 +798,7 @@ export default function App() {
         isOpen={isLocationModalOpen}
         onClose={() => setIsLocationModalOpen(false)}
         onUpdateLocation={handleUpdateOutdoorLocation}
-        outdoorCo2Ppm={state.outside.co2Ppm}
+        outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
         onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
       />
 

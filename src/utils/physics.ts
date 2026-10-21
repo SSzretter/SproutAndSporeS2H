@@ -1,4 +1,13 @@
-import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent } from '../types/sim';
+import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
+import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS } from './plantLifecycle';
+
+export interface SimulationEvent {
+  type: 'warning' | 'info' | 'success' | 'action';
+  category?: JournalCategory;
+  title: string;
+  message: string;
+  tentName?: string;
+}
 
 export function fahrenheitToCelsius(f: number): number {
   return ((f - 32) * 5) / 9;
@@ -219,15 +228,389 @@ export function isLightScheduledOn(hour: number, schedule?: { enabled: boolean; 
 }
 
 /**
+ * Central Controller Arbitration Engine:
+ * Prevents equipment from fighting each other (e.g. Humidifier vs Exhaust Fan, Humidifier vs Dehumidifier, CO2 Solenoid vs Exhaust).
+ * Implements intelligent dynamic triggers for exhaust fans (temperature, humidity, CO2 FAE, low RH protection).
+ */
+export interface ArbitratedEquipmentResult {
+  arbitratedItems: (PlantItem | MushroomItem | EquipmentItem | PersonItem | PetItem)[];
+  effectiveFanSpeed: number;
+  activeInterlocks: string[];
+  activeHumidifierTarget: number | null;
+  activeHumidifierCapacity: number;
+  activeDehumidifierTarget: number | null;
+  activeDehumidifierCapacity: number;
+  co2RegulatorActive: boolean;
+  co2RegulatorTarget: number | null;
+  totalHeatWatts: number;
+  lightPPFD: number;
+  heatMatActive: boolean;
+}
+
+export function arbitrateEnclosureEquipment(params: {
+  items: (PlantItem | MushroomItem | EquipmentItem | PersonItem | PetItem)[];
+  climate: { tempF: number; rh: number; co2Ppm: number; lightPPFD?: number };
+  ambientLungRoom: { tempF: number; rh: number; co2Ppm: number };
+  priority: ControllerPriority;
+  hour: number;
+  simTime: number;
+  isTent: boolean;
+  baseFanSpeed: number;
+  enclosureAreaSqFt: number;
+}): ArbitratedEquipmentResult {
+  const {
+    items,
+    climate,
+    ambientLungRoom,
+    priority,
+    hour,
+    simTime,
+    isTent,
+    baseFanSpeed,
+    enclosureAreaSqFt
+  } = params;
+
+  const isShroomEnclosure = items.some(i => i.category === 'mushroom');
+  const activeInterlocks: string[] = [];
+
+  let totalHeatWatts = 0;
+  let lightPPFD = 0;
+  let heatMatActive = false;
+
+  // 1. First Pass: Evaluate preliminary demands
+  let activeHumidifierTarget: number | null = null;
+  let activeHumidifierCapacity = 0;
+  let humidifierDemanded = false;
+
+  let activeDehumidifierTarget: number | null = null;
+  let activeDehumidifierCapacity = 0;
+  let dehumidifierDemanded = false;
+
+  let co2RegulatorTarget: number | null = null;
+  let co2RegulatorActive = false;
+
+  // Pre-calculate light status for CO2 and heat
+  items.forEach(item => {
+    if (item.category === 'equipment' && item.type === 'grow_light') {
+      const isTimerOn = isLightScheduledOn(hour, item.schedule);
+      if (item.powerOn && isTimerOn) {
+        const powerRatio = (item.setting || 100) / 100;
+        const effectiveWatts = (item.powerWatts || 100) * powerRatio;
+        totalHeatWatts += effectiveWatts;
+        const areaM2 = enclosureAreaSqFt * 0.0929;
+        const ppfd = Math.round((effectiveWatts * 2.1) / Math.max(0.5, areaM2));
+        lightPPFD = Math.max(lightPPFD, ppfd);
+      }
+    }
+  });
+
+  const isDay = lightPPFD > 40;
+
+  // Evaluate Humidifier & Dehumidifier Preliminary Demands
+  items.forEach(item => {
+    if (item.category === 'equipment') {
+      if (item.type === 'humidifier' && item.powerOn) {
+        const target = item.targetRh ?? item.setting ?? (isShroomEnclosure ? 90 : 60);
+        if (climate.rh < target - 1.0) {
+          humidifierDemanded = true;
+          activeHumidifierTarget = Math.max(activeHumidifierTarget ?? 0, target);
+          const powerRatio = Math.max(0.1, (item.setting || 80) / 100);
+          const wattsFactor = Math.max(0.8, (item.powerWatts || 60) / 60);
+          activeHumidifierCapacity += powerRatio * wattsFactor;
+        }
+      } else if (item.type === 'dehumidifier' && item.powerOn) {
+        const target = item.targetRh ?? 50;
+        if (climate.rh > target + 1.5) {
+          dehumidifierDemanded = true;
+          activeDehumidifierTarget = Math.min(activeDehumidifierTarget ?? 100, target);
+          const powerRatio = Math.max(0.1, (item.setting || 60) / 100);
+          const wattsFactor = Math.max(0.8, (item.powerWatts || 150) / 150);
+          activeDehumidifierCapacity += powerRatio * wattsFactor;
+        }
+      } else if (item.type === 'co2_regulator' && item.powerOn) {
+        const target = item.targetCo2Ppm ?? 1200;
+        if (climate.co2Ppm < target - 50 && isDay) {
+          co2RegulatorActive = true;
+          co2RegulatorTarget = target;
+        }
+      } else if (item.type === 'heat_mat' && item.powerOn) {
+        heatMatActive = true;
+      }
+    }
+  });
+
+  // 2. Conflict Arbitration: Humidifier vs Dehumidifier
+  let humidifierSuppressed = false;
+  let dehumidifierSuppressed = false;
+
+  if (humidifierDemanded && dehumidifierDemanded) {
+    if (priority === 'humidity_first') {
+      dehumidifierSuppressed = true;
+      activeDehumidifierCapacity = 0;
+      activeDehumidifierTarget = null;
+      activeInterlocks.push('Dehumidifier locked out: Humidifier active (Humidity First Priority)');
+    } else if (priority === 'temperature_first') {
+      humidifierSuppressed = false;
+    } else {
+      // Balanced auto: use 55% RH deadband split
+      if (climate.rh < 58) {
+        dehumidifierSuppressed = true;
+        activeDehumidifierCapacity = 0;
+        activeDehumidifierTarget = null;
+        activeInterlocks.push('Dehumidifier locked out: Humidity below comfort threshold');
+      } else {
+        humidifierSuppressed = true;
+        activeHumidifierCapacity = 0;
+        activeHumidifierTarget = null;
+        activeInterlocks.push('Humidifier locked out: Dehumidifier active (High RH)');
+      }
+    }
+  }
+
+  // 3. Second Pass: Evaluate and arbitrate each item
+  let maxExhaustFanOutput = baseFanSpeed;
+
+  const arbitratedItems = items.map(item => {
+    if (item.category !== 'equipment') {
+      return item;
+    }
+
+    const eq: EquipmentItem = { ...item };
+
+    // Default control mode to auto if unspecified
+    const mode = eq.controlMode || 'auto';
+
+    if (!eq.powerOn) {
+      eq.effectiveSetting = 0;
+      eq.interlockStatus = 'Power switched off';
+      return eq;
+    }
+
+    // A. GROW LIGHTS
+    if (eq.type === 'grow_light') {
+      const isTimerOn = isLightScheduledOn(hour, eq.schedule);
+      if (isTimerOn) {
+        eq.effectiveSetting = eq.setting;
+        eq.interlockStatus = eq.schedule?.enabled ? 'On (Scheduled photoperiod)' : 'On (Continuous)';
+      } else {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Off (Night cycle by schedule)';
+      }
+      return eq;
+    }
+
+    // B. HUMIDIFIERS
+    if (eq.type === 'humidifier') {
+      const target = eq.targetRh ?? eq.setting ?? (isShroomEnclosure ? 90 : 60);
+      if (humidifierSuppressed) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Locked out: Dehumidifier arbitration active';
+      } else if (climate.rh >= target) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = `Idle: Target reached (${climate.rh}% ≥ ${target}%)`;
+      } else {
+        eq.effectiveSetting = eq.setting;
+        eq.interlockStatus = `Misting: Raising RH to ${target}%`;
+      }
+      return eq;
+    }
+
+    // C. DEHUMIDIFIERS
+    if (eq.type === 'dehumidifier') {
+      const target = eq.targetRh ?? 50;
+      if (dehumidifierSuppressed) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Locked out: Humidifier priority active';
+      } else if (climate.rh <= target) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = `Idle: Target reached (${climate.rh}% ≤ ${target}%)`;
+      } else {
+        eq.effectiveSetting = eq.setting;
+        eq.interlockStatus = `Dehumidifying: Extracting moisture to ${target}%`;
+      }
+      return eq;
+    }
+
+    // D. HEATERS
+    if (eq.type === 'heater') {
+      const target = eq.targetTempF ?? 74;
+      if (climate.tempF < target - 0.5) {
+        eq.effectiveSetting = eq.setting;
+        eq.interlockStatus = `Heating: Current ${climate.tempF.toFixed(1)}°F < Target ${target}°F`;
+      } else {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = `Idle: Temp satisfied (${climate.tempF.toFixed(1)}°F ≥ ${target}°F)`;
+      }
+      return eq;
+    }
+
+    // E. CO2 REGULATOR SOLENOID
+    if (eq.type === 'co2_regulator') {
+      const target = eq.targetCo2Ppm ?? 1200;
+      if (!isDay) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Solenoid closed: Night cycle (Stomata closed)';
+      } else if (climate.co2Ppm >= target) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = `Idle: Canopy enriched (${climate.co2Ppm} ≥ ${target} PPM)`;
+      } else {
+        eq.effectiveSetting = eq.setting;
+        eq.interlockStatus = `Injecting: Enriching canopy to ${target} PPM`;
+      }
+      return eq;
+    }
+
+    // F. EXHAUST FANS (INTELLIGENT DYNAMIC TRIGGERS & CONFLICT PROTECTION)
+    if (eq.type === 'exhaust_fan') {
+      const triggers = eq.autoTriggers || {};
+      const minSpeed = triggers.minSpeedPercent ?? (isShroomEnclosure ? 0 : 0);
+      const maxSpeed = triggers.maxSpeedPercent ?? (eq.setting || 100);
+
+      const tempHighTrigger = triggers.tempTriggerHighF ?? (isShroomEnclosure ? 76 : 79);
+      const rhHighTrigger = triggers.rhTriggerHigh ?? (isShroomEnclosure ? 98 : 68);
+      const rhLowFloor = triggers.rhTriggerLow ?? (isShroomEnclosure ? 80 : 45);
+      const co2HighTrigger = triggers.co2TriggerHighPpm ?? (isShroomEnclosure ? 950 : 1500);
+      const co2LowTrigger = triggers.co2TriggerLowPpm ?? 380;
+
+      let demandedSpeed = minSpeed;
+      let activeTriggerReasons: string[] = [];
+
+      if (mode === 'manual') {
+        demandedSpeed = eq.setting;
+        activeTriggerReasons.push(`Manual fixed speed (${eq.setting}%)`);
+      } else if (mode === 'cycle') {
+        const cycleOn = triggers.cycleOnMinutes ?? 3;
+        const cycleOff = triggers.cycleOffMinutes ?? 20;
+        const totalCycle = cycleOn + cycleOff;
+        const minuteIndex = Math.floor(simTime / 60000) % totalCycle;
+        if (minuteIndex < cycleOn) {
+          demandedSpeed = eq.setting;
+          activeTriggerReasons.push(`Cycle timer active pulse (${cycleOn - minuteIndex}m left)`);
+        } else {
+          demandedSpeed = minSpeed;
+          activeTriggerReasons.push(`Cycle timer idle (${totalCycle - minuteIndex}m to next pulse)`);
+        }
+      } else {
+        // Mode === 'auto' (Intelligent environmental triggers)
+        // 1. High Temp Trigger:
+        if (climate.tempF > tempHighTrigger) {
+          const excessTemp = climate.tempF - tempHighTrigger;
+          const heatSpeed = Math.min(maxSpeed, Math.round(minSpeed + excessTemp * 15 + 25));
+          if (heatSpeed > demandedSpeed) {
+            demandedSpeed = heatSpeed;
+            activeTriggerReasons.push(`High Temp (${climate.tempF.toFixed(1)}°F > ${tempHighTrigger}°F)`);
+          }
+        }
+
+        // 2. High Humidity Trigger (evacuate excess moisture):
+        if (climate.rh > rhHighTrigger) {
+          const excessRh = climate.rh - rhHighTrigger;
+          const rhSpeed = Math.min(maxSpeed, Math.round(minSpeed + excessRh * 6 + 30));
+          if (rhSpeed > demandedSpeed) {
+            demandedSpeed = rhSpeed;
+            activeTriggerReasons.push(`High RH (${climate.rh}% > ${rhHighTrigger}%)`);
+          }
+        }
+
+        // 3. High CO2 Trigger (Mushroom FAE evacuation):
+        if (climate.co2Ppm > co2HighTrigger) {
+          const excessCo2 = climate.co2Ppm - co2HighTrigger;
+          const co2Speed = Math.min(maxSpeed, Math.round(minSpeed + Math.min(60, excessCo2 * 0.15) + 30));
+          if (co2Speed > demandedSpeed) {
+            demandedSpeed = co2Speed;
+            activeTriggerReasons.push(`High CO₂ FAE (${climate.co2Ppm} > ${co2HighTrigger} PPM)`);
+          }
+        }
+
+        // 4. Low CO2 Trigger (Plants starving for carbon under daylight):
+        if (climate.co2Ppm < co2LowTrigger && isDay) {
+          const co2DeficitSpeed = Math.min(maxSpeed, 45);
+          if (co2DeficitSpeed > demandedSpeed) {
+            demandedSpeed = co2DeficitSpeed;
+            activeTriggerReasons.push(`Low CO₂ intake (${climate.co2Ppm} < ${co2LowTrigger} PPM)`);
+          }
+        }
+      }
+
+      // 4. CENTRAL CONTROLLER INTERLOCKS & PROTECTION ARBITRATION
+      let arbitratedSpeed = demandedSpeed;
+      let interlockReason = '';
+
+      // Conflict A: Humidifier is actively misting!
+      if (humidifierDemanded && !humidifierSuppressed) {
+        if (priority === 'humidity_first') {
+          // In Humidity First mode, exhausting mist defeats the fogger
+          // Only emergency extreme temperature (> 88°F) can overrule
+          if (climate.tempF >= 88) {
+            interlockReason = 'Emergency Thermal Overrule: Venting despite active humidifier';
+            activeInterlocks.push('Emergency Overrule: High heat forcing exhaust fan on');
+          } else {
+            arbitratedSpeed = Math.min(minSpeed, 5);
+            interlockReason = 'Locked out: Humidifier misting (Humidity First Priority)';
+            activeInterlocks.push('Exhaust Fan suspended: Humidifier actively misting (Humidity First)');
+          }
+        } else if (priority === 'balanced_auto') {
+          // Balanced mode: throttle exhaust to gentle exchange (max 15%) while misting
+          if (arbitratedSpeed > 15 && climate.tempF < 82) {
+            arbitratedSpeed = 15;
+            interlockReason = 'Throttled to 15%: Humidifier active (Balanced Auto)';
+            activeInterlocks.push('Exhaust Fan throttled: Humidifier actively raising moisture');
+          }
+        }
+      }
+
+      // Conflict B: CO2 Solenoid is actively injecting bottled gas!
+      if (co2RegulatorActive && (priority === 'co2_enrichment' || priority === 'balanced_auto')) {
+        if (climate.tempF < 84) {
+          arbitratedSpeed = Math.min(arbitratedSpeed, minSpeed);
+          interlockReason = 'Suspended: CO₂ Solenoid injecting gas';
+          activeInterlocks.push('Exhaust Fan suspended: Preserving injected CO₂');
+        }
+      }
+
+      // Protection C: Low Humidity Floor Safeguard
+      // If enclosure humidity drops below rhLowFloor, prevent exhaust from desiccating crops
+      if (climate.rh < rhLowFloor && climate.tempF < 85 && mode !== 'manual') {
+        if (arbitratedSpeed > minSpeed) {
+          arbitratedSpeed = minSpeed;
+          interlockReason = `Low RH Guard: Suspended (${climate.rh}% < ${rhLowFloor}% limit)`;
+          activeInterlocks.push(`Exhaust Fan guarded: RH below ${rhLowFloor}% threshold`);
+        }
+      }
+
+      eq.effectiveSetting = Math.max(0, Math.min(100, arbitratedSpeed));
+      eq.interlockStatus = interlockReason || (
+        activeTriggerReasons.length > 0 
+          ? `Auto Active: ${activeTriggerReasons.join(', ')}`
+          : (eq.effectiveSetting > 0 ? `Running at idle (${eq.effectiveSetting}%)` : 'Standby: All parameters optimal')
+      );
+
+      maxExhaustFanOutput = Math.max(maxExhaustFanOutput, eq.effectiveSetting);
+      return eq;
+    }
+
+    return eq;
+  });
+
+  return {
+    arbitratedItems,
+    effectiveFanSpeed: maxExhaustFanOutput,
+    activeInterlocks,
+    activeHumidifierTarget,
+    activeHumidifierCapacity,
+    activeDehumidifierTarget,
+    activeDehumidifierCapacity,
+    co2RegulatorActive,
+    co2RegulatorTarget,
+    totalHeatWatts,
+    lightPPFD,
+    heatMatActive
+  };
+}
+
+/**
  * Simulates a single tick of the environmental physics loop
  * elapsedMinutes: number of game minutes progressed
- * 
- * Accurately models:
- * 1. 2005 Colonial House Construction (R-19 exterior walls, 0.35 ACH infiltration, Central HVAC)
- * 2. Room ambient impact on Tents (Mylar fabric conduction + CFM air exchange from Lung Room)
- * 3. Tent lights & equipment heat loads and plant transpiration
- * 4. Root zone temperature dynamics influenced by ambient floor & watering
- * 5. Dynamic CO2 consumption (plants under light) and production (mushrooms & human baseline)
  */
 export function simulateEnvironmentTick(
   room: Room,
@@ -240,12 +623,10 @@ export function simulateEnvironmentTick(
   const hour = date.getHours() + date.getMinutes() / 60;
   
   // 1. UPDATE ROOM CLIMATE (2005 Colonial House Envelope)
-  // R-19 exterior wall insulation: U-value = 1/19 = 0.0526 BTU/hr·ft²·°F
-  // Infiltration: 0.35 ACH (Air Changes per Hour to outdoor ambient)
   const roomVolCuFt = Math.max(100, room.dimensions.length * room.dimensions.width * room.dimensions.height);
   const wallAreaSqFt = 2 * (room.dimensions.length + room.dimensions.width) * room.dimensions.height;
-  const rValue = room.wallRValue || 19; // 2005 Colonial standard
-  const ach = room.airChangesPerHour || 0.35; // 0.35 ACH
+  const rValue = room.wallRValue || 19;
+  const ach = room.airChangesPerHour || 0.35;
 
   let roomTempF = room.climate.tempF;
   let roomRH = room.climate.rh;
@@ -255,23 +636,21 @@ export function simulateEnvironmentTick(
   const heatingSetpoint = room.hvacHeatingSetpointF || 68.0;
 
   // Heat conduction through exterior walls: Q = U * A * (T_out - T_room)
-  // Converted to temperature rate change per minute in room air
   const uValue = 1 / Math.max(1, rValue);
-  const wallHeatGainRate = (uValue * wallAreaSqFt * (outside.tempF - roomTempF)) / (roomVolCuFt * 1.08); // °F/hr
+  const wallHeatGainRate = (uValue * wallAreaSqFt * (outside.tempF - roomTempF)) / (roomVolCuFt * 1.08);
   const deltaTConduction = (wallHeatGainRate * (elapsedMinutes / 60));
-  roomTempF += deltaTConduction * 0.4; // Thermal mass damping from drywall and framing
+  roomTempF += deltaTConduction * 0.4;
 
-  // Infiltration: 0.35 ACH brings outdoor fresh air temp, humidity, and 420 ppm clean outdoor CO2
+  // Infiltration: 0.35 ACH brings outdoor fresh air temp, humidity, and clean outdoor CO2
   const airExchangeRatePerHour = ach;
   const infiltrationFraction = Math.min(0.5, (airExchangeRatePerHour * (elapsedMinutes / 60)));
   roomTempF += (outside.tempF - roomTempF) * infiltrationFraction;
-  roomRH += (outside.rh - roomRH) * infiltrationFraction * 0.3; // Moisture buffering by building materials
+  roomRH += (outside.rh - roomRH) * infiltrationFraction * 0.3;
   roomCo2 += (outside.co2Ppm - roomCo2) * infiltrationFraction;
 
   // Central HVAC Conditioning (Standard 2005 Colonial with AC)
   if (hvacMode === 'central_ac_active') {
     if (roomTempF > coolingSetpoint) {
-      // AC cooling power pulls room temp toward 72°F and dehumidifies slightly
       const coolDelta = Math.min(roomTempF - coolingSetpoint, 0.08 * (elapsedMinutes / 5));
       roomTempF -= coolDelta;
       if (roomRH > 55) {
@@ -286,39 +665,30 @@ export function simulateEnvironmentTick(
   }
 
   // Biological Respiration from Occupants in Room (People & Pets)
-  // 1 cubic foot = 28.3168 liters of air
   const roomVolLiters = roomVolCuFt * 28.3168;
   let roomOccupantCo2LitersPerHour = 0;
   let roomOccupantHeatWatts = 0;
   let roomOccupantMoistureLitersPerDay = 0;
 
   room.items.forEach(item => {
-    if (item.category === 'person') {
-      roomOccupantCo2LitersPerHour += item.co2RateLitersPerHour;
-      roomOccupantHeatWatts += item.heatOutputWatts;
-      roomOccupantMoistureLitersPerDay += item.moistureLitersPerDay;
-    } else if (item.category === 'pet') {
-      roomOccupantCo2LitersPerHour += item.co2RateLitersPerHour;
-      roomOccupantHeatWatts += item.heatOutputWatts;
-      roomOccupantMoistureLitersPerDay += item.moistureLitersPerDay;
+    if (item.category === 'person' || item.category === 'pet') {
+      roomOccupantCo2LitersPerHour += (item as any).co2RateLitersPerHour || 0;
+      roomOccupantHeatWatts += (item as any).heatOutputWatts || 0;
+      roomOccupantMoistureLitersPerDay += (item as any).moistureLitersPerDay || 0;
     }
   });
 
-  // Calculate dynamic CO2 added by actual occupants in the room:
-  // PPM added = (Liters CO2 exhaled / Room Volume in Liters) * 1,000,000
   if (roomOccupantCo2LitersPerHour > 0) {
     const emittedLiters = roomOccupantCo2LitersPerHour * (elapsedMinutes / 60);
     const addedPpm = (emittedLiters / roomVolLiters) * 1_000_000;
     roomCo2 += addedPpm;
   }
 
-  // Metabolic heat emitted by occupants
   if (roomOccupantHeatWatts > 0) {
-    const occupantHeatGainRate = (roomOccupantHeatWatts * 3.412) / (roomVolCuFt * 1.08); // °F/hr
+    const occupantHeatGainRate = (roomOccupantHeatWatts * 3.412) / (roomVolCuFt * 1.08);
     roomTempF += occupantHeatGainRate * (elapsedMinutes / 60) * 0.35;
   }
 
-  // Respiration moisture emitted by occupants
   if (roomOccupantMoistureLitersPerDay > 0) {
     const moistureGrams = (roomOccupantMoistureLitersPerDay * 1000 / 1440) * elapsedMinutes;
     const rhDelta = (moistureGrams / (roomVolCuFt * 0.03)) * 0.01;
@@ -360,101 +730,97 @@ export function simulateEnvironmentTick(
   const roomVPD = calculateVPD(roomTempF, roomRH, roomLightPPFD);
 
   // 2. UPDATE EACH TENT'S CLIMATE & ITS ITEMS
-  // Tents are situated inside the host room!
-  // Tent Mylar canvas conducts heat with host room: Q = U * A * (T_room - T_tent)
-  // Exhaust fan draws air from the Lung Room into the tent!
   const updatedTents: Tent[] = room.tents.map(tent => {
     let tTempF = tent.climate.tempF;
     let tRH = tent.climate.rh;
     let tCo2 = tent.climate.co2Ppm || roomCo2;
-    let tLightPPFD = 0;
-    let totalHeatWatts = 0;
-    let co2RegulatorTarget: number | null = null;
-    let co2RegulatorActive = false;
-    let heatMatActive = false;
 
-    // Check equipment in tent
-    tent.items.forEach(item => {
-      if (item.category === 'equipment') {
-        if (item.type === 'grow_light') {
-          const isTimerOn = isLightScheduledOn(hour, item.schedule);
-          if (item.powerOn && isTimerOn) {
-            const powerRatio = item.setting / 100;
-            const effectiveWatts = item.powerWatts * powerRatio;
-            totalHeatWatts += effectiveWatts;
-            
-            // Tent floor area in sq ft
-            const areaSqFt = Math.max(1, tent.dimensions.length * tent.dimensions.width);
-            const areaM2 = areaSqFt * 0.0929;
-            const ppfd = Math.round((effectiveWatts * 2.1) / areaM2);
-            tLightPPFD = Math.max(tLightPPFD, ppfd);
-          }
-        } else if (item.type === 'humidifier' && item.powerOn) {
-          const target = item.targetRh ?? 70;
-          if (tRH < target) {
-            const mistPower = (item.setting / 100) * 0.85 * (elapsedMinutes / 5);
-            tRH = Math.min(98, tRH + mistPower);
-            tTempF -= 0.03 * (elapsedMinutes / 5); // Evaporative cooling
-          }
-        } else if (item.type === 'dehumidifier' && item.powerOn) {
-          const target = item.targetRh ?? 50;
-          if (tRH > target) {
-            const dehumPower = (item.setting / 100) * 0.7 * (elapsedMinutes / 5);
-            tRH = Math.max(target, tRH - dehumPower);
-            tTempF += 0.04 * (elapsedMinutes / 5); // Compressor heat
-          }
-        } else if (item.type === 'heater' && item.powerOn) {
-          const target = item.targetTempF ?? 76;
-          if (tTempF < target) {
-            tTempF += 0.12 * (item.setting / 100) * (elapsedMinutes / 5);
-          }
-        } else if (item.type === 'co2_regulator' && item.powerOn) {
-          co2RegulatorActive = true;
-          co2RegulatorTarget = item.targetCo2Ppm ?? 1200;
-        } else if (item.type === 'co2_bag') {
-          // Passive biological CO2 emitter (ExHale bag)
-          tCo2 += 1.5 * (elapsedMinutes / 10);
-        } else if (item.type === 'heat_mat' && item.powerOn) {
-          heatMatActive = true;
-        }
-      } else if (item.category === 'person' || item.category === 'pet') {
-        const tentVolCuFt = tent.dimensions.length * tent.dimensions.width * tent.dimensions.height;
-        const tentVolLiters = Math.max(30, tentVolCuFt) * 28.3168;
-        const emittedLiters = item.co2RateLitersPerHour * (elapsedMinutes / 60);
+    const tentAreaSqFt = Math.max(1, tent.dimensions.length * tent.dimensions.width);
+    const tentVolCuFt = Math.max(30, tentAreaSqFt * tent.dimensions.height);
+
+    // Run Central Controller Arbitration for this tent!
+    const defaultPriority: ControllerPriority = tent.items.some(i => i.category === 'mushroom') 
+      ? 'humidity_first' 
+      : 'balanced_auto';
+    const tentPriority: ControllerPriority = tent.controllerPriority || defaultPriority;
+
+    const arbitration = arbitrateEnclosureEquipment({
+      items: tent.items,
+      climate: { tempF: tTempF, rh: tRH, co2Ppm: tCo2, lightPPFD: tent.climate.lightPPFD },
+      ambientLungRoom: { tempF: roomTempF, rh: roomRH, co2Ppm: roomCo2 },
+      priority: tentPriority,
+      hour,
+      simTime: currentSimTime,
+      isTent: true,
+      baseFanSpeed: tent.exhaustFanSpeed || 0,
+      enclosureAreaSqFt: tentAreaSqFt
+    });
+
+    const {
+      arbitratedItems,
+      effectiveFanSpeed,
+      activeInterlocks,
+      activeHumidifierTarget,
+      activeHumidifierCapacity,
+      activeDehumidifierTarget,
+      activeDehumidifierCapacity,
+      co2RegulatorActive,
+      co2RegulatorTarget,
+      totalHeatWatts,
+      lightPPFD: tLightPPFD,
+      heatMatActive
+    } = arbitration;
+
+    // Check biological occupants in tent
+    arbitratedItems.forEach(item => {
+      if (item.category === 'person' || item.category === 'pet') {
+        const tentVolLiters = tentVolCuFt * 28.3168;
+        const emittedLiters = (item as any).co2RateLitersPerHour * (elapsedMinutes / 60);
         tCo2 += (emittedLiters / tentVolLiters) * 1_000_000;
-        totalHeatWatts += item.heatOutputWatts;
         tRH = Math.min(99, tRH + 0.1 * (elapsedMinutes / 5));
       }
     });
 
     // 1. Heat addition from grow lights
-    // Sensible heat from LED drivers and diodes heats the tent air
-    const tentVolCuFt = tent.dimensions.length * tent.dimensions.width * tent.dimensions.height;
     const lightHeatDelta = (totalHeatWatts / Math.max(40, tentVolCuFt)) * 0.022 * (elapsedMinutes / 5);
     tTempF += lightHeatDelta;
 
     // 2. Heat conduction through Mylar tent fabric with Host Room air:
-    // Heavy Oxford fabric (1680D/2000D) has R ~ 0.7 (U ~ 1.4 BTU/hr·ft²·°F)
-    const tentSurfaceArea = 2 * (tent.dimensions.length * tent.dimensions.height + tent.dimensions.width * tent.dimensions.height) + (tent.dimensions.length * tent.dimensions.width);
-    const fabricConductionRate = (1.4 * tentSurfaceArea * (roomTempF - tTempF)) / (tentVolCuFt * 1.08); // °F/hr
+    const tentSurfaceArea = 2 * (tent.dimensions.length * tent.dimensions.height + tent.dimensions.width * tent.dimensions.height) + tentAreaSqFt;
+    const fabricConductionRate = (1.4 * tentSurfaceArea * (roomTempF - tTempF)) / (tentVolCuFt * 1.08);
     tTempF += (fabricConductionRate * (elapsedMinutes / 60)) * 0.25;
 
     // 3. Ventilation & Air Exchange with Host Lung Room:
-    // When inline exhaust fan pulls air, replacement air enters from Room
-    let exhaustFanSetting = tent.exhaustFanSpeed || 0;
-    tent.items.forEach(item => {
-      if (item.category === 'equipment' && item.type === 'exhaust_fan' && item.powerOn) {
-        exhaustFanSetting = Math.max(exhaustFanSetting, item.setting);
-      }
-    });
-
-    // Effective air changes per minute:
-    // In a typical 4x4 or 3x3 tent (100-200 cu ft), an inline fan (100-250 CFM) at 50% moves ~75-125 CFM.
-    // That corresponds to ~0.5 to 1.0 air exchanges per minute!
-    const fanFraction = exhaustFanSetting / 100;
+    // Use arbitrated effectiveFanSpeed (respects humidifier lockout & auto triggers!)
+    const fanFraction = effectiveFanSpeed / 100;
     const airExchangeFraction = Math.min(0.95, 1 - Math.exp(-Math.max(0.04, fanFraction * 0.45) * elapsedMinutes));
     tTempF += (roomTempF - tTempF) * airExchangeFraction;
-    tRH += (roomRH - tRH) * airExchangeFraction;
+
+    // Relative Humidity dynamics:
+    if (activeHumidifierTarget !== null && activeHumidifierCapacity > 0) {
+      // Sonic fogger saturation
+      const exhaustDamping = 1 / (1 + fanFraction * 0.12);
+      const steadyStateRH = Math.max(roomRH, activeHumidifierTarget * exhaustDamping);
+
+      if (tRH < steadyStateRH) {
+        const humidifyFraction = 1 - Math.exp(-Math.max(0.4, activeHumidifierCapacity * 0.6) * elapsedMinutes);
+        tRH = tRH + (steadyStateRH - tRH) * humidifyFraction;
+        tTempF -= 0.05 * (elapsedMinutes / 5) * activeHumidifierCapacity;
+      } else if (tRH > activeHumidifierTarget) {
+        tRH += (roomRH - tRH) * airExchangeFraction;
+      }
+    } else if (activeDehumidifierTarget !== null && activeDehumidifierCapacity > 0) {
+      if (tRH > activeDehumidifierTarget) {
+        const dehumFraction = 1 - Math.exp(-Math.max(0.25, activeDehumidifierCapacity * 0.4) * elapsedMinutes);
+        tRH = tRH + (activeDehumidifierTarget - tRH) * dehumFraction;
+        tTempF += 0.06 * (elapsedMinutes / 5) * activeDehumidifierCapacity; // Compressor heat
+      } else {
+        tRH += (roomRH - tRH) * airExchangeFraction;
+      }
+    } else {
+      // Passive ventilation only
+      tRH += (roomRH - tRH) * airExchangeFraction;
+    }
 
     // Heat & humidity return to lung room (discharge into the host room)
     const exhaustHeatToRoom = (tTempF - roomTempF) * airExchangeFraction * (tentVolCuFt / roomVolCuFt);
@@ -487,11 +853,11 @@ export function simulateEnvironmentTick(
         const lightIntensityFactor = Math.min(1.2, tLightPPFD / 750);
         
         let maxDrawdownPpm = 30;
-        if (exhaustFanSetting >= 50) {
+        if (effectiveFanSpeed >= 50) {
           maxDrawdownPpm = 20 + healthyPlantsCount * 2.5; // ~25-35 PPM drawdown (e.g. 385-395 PPM when room is 420)
-        } else if (exhaustFanSetting >= 20) {
+        } else if (effectiveFanSpeed >= 20) {
           maxDrawdownPpm = 35 + healthyPlantsCount * 4.0; // ~45-60 PPM drawdown
-        } else if (exhaustFanSetting > 0) {
+        } else if (effectiveFanSpeed > 0) {
           maxDrawdownPpm = 55 + healthyPlantsCount * 6.0; // ~65-85 PPM drawdown
         } else {
           maxDrawdownPpm = 210; // Sealed tent without ventilation draws down near compensation point
@@ -524,11 +890,50 @@ export function simulateEnvironmentTick(
     tCo2 = tCo2 + (tCo2Target - tCo2) * co2DecayFraction;
     tCo2 = Math.max(200, Math.min(5000, Math.round(tCo2)));
 
-    // Update items inside tent (Plants & Mushrooms)
-    const updatedItems = tent.items.map(item => {
+    // Calculate enclosure photoperiod hours
+    const activeGrowLight = arbitratedItems.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
+    let enclosurePhotoperiodHours = 18;
+    if (activeGrowLight?.schedule?.enabled) {
+      const on = activeGrowLight.schedule.onHour;
+      const off = activeGrowLight.schedule.offHour;
+      enclosurePhotoperiodHours = off > on ? (off - on) : (24 - on + off);
+    } else if (activeGrowLight && !activeGrowLight.powerOn) {
+      enclosurePhotoperiodHours = 0;
+    } else if (activeGrowLight && activeGrowLight.powerOn) {
+      enclosurePhotoperiodHours = 24;
+    }
+
+    // Update items inside tent (Plants & Mushrooms) using arbitrated equipment items
+    const updatedItems = arbitratedItems.map(item => {
       if (item.category === 'plant') {
         const plant = { ...item };
         const isDay = tLightPPFD > 80;
+
+        // Ensure keyDates exists
+        if (!plant.keyDates) {
+          plant.keyDates = {
+            plantedDate: currentSimTime - (plant.ageDays || 1) * 86400000
+          };
+          if (plant.stage !== 'germination' && plant.stage !== 'rooting') {
+            plant.keyDates.sproutedDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
+            plant.keyDates.seedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
+          }
+          if (plant.stage === 'mature_seedling' || plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+            plant.keyDates.matureSeedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 12)) * 86400000;
+          }
+          if (plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+            plant.keyDates.vegetativeDate = currentSimTime - Math.max(1, (plant.ageDays - 20)) * 86400000;
+          }
+          if (plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+            plant.keyDates.floweringDate = currentSimTime - Math.max(1, (plant.ageDays - 35)) * 86400000;
+          }
+          if (plant.stage === 'ripening' || plant.stage === 'ready') {
+            plant.keyDates.ripeningDate = currentSimTime - Math.max(1, (plant.ageDays - 50)) * 86400000;
+          }
+          if (plant.stage === 'ready') {
+            plant.keyDates.readyDate = currentSimTime - 86400000;
+          }
+        }
 
         // A. Root Zone Temperature Simulation
         // Pot soil slowly equilibrates with tent ambient, room floor, and heat mat
@@ -550,11 +955,15 @@ export function simulateEnvironmentTick(
           tRH += 0.15 * (elapsedMinutes / 10);
         }
 
-        // C. Photosynthesis Carbon Utilization:
-        // Canopy CO2 is continuously calculated via ventilation mass balance and Rubisco kinetics.
-
-        // D. Health & Environmental Stress
+        // C. Stage Suitability & Environmental Stress Assessment
         const tentVpd = calculateVPD(tTempF, tRH, tLightPPFD);
+        const stageSuitability = evaluatePlantStageSuitability(
+          plant,
+          { tempF: tTempF, tempC: parseFloat(fahrenheitToCelsius(tTempF).toFixed(1)), rh: tRH, lightPPFD: tLightPPFD, vpdKpa: tentVpd, co2Ppm: tCo2 },
+          plant.rootTempF,
+          enclosurePhotoperiodHours
+        );
+
         let healthDelta = 0;
 
         // Soil moisture stress
@@ -580,10 +989,22 @@ export function simulateEnvironmentTick(
           healthDelta += 0.25 * (elapsedMinutes / 60); // Healthy recovery
         }
 
+        // Factor in stage suitability
+        if (stageSuitability.status === 'optimal') {
+          healthDelta += 0.1 * (elapsedMinutes / 60);
+        } else if (stageSuitability.status === 'critical') {
+          healthDelta -= 0.3 * (elapsedMinutes / 60);
+        }
+
         plant.health = Math.max(0, Math.min(100, parseFloat((plant.health + healthDelta).toFixed(1))));
 
-        // E. Growth Progress & CO2 Boost Multiplier
-        if (plant.health > 40 && !plant.isHarvested) {
+        // Track age & stage days
+        const elapsedDays = elapsedMinutes / (60 * 24);
+        plant.ageDays = parseFloat((plant.ageDays + elapsedDays).toFixed(2));
+        plant.currentStageDays = parseFloat(((plant.currentStageDays || 0) + elapsedDays).toFixed(2));
+
+        // D. Growth Progress & Cultivar Milestone Progression
+        if (plant.health > 25 && !plant.isHarvested) {
           // Elevated CO2 (800-1400 ppm) with high PPFD provides +25% growth acceleration!
           let co2Multiplier = 1.0;
           if (isDay && tLightPPFD > 600) {
@@ -594,24 +1015,95 @@ export function simulateEnvironmentTick(
             }
           }
 
-          const growthRate = (plant.health / 100) * (isDay ? 1.0 : 0.4) * co2Multiplier * (elapsedMinutes / (60 * 24));
-          plant.ageDays = parseFloat((plant.ageDays + elapsedMinutes / (60 * 24)).toFixed(2));
-          plant.stageProgress = Math.min(100, plant.stageProgress + growthRate * 10);
+          // Expected days for current stage
+          let expectedDays = DEFAULT_STAGE_DURATIONS[plant.stage] || 30;
+          if (plant.stage === 'germination' && plant.germinationDaysExpected) expectedDays = plant.germinationDaysExpected;
+          else if (plant.stage === 'rooting' && plant.rootingDaysExpected) expectedDays = plant.rootingDaysExpected;
+          else if (plant.stage === 'seedling' && plant.seedlingDaysExpected) expectedDays = plant.seedlingDaysExpected;
+          else if (plant.stage === 'mature_seedling' && plant.matureSeedlingDaysExpected) expectedDays = plant.matureSeedlingDaysExpected;
+          else if (plant.stage === 'vegetative' && plant.vegetativeDaysExpected) expectedDays = plant.vegetativeDaysExpected;
+          else if (plant.stage === 'flowering' && plant.floweringDaysExpected) expectedDays = plant.floweringDaysExpected;
+          else if (plant.stage === 'ripening' && plant.ripeningDaysExpected) expectedDays = plant.ripeningDaysExpected;
 
-          if (plant.stageProgress >= 100) {
+          const baseDailyPercent = 100 / Math.max(1, expectedDays);
+          const progressDelta = baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * co2Multiplier;
+          plant.stageProgress = Math.min(100, plant.stageProgress + progressDelta);
+
+          // Check for Stage Advancement & Milestone Date Recording!
+          if (plant.stageProgress >= 100 && plant.stage !== 'ready') {
             plant.stageProgress = 0;
-            if (plant.stage === 'seedling') plant.stage = 'vegetative';
-            else if (plant.stage === 'vegetative') plant.stage = 'flowering';
-            else if (plant.stage === 'flowering') plant.stage = 'ripening';
-            else if (plant.stage === 'ripening') plant.stage = 'ready';
+            plant.currentStageDays = 0;
+            const previousStage = plant.stage;
+            const nextStage = getNextPlantStage(plant.stage, plant.propagationType || 'seed');
+            plant.stage = nextStage;
+
+            // Record precise key date timestamps
+            if (previousStage === 'germination') {
+              plant.keyDates.sproutedDate = currentSimTime;
+              plant.keyDates.seedlingDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🌱 Seed Sprouted: ${plant.name}`,
+                message: `${plant.name} has successfully germinated and broken through soil! Entered Seedling stage.`
+              });
+            } else if (previousStage === 'rooting') {
+              plant.keyDates.rootedDate = currentSimTime;
+              plant.keyDates.seedlingDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🌱 Clone Rooted: ${plant.name}`,
+                message: `${plant.name} cutting has successfully struck roots! Entered Seedling stage.`
+              });
+            } else if (previousStage === 'seedling') {
+              plant.keyDates.matureSeedlingDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🌿 Mature Seedling: ${plant.name}`,
+                message: `${plant.name} has established multiple leaf sets. Entered Mature Seedling stage.`
+              });
+            } else if (previousStage === 'mature_seedling') {
+              plant.keyDates.vegetativeDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🌿 Vegetative Growth: ${plant.name}`,
+                message: `${plant.name} is now in rapid vegetative growth under 18h lighting.`
+              });
+            } else if (previousStage === 'vegetative') {
+              plant.keyDates.floweringDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🌸 Flowering Transition: ${plant.name}`,
+                message: `${plant.name} has initiated flowering! Calyx and pistil formation underway.`
+              });
+            } else if (previousStage === 'flowering') {
+              plant.keyDates.ripeningDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `✨ Ripening Stage: ${plant.name}`,
+                message: `${plant.name} entering late ripen phase. Trichome ambering and aroma peaking.`
+              });
+            } else if (previousStage === 'ripening') {
+              plant.keyDates.readyDate = currentSimTime;
+              events.push({
+                type: 'info',
+                title: `🏆 Ready for Harvest: ${plant.name}`,
+                message: `${plant.name} has reached peak maturity and resin density. Ready to harvest!`
+              });
+            }
           }
 
-          // Size & yield potential scaling
-          if (plant.stage === 'vegetative') {
-            plant.heightInches = Math.min(48, plant.heightInches + 0.025 * growthRate * 10);
-            plant.canopyWidthInches = Math.min(36, plant.canopyWidthInches + 0.025 * growthRate * 10);
+          // Size & yield potential scaling based on stage
+          if (plant.stage === 'seedling') {
+            plant.heightInches = Math.min(8, plant.heightInches + 0.005 * progressDelta);
+            plant.canopyWidthInches = Math.min(6, plant.canopyWidthInches + 0.004 * progressDelta);
+          } else if (plant.stage === 'mature_seedling') {
+            plant.heightInches = Math.min(14, plant.heightInches + 0.01 * progressDelta);
+            plant.canopyWidthInches = Math.min(12, plant.canopyWidthInches + 0.01 * progressDelta);
+          } else if (plant.stage === 'vegetative') {
+            plant.heightInches = Math.min(48, plant.heightInches + 0.025 * progressDelta);
+            plant.canopyWidthInches = Math.min(36, plant.canopyWidthInches + 0.025 * progressDelta);
           } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
-            plant.yieldPotentialGrams = Math.min(380, plant.yieldPotentialGrams + 0.18 * growthRate * 10);
+            plant.yieldPotentialGrams = Math.min(380, plant.yieldPotentialGrams + 0.18 * progressDelta);
           }
         }
 
@@ -679,6 +1171,9 @@ export function simulateEnvironmentTick(
 
     return {
       ...tent,
+      effectiveFanSpeed,
+      controllerPriority: tentPriority,
+      activeInterlocks,
       climate: {
         tempF: tTempF,
         tempC: tTempC,

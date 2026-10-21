@@ -42,10 +42,51 @@ export interface OutdoorLocation {
   isLiveWeather: boolean;
   lastFetchedTime?: number;
   statusText?: string;
+  customCo2Ppm?: number;
 }
 
 export type PlantSpecies = 'Cannabis' | 'Tomato' | 'Chili Pepper' | 'Basil';
-export type PlantStage = 'seedling' | 'vegetative' | 'flowering' | 'ripening' | 'ready';
+export type PropagationType = 'seed' | 'cutting';
+export type PlantStage = 
+  | 'germination' 
+  | 'rooting' 
+  | 'seedling' 
+  | 'mature_seedling' 
+  | 'vegetative' 
+  | 'flowering' 
+  | 'ripening' 
+  | 'ready';
+
+export interface PlantKeyDates {
+  plantedDate: number; // Date seed sown or cutting taken (ms timestamp)
+  sproutedDate?: number; // Date sprouted (for seeds)
+  rootedDate?: number; // Date rooted (for cuttings/clones)
+  seedlingDate?: number; // Early seedling phase entered
+  matureSeedlingDate?: number; // Mature seedling phase entered
+  vegetativeDate?: number; // Vegetative phase entered
+  floweringDate?: number; // Flowering triggered / bloom initiated
+  ripeningDate?: number; // Late flower trichome ripening
+  readyDate?: number; // Ready for harvest
+  harvestedDate?: number; // Date harvested
+}
+
+export interface StageConditionRequirements {
+  tempMinF: number;
+  tempMaxF: number;
+  tempOptimalF: number;
+  rhMin: number;
+  rhMax: number;
+  rhOptimal: number;
+  vpdMin: number;
+  vpdMax: number;
+  vpdOptimal: number;
+  ppfdMin: number;
+  ppfdOptimal: number;
+  soilMoistureMin: number;
+  soilMoistureOptimal: number;
+  targetPhotoperiodHours: number;
+  summary: string;
+}
 
 export interface PlantItem {
   id: string;
@@ -53,12 +94,26 @@ export interface PlantItem {
   category: 'plant';
   species: PlantSpecies;
   strainName: string;
+  propagationType: PropagationType; // 'seed' | 'cutting'
   stage: PlantStage;
   stageProgress: number; // 0 - 100%
   ageDays: number;
+  currentStageDays?: number; // Days spent in current active stage
+  keyDates: PlantKeyDates;
+  
+  // Cultivar milestone duration specs (expected days in ideal conditions):
+  germinationDaysExpected?: number; // e.g. 4-6 days (or rootingDaysExpected for cuttings)
+  rootingDaysExpected?: number;    // e.g. 10-14 days for clones
+  seedlingDaysExpected?: number;   // e.g. 8 days
+  matureSeedlingDaysExpected?: number; // e.g. 10 days
+  vegetativeDaysExpected?: number; // e.g. 28 days
+  floweringDaysExpected?: number;  // e.g. 60 days
+  ripeningDaysExpected?: number;   // e.g. 10 days
+  stageRequirements?: Partial<Record<PlantStage, StageConditionRequirements>>;
+
   health: number; // 0 - 100%
   soilMoisture: number; // 0 - 100%
-  rootTempF: number; // Root zone temperature influenced by ambient/floor
+  rootTempF: number; // Root zone temperature influenced by ambient/floor/heat mat
   nutrientLevel: 'low' | 'balanced' | 'high';
   heightInches: number;
   canopyWidthInches: number;
@@ -105,6 +160,23 @@ export type EquipmentType =
   | 'co2_bag'
   | 'heat_mat';
 
+export type EquipmentControlMode = 'auto' | 'manual' | 'schedule' | 'cycle';
+
+export interface EquipmentAutoTriggers {
+  tempTriggerHighF?: number;     // e.g. 78°F or 80°F (ramp fan up to cool)
+  tempTriggerLowF?: number;      // e.g. 68°F (ramp down/off to prevent overcooling)
+  rhTriggerHigh?: number;         // e.g. 65% in flower (exhaust fan evacuates excess humidity)
+  rhTriggerLow?: number;          // e.g. 80% for mushrooms or 50% for veg (protection floor: throttles fan to save humidity)
+  co2TriggerHighPpm?: number;     // e.g. 950 PPM for mushrooms (triggers FAE evacuation fan)
+  co2TriggerLowPpm?: number;      // e.g. 380 PPM (triggers fan to draw fresh lung room air for depleted plants)
+  minSpeedPercent?: number;       // Baseline idle speed (0 - 100%, default 0% or 10%)
+  maxSpeedPercent?: number;       // Ceiling speed (0 - 100%, default 100%)
+  cycleOnMinutes?: number;        // For cycle mode: minutes ON (e.g. 3 mins)
+  cycleOffMinutes?: number;       // For cycle mode: minutes OFF (e.g. 20 mins)
+}
+
+export type ControllerPriority = 'humidity_first' | 'temperature_first' | 'balanced_auto' | 'co2_enrichment';
+
 export interface EquipmentItem {
   id: string;
   name: string;
@@ -113,6 +185,8 @@ export interface EquipmentItem {
   powerOn: boolean;
   powerWatts: number;
   setting: number; // 0 - 100 (%)
+  controlMode?: EquipmentControlMode; // 'auto' | 'manual' | 'schedule' | 'cycle'
+  autoTriggers?: EquipmentAutoTriggers;
   targetRh?: number; // For humidifier/dehumidifier humidistat (e.g. 60%)
   targetTempF?: number; // For heater thermostat
   targetCo2Ppm?: number; // For CO2 injection solenoid (e.g. 1200 PPM)
@@ -122,6 +196,8 @@ export interface EquipmentItem {
     onHour: number; // 0 - 23
     offHour: number; // 0 - 23
   };
+  interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
+  effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
   dimensions: Dimensions;
   notes?: string;
 }
@@ -171,6 +247,9 @@ export interface Tent {
   climate: Climate;
   items: Item[];
   exhaustFanSpeed: number; // 0 - 100%
+  effectiveFanSpeed?: number; // 0 - 100% arbitrated by central controller
+  controllerPriority?: ControllerPriority; // 'humidity_first' | 'temperature_first' | 'balanced_auto' | 'co2_enrichment'
+  activeInterlocks?: string[]; // Live interlock status messages (e.g. "Exhaust suspended: Humidifier misting")
   activePreset?: 'veg' | 'flower' | 'mushroom' | 'custom';
 }
 
@@ -191,14 +270,21 @@ export interface Room {
   hvacCoolingSetpointF?: number; // Default 72°F
   hvacHeatingSetpointF?: number; // Default 68°F
   roomCo2BaselinePpm?: number; // Baseline outdoor fresh air infiltration (420 ppm)
+  controllerPriority?: ControllerPriority;
+  activeInterlocks?: string[];
 }
+
+export type JournalCategory = 'crop' | 'care' | 'automation' | 'alert' | 'note' | 'general';
 
 export interface JournalEntry {
   id: string;
   time: number;
   type: 'info' | 'warning' | 'success' | 'action';
+  category?: JournalCategory;
   title: string;
   message: string;
+  author?: string;
+  tentName?: string;
 }
 
 export interface HarvestRecord {

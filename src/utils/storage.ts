@@ -34,6 +34,7 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 480,
       setting: 80,
+      controlMode: 'schedule',
       schedule: { enabled: true, onHour: 6, offHour: 0 }, // 18/6 light schedule
       dimensions: { length: 3.5, width: 3.5, height: 0.3, unit: 'ft' },
       notes: 'Full spectrum Samsung LM301H diodes + 660nm deep red for canopy penetration.'
@@ -46,8 +47,18 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 65,
       setting: 60,
+      controlMode: 'auto',
+      autoTriggers: {
+        tempTriggerHighF: 78,
+        rhTriggerHigh: 68,
+        rhTriggerLow: 45,
+        co2TriggerHighPpm: 1500,
+        co2TriggerLowPpm: 380,
+        minSpeedPercent: 10,
+        maxSpeedPercent: 70
+      },
       dimensions: { length: 1.2, width: 0.8, height: 0.8, unit: 'ft' },
-      notes: 'Exhausts hot canopy air into room scrubbed through activated carbon.'
+      notes: 'Smart controller adjusts speed based on canopy heat, excess RH, and CO2.'
     },
     {
       id: 'eq-humid-tentA',
@@ -57,6 +68,7 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 45,
       setting: 50,
+      controlMode: 'auto',
       targetRh: 62,
       dimensions: { length: 0.8, width: 0.8, height: 1.2, unit: 'ft' },
       notes: 'Maintains optimal VPD during vegetative growth.'
@@ -69,6 +81,7 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 15,
       setting: 100,
+      controlMode: 'auto',
       targetCo2Ppm: 1200,
       dimensions: { length: 0.8, width: 0.6, height: 1.4, unit: 'ft' },
       notes: 'Connected to 20lb CO2 tank. Enriches canopy to 1200 PPM under 480W LED.'
@@ -82,9 +95,25 @@ export function createDefaultSimulationState(): SimulationState {
       category: 'plant',
       species: 'Cannabis',
       strainName: 'Northern Lights Feminized',
+      propagationType: 'seed',
       stage: 'flowering',
       stageProgress: 42,
       ageDays: 38,
+      currentStageDays: 6,
+      keyDates: {
+        plantedDate: simTime - 38 * 86400000,
+        sproutedDate: simTime - 34 * 86400000,
+        seedlingDate: simTime - 34 * 86400000,
+        matureSeedlingDate: simTime - 26 * 86400000,
+        vegetativeDate: simTime - 18 * 86400000,
+        floweringDate: simTime - 6 * 86400000
+      },
+      germinationDaysExpected: 4,
+      seedlingDaysExpected: 8,
+      matureSeedlingDaysExpected: 8,
+      vegetativeDaysExpected: 28,
+      floweringDaysExpected: 56,
+      ripeningDaysExpected: 10,
       health: 96,
       soilMoisture: 68,
       rootTempF: 68.2,
@@ -103,9 +132,24 @@ export function createDefaultSimulationState(): SimulationState {
       category: 'plant',
       species: 'Cannabis',
       strainName: 'Sunset Sherbet x Thin Mint GSC',
+      propagationType: 'cutting',
       stage: 'vegetative',
       stageProgress: 78,
       ageDays: 24,
+      currentStageDays: 6,
+      keyDates: {
+        plantedDate: simTime - 24 * 86400000,
+        rootedDate: simTime - 14 * 86400000,
+        seedlingDate: simTime - 14 * 86400000,
+        matureSeedlingDate: simTime - 7 * 86400000,
+        vegetativeDate: simTime - 6 * 86400000
+      },
+      rootingDaysExpected: 10,
+      seedlingDaysExpected: 7,
+      matureSeedlingDaysExpected: 8,
+      vegetativeDaysExpected: 28,
+      floweringDaysExpected: 60,
+      ripeningDaysExpected: 10,
       health: 98,
       soilMoisture: 72,
       rootTempF: 67.8,
@@ -124,9 +168,25 @@ export function createDefaultSimulationState(): SimulationState {
       category: 'plant',
       species: 'Tomato',
       strainName: 'Heirloom Super Sweet 100',
+      propagationType: 'seed',
       stage: 'flowering',
       stageProgress: 60,
       ageDays: 32,
+      currentStageDays: 4,
+      keyDates: {
+        plantedDate: simTime - 32 * 86400000,
+        sproutedDate: simTime - 28 * 86400000,
+        seedlingDate: simTime - 28 * 86400000,
+        matureSeedlingDate: simTime - 20 * 86400000,
+        vegetativeDate: simTime - 12 * 86400000,
+        floweringDate: simTime - 4 * 86400000
+      },
+      germinationDaysExpected: 4,
+      seedlingDaysExpected: 8,
+      matureSeedlingDaysExpected: 8,
+      vegetativeDaysExpected: 25,
+      floweringDaysExpected: 45,
+      ripeningDaysExpected: 14,
       health: 94,
       soilMoisture: 64,
       rootTempF: 68.6,
@@ -159,6 +219,7 @@ export function createDefaultSimulationState(): SimulationState {
       co2Ppm: 1180
     },
     exhaustFanSpeed: 60,
+    controllerPriority: 'balanced_auto',
     items: [...tentAEquipment, ...tentAPlants]
   };
 
@@ -172,6 +233,7 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 40,
       setting: 30,
+      controlMode: 'schedule',
       schedule: { enabled: true, onHour: 7, offHour: 19 }, // 12/12 light schedule
       dimensions: { length: 2.0, width: 0.5, height: 0.2, unit: 'ft' },
       notes: 'Provides directional light cues for cap orientation without heat drying.'
@@ -183,7 +245,8 @@ export function createDefaultSimulationState(): SimulationState {
       type: 'humidifier',
       powerOn: true,
       powerWatts: 80,
-      setting: 85,
+      setting: 90,
+      controlMode: 'auto',
       targetRh: 92,
       dimensions: { length: 1.2, width: 1.0, height: 1.5, unit: 'ft' },
       notes: 'Ultrasonic fine cold droplet mist piped into top shelf.'
@@ -196,8 +259,19 @@ export function createDefaultSimulationState(): SimulationState {
       powerOn: true,
       powerWatts: 28,
       setting: 40,
+      controlMode: 'auto',
+      autoTriggers: {
+        tempTriggerHighF: 76,
+        rhTriggerHigh: 98,
+        rhTriggerLow: 82,
+        co2TriggerHighPpm: 920,
+        minSpeedPercent: 0,
+        maxSpeedPercent: 45,
+        cycleOnMinutes: 3,
+        cycleOffMinutes: 15
+      },
       dimensions: { length: 0.8, width: 0.8, height: 0.8, unit: 'ft' },
-      notes: 'Evacuates heavy CO2 to trigger pinhead formation.'
+      notes: 'Intelligent FAE evacuation fan: monitors CO2 build-up and pauses when humidifier is active.'
     }
   ];
 
@@ -262,6 +336,7 @@ export function createDefaultSimulationState(): SimulationState {
       co2Ppm: 820
     },
     exhaustFanSpeed: 40,
+    controllerPriority: 'humidity_first',
     items: [...tentBEquipment, ...tentBMushrooms]
   };
 
@@ -408,30 +483,130 @@ export function loadSimulation(): SimulationState {
       state.room.climate.co2Ppm = 420;
     }
 
-    state.room.tents = state.room.tents.map(t => {
+    const migrateTent = (t: Tent): Tent => {
+      const isShroomTent = t.items.some(i => i.category === 'mushroom');
       let tentCo2 = t.climate.co2Ppm;
       if (!tentCo2 || tentCo2 < 350) {
-        tentCo2 = t.items.some(i => i.category === 'mushroom') 
+        tentCo2 = isShroomTent 
           ? 820 
           : Math.max(380, state.room.climate.co2Ppm - 30);
       }
+
+      let tentRh = t.climate.rh;
+      const hasActiveMushroomFogger = t.items.some(
+        i => i.category === 'equipment' && i.type === 'humidifier' && (i as EquipmentItem).powerOn && ((i as EquipmentItem).targetRh || (i as EquipmentItem).setting || 0) >= 75
+      ) || isShroomTent;
+
+      if (hasActiveMushroomFogger && (!tentRh || tentRh < 75)) {
+        tentRh = 90;
+      }
+
+      const controllerPriority = t.controllerPriority || (isShroomTent ? 'humidity_first' : 'balanced_auto');
+
       return {
         ...t,
+        controllerPriority,
         climate: {
           ...t.climate,
+          rh: tentRh,
+          vpdKpa: calculateVPD(t.climate.tempF, tentRh, t.climate.lightPPFD || 0),
           co2Ppm: tentCo2
         },
         items: t.items.map(i => {
           if (i.category === 'plant') {
-            return {
-              ...i,
-              rootTempF: (i as PlantItem).rootTempF || 68.2
+            const p = i as PlantItem;
+            const age = p.ageDays || 10;
+            const sim = state.simTime || Date.now();
+            const isSeed = (p.propagationType || 'seed') === 'seed';
+            const keyDates = p.keyDates || {
+              plantedDate: sim - age * 86400000,
+              ...(p.stage !== 'germination' && p.stage !== 'rooting' ? {
+                sproutedDate: isSeed ? sim - Math.max(1, age - 4) * 86400000 : undefined,
+                rootedDate: !isSeed ? sim - Math.max(1, age - 10) * 86400000 : undefined,
+                seedlingDate: sim - Math.max(1, age - 4) * 86400000
+              } : {}),
+              ...(['mature_seedling', 'vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                matureSeedlingDate: sim - Math.max(1, age - 12) * 86400000
+              } : {}),
+              ...(['vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                vegetativeDate: sim - Math.max(1, age - 20) * 86400000
+              } : {}),
+              ...(['flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                floweringDate: sim - Math.max(1, age - 35) * 86400000
+              } : {}),
+              ...(['ripening', 'ready'].includes(p.stage) ? {
+                ripeningDate: sim - Math.max(1, age - 48) * 86400000
+              } : {}),
+              ...(p.stage === 'ready' ? {
+                readyDate: sim - 86400000
+              } : {})
             };
+
+            return {
+              ...p,
+              propagationType: p.propagationType || 'seed',
+              keyDates,
+              currentStageDays: p.currentStageDays ?? Math.min(age, 5),
+              germinationDaysExpected: p.germinationDaysExpected || 4,
+              rootingDaysExpected: p.rootingDaysExpected || 10,
+              seedlingDaysExpected: p.seedlingDaysExpected || 8,
+              matureSeedlingDaysExpected: p.matureSeedlingDaysExpected || 8,
+              vegetativeDaysExpected: p.vegetativeDaysExpected || 28,
+              floweringDaysExpected: p.floweringDaysExpected || 56,
+              ripeningDaysExpected: p.ripeningDaysExpected || 10,
+              rootTempF: p.rootTempF || 68.2
+            };
+          }
+          if (i.category === 'equipment') {
+            const eq = i as EquipmentItem;
+            if (eq.type === 'exhaust_fan') {
+              return {
+                ...eq,
+                controlMode: eq.controlMode || 'auto',
+                autoTriggers: eq.autoTriggers || (isShroomTent ? {
+                  tempTriggerHighF: 76,
+                  rhTriggerHigh: 98,
+                  rhTriggerLow: 82,
+                  co2TriggerHighPpm: 920,
+                  minSpeedPercent: 0,
+                  maxSpeedPercent: 50,
+                  cycleOnMinutes: 3,
+                  cycleOffMinutes: 15
+                } : {
+                  tempTriggerHighF: 78,
+                  rhTriggerHigh: 68,
+                  rhTriggerLow: 45,
+                  co2TriggerHighPpm: 1500,
+                  co2TriggerLowPpm: 380,
+                  minSpeedPercent: 10,
+                  maxSpeedPercent: 70
+                })
+              };
+            }
+            if (eq.type === 'grow_light') {
+              return {
+                ...eq,
+                controlMode: eq.controlMode || 'schedule',
+                schedule: eq.schedule || { enabled: true, onHour: 6, offHour: 0 }
+              };
+            }
+            if (eq.type === 'humidifier' || eq.type === 'dehumidifier' || eq.type === 'co2_regulator') {
+              return {
+                ...eq,
+                controlMode: eq.controlMode || 'auto'
+              };
+            }
           }
           return i;
         })
       };
-    });
+    };
+
+    state.rooms = state.rooms.map(rm => ({
+      ...rm,
+      tents: rm.tents.map(migrateTent)
+    }));
+    state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     return state;
   } catch (err) {

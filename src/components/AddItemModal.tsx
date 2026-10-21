@@ -18,7 +18,9 @@ import {
   Dog,
   Cat,
   Activity,
-  Heart
+  Heart,
+  Clock,
+  SlidersHorizontal
 } from 'lucide-react';
 import { 
   Room, 
@@ -39,11 +41,14 @@ import {
 } from '../types/sim';
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
+import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
+import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime } from '../utils/plantLifecycle';
 
 interface AddItemModalProps {
   room: Room;
   targetTentId?: string | null;
   isOpen: boolean;
+  simTime?: number;
   onClose: () => void;
   onAddTent: (tent: Tent) => void;
   onAddItem: (item: Item, tentId?: string | null) => void;
@@ -53,6 +58,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   room,
   targetTentId,
   isOpen,
+  simTime,
   onClose,
   onAddTent,
   onAddItem,
@@ -74,7 +80,16 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [plantSpecies, setPlantSpecies] = useState<PlantSpecies>('Cannabis');
   const [plantName, setPlantName] = useState('Gorilla Glue #4');
   const [plantStrain, setPlantStrain] = useState('Sour Dubb x Chem Sister');
-  const [plantStage, setPlantStage] = useState<'seedling' | 'vegetative' | 'flowering'>('vegetative');
+  const [propagationType, setPropagationType] = useState<PropagationType>('seed');
+  const [plantStage, setPlantStage] = useState<PlantStage>('germination');
+  const [germinationDays, setGerminationDays] = useState(4);
+  const [rootingDays, setRootingDays] = useState(10);
+  const [seedlingDays, setSeedlingDays] = useState(8);
+  const [matureSeedlingDays, setMatureSeedlingDays] = useState(10);
+  const [vegDays, setVegDays] = useState(28);
+  const [flowerDays, setFlowerDays] = useState(60);
+  const [ripenDays, setRipenDays] = useState(10);
+  const [showAdvancedDurations, setShowAdvancedDurations] = useState(false);
 
   // Mushroom Form State
   const [mushroomSpecies, setMushroomSpecies] = useState<MushroomSpecies>('Lion\'s Mane');
@@ -135,24 +150,128 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   };
 
   const handleCreatePlant = () => {
+    const now = simTime || Date.now();
+    const keyDates: PlantKeyDates = {
+      plantedDate: now
+    };
+
+    let calculatedAgeDays = 0;
+    let initialHeight = 2;
+    let initialCanopy = 2;
+
+    if (propagationType === 'seed') {
+      if (plantStage === 'germination') {
+        calculatedAgeDays = 0;
+        initialHeight = 1;
+        initialCanopy = 1;
+      } else if (plantStage === 'seedling') {
+        calculatedAgeDays = germinationDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now;
+        keyDates.seedlingDate = now;
+        initialHeight = 4;
+        initialCanopy = 3;
+      } else if (plantStage === 'mature_seedling') {
+        calculatedAgeDays = germinationDays + seedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - seedlingDays * 86400000;
+        keyDates.seedlingDate = now - seedlingDays * 86400000;
+        keyDates.matureSeedlingDate = now;
+        initialHeight = 10;
+        initialCanopy = 8;
+      } else if (plantStage === 'vegetative') {
+        calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
+        keyDates.vegetativeDate = now;
+        initialHeight = 22;
+        initialCanopy = 18;
+      } else if (plantStage === 'flowering') {
+        calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays + vegDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
+        keyDates.vegetativeDate = now - vegDays * 86400000;
+        keyDates.floweringDate = now;
+        initialHeight = 34;
+        initialCanopy = 26;
+      }
+    } else {
+      // Cutting / Clone
+      if (plantStage === 'rooting') {
+        calculatedAgeDays = 0;
+        initialHeight = 4;
+        initialCanopy = 3;
+      } else if (plantStage === 'seedling') {
+        calculatedAgeDays = rootingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now;
+        keyDates.seedlingDate = now;
+        initialHeight = 6;
+        initialCanopy = 4;
+      } else if (plantStage === 'mature_seedling') {
+        calculatedAgeDays = rootingDays + seedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - seedlingDays * 86400000;
+        keyDates.seedlingDate = now - seedlingDays * 86400000;
+        keyDates.matureSeedlingDate = now;
+        initialHeight = 12;
+        initialCanopy = 9;
+      } else if (plantStage === 'vegetative') {
+        calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
+        keyDates.vegetativeDate = now;
+        initialHeight = 24;
+        initialCanopy = 20;
+      } else if (plantStage === 'flowering') {
+        calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays + vegDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
+        keyDates.vegetativeDate = now - vegDays * 86400000;
+        keyDates.floweringDate = now;
+        initialHeight = 36;
+        initialCanopy = 28;
+      }
+    }
+
     const newPlant: PlantItem = {
       id: `plant-${Date.now()}`,
       name: plantName || `${plantSpecies} Pot`,
       category: 'plant',
       species: plantSpecies,
       strainName: plantStrain || plantSpecies,
+      propagationType,
       stage: plantStage,
-      stageProgress: 10,
-      ageDays: plantStage === 'seedling' ? 5 : plantStage === 'vegetative' ? 20 : 45,
+      stageProgress: plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15,
+      ageDays: calculatedAgeDays,
+      currentStageDays: 0,
+      keyDates,
+      germinationDaysExpected: germinationDays,
+      rootingDaysExpected: rootingDays,
+      seedlingDaysExpected: seedlingDays,
+      matureSeedlingDaysExpected: matureSeedlingDays,
+      vegetativeDaysExpected: vegDays,
+      floweringDaysExpected: flowerDays,
+      ripeningDaysExpected: ripenDays,
+      stageRequirements: DEFAULT_STAGE_REQUIREMENTS,
       health: 98,
-      soilMoisture: 75,
-      rootTempF: 68.0,
+      soilMoisture: plantStage === 'germination' || plantStage === 'rooting' ? 82 : 72,
+      rootTempF: plantStage === 'germination' || plantStage === 'rooting' ? 74.0 : 68.0,
       nutrientLevel: 'balanced',
-      heightInches: plantStage === 'seedling' ? 6 : plantStage === 'vegetative' ? 22 : 36,
-      canopyWidthInches: plantStage === 'seedling' ? 5 : plantStage === 'vegetative' ? 18 : 26,
-      yieldPotentialGrams: plantSpecies === 'Cannabis' ? 120 : plantSpecies === 'Tomato' ? 200 : 80,
+      heightInches: initialHeight,
+      canopyWidthInches: initialCanopy,
+      yieldPotentialGrams: plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
       isHarvested: false,
-      dimensions: { length: 1.5, width: 1.5, height: 2.5, unit: 'ft' }
+      dimensions: { length: 1.5, width: 1.5, height: 2.5, unit: 'ft' },
+      notes: `${propagationType === 'seed' ? 'Planted from seed for germination' : 'Started from fresh vegetative cutting/clone'}.`
     };
     onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -594,24 +713,218 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               </div>
             </div>
 
+            {/* Propagation Method Selection */}
             <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1">Starting Growth Stage</label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['seedling', 'vegetative', 'flowering'] as const).map(st => (
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Propagation Origin</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPropagationType('seed');
+                    if (plantStage === 'rooting') setPlantStage('germination');
+                  }}
+                  className={`p-2.5 rounded-xl text-xs font-medium border text-left transition-all ${
+                    propagationType === 'seed'
+                      ? 'bg-emerald-950 border-emerald-500 text-emerald-200 ring-1 ring-emerald-500/50'
+                      : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                    <span>🌱 From Seed</span>
+                    {propagationType === 'seed' && <Check className="w-3.5 h-3.5 text-emerald-400 ml-auto" />}
+                  </div>
+                  <span className="text-[10px] text-zinc-400 block">Sown for germination; tracks sprouted milestone date.</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPropagationType('cutting');
+                    if (plantStage === 'germination') setPlantStage('rooting');
+                  }}
+                  className={`p-2.5 rounded-xl text-xs font-medium border text-left transition-all ${
+                    propagationType === 'cutting'
+                      ? 'bg-teal-950 border-teal-500 text-teal-200 ring-1 ring-teal-500/50'
+                      : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                    <span>✂️ From Cutting / Clone</span>
+                    {propagationType === 'cutting' && <Check className="w-3.5 h-3.5 text-teal-400 ml-auto" />}
+                  </div>
+                  <span className="text-[10px] text-zinc-400 block">Taken from mother plant; tracks rooted milestone date.</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Starting Lifecycle Stage */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-zinc-300">Starting Lifecycle Stage</label>
+                <span className="text-[10px] font-mono text-emerald-400">
+                  {plantStage.replace('_', ' ').toUpperCase()}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                {(propagationType === 'seed' 
+                  ? [
+                      { id: 'germination', label: 'Germination', desc: 'Day 0 Seed' },
+                      { id: 'seedling', label: 'Seedling', desc: 'Early Sprout' },
+                      { id: 'mature_seedling', label: 'Mature Seedling', desc: 'True Leaves' },
+                      { id: 'vegetative', label: 'Vegetative', desc: 'Foliage Veg' },
+                      { id: 'flowering', label: 'Flowering', desc: 'Bloom Cycle' }
+                    ]
+                  : [
+                      { id: 'rooting', label: 'Rooting', desc: 'Fresh Clone' },
+                      { id: 'seedling', label: 'Rooted Clone', desc: 'Roots Struck' },
+                      { id: 'mature_seedling', label: 'Mature Clone', desc: 'Established' },
+                      { id: 'vegetative', label: 'Vegetative', desc: 'Active Veg' },
+                      { id: 'flowering', label: 'Flowering', desc: 'Bloom Cycle' }
+                    ]
+                ).map(st => (
                   <button
-                    key={st}
+                    key={st.id}
                     type="button"
-                    onClick={() => setPlantStage(st)}
-                    className={`py-1.5 rounded-lg text-xs font-medium capitalize border ${
-                      plantStage === st
-                        ? 'bg-emerald-950 border-emerald-500 text-emerald-300'
-                        : 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                    onClick={() => setPlantStage(st.id as PlantStage)}
+                    className={`py-2 px-1.5 rounded-lg text-xs font-medium border text-center transition-all ${
+                      plantStage === st.id
+                        ? 'bg-emerald-950 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
                     }`}
                   >
-                    {st}
+                    <span className="font-semibold block truncate text-[11px]">{st.label}</span>
+                    <span className="text-[9px] text-zinc-500 block truncate">{st.desc}</span>
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Key Date Log Preview Banner */}
+            <div className="p-3 bg-zinc-950/70 border border-zinc-800 rounded-xl space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-zinc-400 flex items-center gap-1.5 font-medium">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  Initial Milestone Date:
+                </span>
+                <span className="font-mono text-zinc-200 font-bold">
+                  {formatSimDateTime(simTime || Date.now())}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                {propagationType === 'seed' 
+                  ? `Sowing date logged as ${formatSimDateTime(simTime || Date.now())}. The simulation will automatically calculate when the seed sprouts, enters early seedling, mature seedling, and vegetative phase based on your tent's root warmth, moisture, and VPD.`
+                  : `Cutting date logged as ${formatSimDateTime(simTime || Date.now())}. The simulation tracks rooting success based on humidity dome moisture, gentle lighting, and root substrate warmth.`}
+              </p>
+            </div>
+
+            {/* Cultivar Stage Durations (Expandable) */}
+            <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedDurations(!showAdvancedDurations)}
+                className="w-full px-3 py-2 flex items-center justify-between text-xs text-zinc-300 hover:bg-zinc-900/50 transition-colors"
+              >
+                <span className="font-semibold flex items-center gap-1.5">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" />
+                  Cultivar Stage Durations &amp; Phenotype Timings
+                </span>
+                <span className="text-[11px] text-emerald-400 font-mono">
+                  {showAdvancedDurations ? '▲ Hide' : '▼ Customize Days'}
+                </span>
+              </button>
+
+              {showAdvancedDurations && (
+                <div className="p-3 pt-1 border-t border-zinc-850 space-y-2.5 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {propagationType === 'seed' ? (
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">Germination (Days)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          value={germinationDays}
+                          onChange={e => setGerminationDays(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">Rooting (Days)</label>
+                        <input
+                          type="number"
+                          min="3"
+                          max="30"
+                          value={rootingDays}
+                          onChange={e => setRootingDays(Math.max(3, parseInt(e.target.value) || 3))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Seedling Phase (Days)</label>
+                      <input
+                        type="number"
+                        min="3"
+                        max="25"
+                        value={seedlingDays}
+                        onChange={e => setSeedlingDays(Math.max(3, parseInt(e.target.value) || 3))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Mature Seedling (Days)</label>
+                      <input
+                        type="number"
+                        min="4"
+                        max="30"
+                        value={matureSeedlingDays}
+                        onChange={e => setMatureSeedlingDays(Math.max(4, parseInt(e.target.value) || 4))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Vegetative (Days)</label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="90"
+                        value={vegDays}
+                        onChange={e => setVegDays(Math.max(10, parseInt(e.target.value) || 10))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Flowering Bloom (Days)</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="120"
+                        value={flowerDays}
+                        onChange={e => setFlowerDays(Math.max(30, parseInt(e.target.value) || 30))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Ripening Window (Days)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="30"
+                        value={ripenDays}
+                        onChange={e => setRipenDays(Math.max(5, parseInt(e.target.value) || 5))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    * Ideal duration under standard conditions. Suboptimal VPD, cold roots, or low PPFD will proportionally slow down progress in the physics loop.
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="pt-3 flex justify-end gap-2">
@@ -625,7 +938,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 onClick={handleCreatePlant}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white shadow-md shadow-emerald-950/40"
               >
-                Plant Crop
+                Add {propagationType === 'seed' ? 'Seed' : 'Cutting'} to {selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}
               </button>
             </div>
           </div>
