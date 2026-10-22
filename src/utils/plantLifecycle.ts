@@ -284,6 +284,71 @@ export function evaluatePlantStageSuitability(
     details.push(`Medium oversaturated (${plant.soilMoisture.toFixed(0)}%). Root suffocation.`);
   }
 
+  // Soil & Hydroponic Dynamics Assessment:
+  const isHydro = plant.systemType === 'dwc' || plant.systemType === 'ebb_and_flow' || plant.systemType === 'drip_hydro' || plant.systemType === 'aeroponics';
+  const currentPh = plant.soilPh ?? (isHydro ? 5.8 : 6.4);
+  const currentEc = plant.ecTdsPpm ?? 950;
+
+  // pH Lockout Check
+  if (isHydro) {
+    if (currentPh < 5.3) {
+      scoreMultiplier *= 0.7;
+      details.push(`Hydro solution acidic (pH ${currentPh.toFixed(1)} < 5.5). Calcium & magnesium locked out.`);
+    } else if (currentPh > 6.4) {
+      scoreMultiplier *= 0.7;
+      details.push(`Hydro solution alkaline (pH ${currentPh.toFixed(1)} > 6.2). Iron & micronutrients precipitating.`);
+    } else {
+      details.push(`Hydro reservoir pH optimal (${currentPh.toFixed(1)}).`);
+    }
+  } else {
+    // Soil / Raised Bed / In-ground
+    if (currentPh < 5.8) {
+      scoreMultiplier *= 0.75;
+      details.push(`Soil medium acidic (pH ${currentPh.toFixed(1)} < 6.0). Micronutrient toxicity & phosphorus lockout.`);
+    } else if (currentPh > 7.1) {
+      scoreMultiplier *= 0.75;
+      details.push(`Soil medium alkaline (pH ${currentPh.toFixed(1)} > 6.8). Iron & zinc locked out.`);
+    } else {
+      details.push(`Soil pH in optimal absorption zone (${currentPh.toFixed(1)}).`);
+    }
+  }
+
+  // EC / Nutrient Strength Check
+  if (plant.stage === 'germination' || plant.stage === 'seedling' || plant.stage === 'rooting') {
+    if (currentEc > 800) {
+      scoreMultiplier *= 0.7;
+      details.push(`Nutrient strength too hot for delicate roots (${currentEc} PPM > 800 PPM).`);
+    }
+  } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+    if (currentEc > 1850) {
+      scoreMultiplier *= 0.8;
+      details.push(`High EC (${currentEc} PPM). Leaf tip burn and salt accumulation.`);
+    } else if (currentEc < 550) {
+      scoreMultiplier *= 0.85;
+      details.push(`Low EC (${currentEc} PPM). Bloom underfed; cone/fruit swelling limited.`);
+    }
+  }
+
+  // Microbial Activity Bonus
+  if (plant.microbialHealth && plant.microbialHealth > 70) {
+    scoreMultiplier *= 1.1; // Living soil beneficial microbes accelerate nutrient assimilation!
+    details.push(`Active living soil biology (${plant.microbialHealth}% microbial health) boosting root assimilation!`);
+  }
+
+  // DWC Rapid Veg Bonus
+  if (plant.systemType === 'dwc' && plant.stage === 'vegetative') {
+    scoreMultiplier *= 1.18; // Explosive deep water culture growth
+    details.push(`DWC high dissolved oxygen aeration delivering explosive vegetative foliage growth!`);
+  }
+
+  // Hops High-Sunlight & Trellis Bonus
+  if (plant.species === 'Hops') {
+    if (climate.lightPPFD > 750) {
+      scoreMultiplier *= 1.15;
+      details.push(`High solar PPFD (${climate.lightPPFD} μmol) fueling rapid vertical hop bine climbing!`);
+    }
+  }
+
   // Photoperiod Alignment
   let photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger' = 'aligned';
   if (plant.stage === 'flowering' || plant.stage === 'ripening') {
@@ -306,7 +371,7 @@ export function evaluatePlantStageSuitability(
   return {
     overallScore: clampedScore,
     status,
-    limitingFactor: details.find(d => !d.includes('optimal') && !d.includes('aligned') && !d.includes('sweet spot')),
+    limitingFactor: details.find(d => !d.includes('optimal') && !d.includes('aligned') && !d.includes('boosting') && !d.includes('delivering') && !d.includes('fueling')),
     tempStatus,
     rhStatus,
     vpdStatus,
@@ -317,6 +382,87 @@ export function evaluatePlantStageSuitability(
     details
   };
 }
+
+export interface HopCultivarProfile {
+  name: string;
+  variety: string;
+  alphaAcids: string;
+  aromaProfile: string;
+  origin: string;
+  growthVigor: 'moderate' | 'vigorous' | 'extreme';
+  expectedYieldGrams: number;
+  floweringDays: number;
+  description: string;
+}
+
+export const HOP_CULTIVARS: HopCultivarProfile[] = [
+  {
+    name: 'Cascade Hops',
+    variety: 'Cascade (USDA 56013)',
+    alphaAcids: '5.5 - 7.5%',
+    aromaProfile: 'Iconic American Pale Ale: Bright ruby grapefruit, floral citrus blossom, and fresh evergreen pine.',
+    origin: 'Oregon / USDA Breeding Program',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 360,
+    floweringDays: 45,
+    description: 'The legendary hop that birthed the modern craft beer revolution. Vigorous climbing bines covered in tight pale-green strobiles with aromatic lupulin.'
+  },
+  {
+    name: 'Centennial Hops',
+    variety: 'Centennial ("Super Cascade")',
+    alphaAcids: '9.5 - 11.5%',
+    aromaProfile: 'Pungent lemon oil, clean floral notes, and resinous forest pine.',
+    origin: 'Washington State',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 400,
+    floweringDays: 48,
+    description: 'Revered as "Super Cascade" for its higher alpha acid bittering punch and lush lemon-citrus aromatics. Prolific grower on 16-foot trellises.'
+  },
+  {
+    name: 'Citra Hops',
+    variety: 'Citra (HBC 394)',
+    alphaAcids: '11.0 - 13.5%',
+    aromaProfile: 'Tropical juice explosion: Sweet ripe mango, passionfruit, pink guava, lychee, and fresh lime zest.',
+    origin: 'Yakima Valley, WA',
+    growthVigor: 'extreme',
+    expectedYieldGrams: 440,
+    floweringDays: 52,
+    description: 'The undisputed king of hazy New England IPAs. Loaded with massive golden lupulin glands and tropical essential oils.'
+  },
+  {
+    name: 'Chinook Hops',
+    variety: 'Chinook (USDA 21227)',
+    alphaAcids: '12.0 - 14.0%',
+    aromaProfile: 'Bold pine forest, resinous woodspice, earthy herbal character, and bitter red grapefruit.',
+    origin: 'Yakima Valley, WA',
+    growthVigor: 'extreme',
+    expectedYieldGrams: 460,
+    floweringDays: 50,
+    description: 'An aggressive, hardy bine capable of growing up to a foot a day in peak summer. Heavy cone yields packed with resinous bittering oils.'
+  },
+  {
+    name: 'Saaz Hops',
+    variety: 'Czech Saaz (Žatec Noble)',
+    alphaAcids: '3.0 - 4.5%',
+    aromaProfile: 'Delicate noble bouquet: Warm pleasant spice, herbal meadow wildflowers, and soft earthy undertones.',
+    origin: 'Bohemia, Czech Republic',
+    growthVigor: 'moderate',
+    expectedYieldGrams: 280,
+    floweringDays: 42,
+    description: 'The definitive noble hop behind authentic Bohemian Pilsners. Subtle, delicate papery cones with low bittering and world-class aroma.'
+  },
+  {
+    name: 'Amarillo Hops',
+    variety: 'Amarillo (VGXP01)',
+    alphaAcids: '8.0 - 11.0%',
+    aromaProfile: 'Valencia orange zest, sweet apricot marmalade, floral blossoms, and ripe summer peach.',
+    origin: 'Virgil Gamache Farms, WA',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 370,
+    floweringDays: 46,
+    description: 'Prized for its distinct high-myrcene sweet orange oil signature that gives craft ales a sunny, citrusy character.'
+  }
+];
 
 /**
  * Returns the next lifecycle stage when transitioning

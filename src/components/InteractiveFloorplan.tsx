@@ -62,6 +62,8 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
   const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string; kind: 'tent' | 'item'; parentTentId?: string | null } | null>(null);
 
   const isRoomSelected = selectedType === 'room' && selectedId === room.id;
+  const isOutdoor = room.environmentType === 'outdoor_garden';
+  const isGreenhouse = room.environmentType === 'greenhouse';
 
   const renderPlantGraphic = (plant: PlantItem) => {
     const isReady = plant.stage === 'ready';
@@ -71,7 +73,17 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
       <div className="relative flex flex-col items-center group/plant">
         {/* Pot */}
         <div className="relative">
-          {plant.species === 'Cannabis' ? (
+          {plant.species === 'Hops' ? (
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-transform group-hover/plant:scale-110 ${
+              isReady 
+                ? 'bg-amber-500/40 border-2 border-amber-400 text-amber-200 shadow-md shadow-amber-500/30' 
+                : isFlowering
+                  ? 'bg-emerald-800/60 border border-amber-400/80 text-amber-300'
+                  : 'bg-emerald-950/70 border border-emerald-600/70 text-emerald-300'
+            }`}>
+              <span className="text-xs">🍺</span>
+            </div>
+          ) : plant.species === 'Cannabis' ? (
             <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-transform group-hover/plant:scale-110 ${
               isReady 
                 ? 'bg-amber-500/30 border-2 border-amber-400 text-amber-300 shadow-md shadow-amber-500/20' 
@@ -220,32 +232,44 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
             onSelectRoom();
           }
         }}
-        className={`w-full min-h-[380px] rounded-2xl p-5 border-2 transition-all relative overflow-hidden bg-zinc-950/90 flex flex-col justify-between ${
+        className={`w-full min-h-[380px] rounded-2xl p-5 border-2 transition-all relative overflow-hidden flex flex-col justify-between ${
+          isOutdoor
+            ? 'bg-gradient-to-b from-emerald-950/40 via-zinc-950/90 to-amber-950/30'
+            : isGreenhouse
+              ? 'bg-gradient-to-b from-teal-950/30 via-zinc-950/90 to-emerald-950/20'
+              : 'bg-zinc-950/90'
+        } ${
           isRoomSelected 
             ? 'border-emerald-500 ring-2 ring-emerald-500/20' 
-            : 'border-zinc-800 hover:border-zinc-750'
+            : isOutdoor
+              ? 'border-emerald-800/60 hover:border-emerald-700'
+              : 'border-zinc-800 hover:border-zinc-750'
         }`}
         style={{
-          backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0)',
+          backgroundImage: isOutdoor
+            ? 'radial-gradient(circle at 1px 1px, rgba(52, 211, 153, 0.08) 1px, transparent 0)'
+            : 'radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0)',
           backgroundSize: '24px 24px'
         }}
       >
         {/* Room Header Label inside canvas */}
         <div className="flex items-center justify-between pointer-events-none mb-3">
           <div className="flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 rounded-lg px-2.5 py-1 pointer-events-auto">
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span className="text-xs font-semibold text-zinc-200">{room.name}</span>
+            <span className={`w-2 h-2 rounded-full ${isOutdoor ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+            <span className="text-xs font-semibold text-zinc-200">
+              {room.name} {isOutdoor ? '(☀️ Outdoor Garden)' : isGreenhouse ? '(🌿 Greenhouse Polytunnel)' : ''}
+            </span>
             <span className="text-[11px] font-mono text-zinc-400">
               {room.dimensions.length}′ × {room.dimensions.width}′ ({Math.round(room.dimensions.length * room.dimensions.width * room.dimensions.height)} cu ft)
             </span>
           </div>
 
           <div className="flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 rounded-lg px-2.5 py-1 text-[11px] text-zinc-400 pointer-events-auto">
-            <span>Room Temp: <strong className="text-zinc-200">{room.climate.tempF.toFixed(1)}°F</strong></span>
+            <span>{isOutdoor ? 'Ambient: ' : 'Temp: '}<strong className="text-zinc-200">{room.climate.tempF.toFixed(1)}°F</strong></span>
             <span className="text-zinc-600">·</span>
             <span>RH: <strong className="text-zinc-200">{room.climate.rh}%</strong></span>
             <span className="text-zinc-600">·</span>
-            <span>CO₂: <strong className="text-emerald-400 font-mono">{room.climate.co2Ppm || 420} PPM</strong></span>
+            <span>{isOutdoor ? 'Sunlight: ' : 'Light: '}<strong className="text-amber-400 font-mono">{room.climate.lightPPFD || 0} μmol</strong></span>
           </div>
         </div>
 

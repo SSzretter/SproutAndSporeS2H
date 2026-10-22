@@ -15,7 +15,9 @@ import {
   Save,
   CheckCircle2,
   SlidersHorizontal,
-  ChevronRight
+  ChevronRight,
+  Gamepad2,
+  ExternalLink
 } from 'lucide-react';
 import { SimulationState } from '../types/sim';
 
@@ -29,6 +31,8 @@ interface HeaderClockProps {
   onExportJson: () => void;
   onImportJson: (jsonStr: string) => void;
   lastSavedAt: number;
+  onSwitchToGame?: () => void;
+  onPopOutGame?: () => void;
 }
 
 export const HeaderClock: React.FC<HeaderClockProps> = ({
@@ -40,7 +44,9 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
   onOpenHarvests,
   onExportJson,
   onImportJson,
-  lastSavedAt
+  lastSavedAt,
+  onSwitchToGame,
+  onPopOutGame
 }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -203,6 +209,30 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
               {state.harvests.length}
             </span>
           </button>
+
+          {/* 2D Video Game Mode Button */}
+          {onSwitchToGame && (
+            <button
+              onClick={onSwitchToGame}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-zinc-950 text-xs font-bold transition-all shadow-sm"
+              title="Switch to 2D Video Game Mode (Walk rooms, place tents, inspect & harvest)"
+            >
+              <Gamepad2 className="w-3.5 h-3.5" />
+              <span>2D Game Mode</span>
+            </button>
+          )}
+
+          {/* Screen 2 Pop Out */}
+          {onPopOutGame && (
+            <button
+              onClick={onPopOutGame}
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-750 border border-zinc-700/80 text-zinc-200 text-xs font-semibold transition-colors"
+              title="Pop out 2D Game to Screen 2 in separate window (100% live synced)"
+            >
+              <ExternalLink className="w-3 h-3 text-emerald-400" />
+              <span>Screen 2 ↗</span>
+            </button>
+          )}
 
           {/* Save Status */}
           <div 

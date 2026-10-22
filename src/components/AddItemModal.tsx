@@ -37,12 +37,16 @@ import {
   MushroomSpecies, 
   EquipmentType,
   TentBrand,
-  Dimensions
+  Dimensions,
+  CultivationSystemType,
+  ContainerType,
+  GrowingMedium,
+  NutrientProgram
 } from '../types/sim';
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
-import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime } from '../utils/plantLifecycle';
+import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS } from '../utils/plantLifecycle';
 
 interface AddItemModalProps {
   room: Room;
@@ -80,6 +84,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [plantSpecies, setPlantSpecies] = useState<PlantSpecies>('Cannabis');
   const [plantName, setPlantName] = useState('Gorilla Glue #4');
   const [plantStrain, setPlantStrain] = useState('Sour Dubb x Chem Sister');
+  const [selectedHopIdx, setSelectedHopIdx] = useState(0);
   const [propagationType, setPropagationType] = useState<PropagationType>('seed');
   const [plantStage, setPlantStage] = useState<PlantStage>('germination');
   const [germinationDays, setGerminationDays] = useState(4);
@@ -90,6 +95,14 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [flowerDays, setFlowerDays] = useState(60);
   const [ripenDays, setRipenDays] = useState(10);
   const [showAdvancedDurations, setShowAdvancedDurations] = useState(false);
+
+  // Soil & Hydroponic Customization State
+  const [systemType, setSystemType] = useState<CultivationSystemType>('soil_container');
+  const [containerType, setContainerType] = useState<ContainerType>('fabric_pot');
+  const [containerVolume, setContainerVolume] = useState<number>(5);
+  const [growingMedium, setGrowingMedium] = useState<GrowingMedium>('living_organic_soil');
+  const [nutrientProgram, setNutrientProgram] = useState<NutrientProgram>('organic_living_soil');
+  const [showSoilCustomizer, setShowSoilCustomizer] = useState(true);
 
   // Mushroom Form State
   const [mushroomSpecies, setMushroomSpecies] = useState<MushroomSpecies>('Lion\'s Mane');
@@ -242,12 +255,18 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       }
     }
 
+    const isHop = plantSpecies === 'Hops';
+    const hopData = isHop ? HOP_CULTIVARS[selectedHopIdx] : null;
+
+    const initialPh = (growingMedium === 'hydroton_clay_pebbles' || growingMedium === 'rockwool_cubes' || growingMedium === 'aeroponic_mist' || systemType === 'dwc' || systemType === 'ebb_and_flow' || systemType === 'aeroponics') ? 5.8 : 6.4;
+    const initialEc = nutrientProgram === 'water_only_flush' ? 300 : nutrientProgram === 'salt_mineral_ab' ? 1100 : 850;
+
     const newPlant: PlantItem = {
       id: `plant-${Date.now()}`,
-      name: plantName || `${plantSpecies} Pot`,
+      name: plantName || (isHop && hopData ? `${hopData.name} Bine` : `${plantSpecies} Pot`),
       category: 'plant',
       species: plantSpecies,
-      strainName: plantStrain || plantSpecies,
+      strainName: isHop && hopData ? `${hopData.variety} (${hopData.aromaProfile})` : (plantStrain || plantSpecies),
       propagationType,
       stage: plantStage,
       stageProgress: plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15,
@@ -268,10 +287,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       nutrientLevel: 'balanced',
       heightInches: initialHeight,
       canopyWidthInches: initialCanopy,
-      yieldPotentialGrams: plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
+      yieldPotentialGrams: isHop ? (hopData?.expectedYieldGrams || 400) : plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
       isHarvested: false,
-      dimensions: { length: 1.5, width: 1.5, height: 2.5, unit: 'ft' },
-      notes: `${propagationType === 'seed' ? 'Planted from seed for germination' : 'Started from fresh vegetative cutting/clone'}.`
+      dimensions: { length: 1.5, width: 1.5, height: isHop ? 6.0 : 2.5, unit: 'ft' },
+      notes: `${propagationType === 'seed' ? 'Planted from seed for germination' : isHop ? 'Planted from dormant rhizome cutting' : 'Started from fresh vegetative cutting/clone'}.`,
+      systemType,
+      containerType,
+      containerVolumeGallons: containerVolume,
+      growingMedium,
+      nutrientProgram,
+      soilPh: initialPh,
+      ecTdsPpm: initialEc,
+      microbialHealth: (growingMedium === 'living_organic_soil' || growingMedium === 'native_garden_loam') ? 95 : 40,
+      aerationOxygenPct: (systemType === 'dwc' || systemType === 'aeroponics' || containerType === 'fabric_pot') ? 92 : 76,
+      reservoirTempF: (systemType === 'dwc' || systemType === 'ebb_and_flow') ? 68.0 : undefined,
+      alphaAcidsPct: isHop && hopData ? parseFloat(hopData.alphaAcids) || 7.5 : undefined,
     };
     onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -658,14 +688,25 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           <div className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-zinc-300 block mb-1">Botanical Species</label>
-              <div className="grid grid-cols-2 gap-2">
-                {(['Cannabis', 'Tomato', 'Chili Pepper', 'Basil'] as PlantSpecies[]).map(s => (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {(['Cannabis', 'Hops', 'Tomato', 'Chili Pepper', 'Basil'] as PlantSpecies[]).map(s => (
                   <button
                     key={s}
                     type="button"
                     onClick={() => {
                       setPlantSpecies(s);
-                      if (s === 'Cannabis') {
+                      if (s === 'Hops') {
+                        const h = HOP_CULTIVARS[selectedHopIdx];
+                        setPlantName(`${h.name} Bine`);
+                        setPlantStrain(h.variety);
+                        setContainerType('raised_bed_cedar');
+                        setSystemType('raised_bed');
+                        setContainerVolume(30);
+                        setGrowingMedium('living_organic_soil');
+                        setNutrientProgram('organic_living_soil');
+                        setVegDays(45);
+                        setFlowerDays(h.floweringDays);
+                      } else if (s === 'Cannabis') {
                         setPlantName('Gorilla Glue #4');
                         setPlantStrain('Sour Dubb x Chem Sister');
                       } else if (s === 'Tomato') {
@@ -685,12 +726,49 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
                     }`}
                   >
-                    <span>{s}</span>
+                    <span>{s === 'Hops' ? '🍺 Hops' : s}</span>
                     {plantSpecies === s && <Check className="w-3.5 h-3.5 text-emerald-400" />}
                   </button>
                 ))}
               </div>
             </div>
+
+            {plantSpecies === 'Hops' && (
+              <div className="p-3 bg-amber-950/20 border border-amber-800/60 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                    <span>🍺 Craft Hop Cultivars (Humulus lupulus)</span>
+                  </label>
+                  <span className="text-[10px] text-amber-400/80 font-mono">Trellis Bine Climber</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {HOP_CULTIVARS.map((hop, idx) => (
+                    <button
+                      key={hop.name}
+                      type="button"
+                      onClick={() => {
+                        setSelectedHopIdx(idx);
+                        setPlantName(`${hop.name} Bine`);
+                        setPlantStrain(hop.variety);
+                        setFlowerDays(hop.floweringDays);
+                      }}
+                      className={`p-2.5 rounded-lg border text-left text-xs transition-all ${
+                        selectedHopIdx === idx
+                          ? 'bg-amber-900/40 border-amber-500 text-amber-200 ring-1 ring-amber-500/50'
+                          : 'bg-zinc-950/80 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold text-zinc-100">
+                        <span>{hop.name.replace(' Hops', '')}</span>
+                        <span className="text-[10px] text-amber-400 font-mono">{hop.alphaAcids}</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{hop.aromaProfile}</div>
+                      <div className="text-[9px] text-zinc-500 mt-0.5 capitalize">{hop.growthVigor} vigor · {hop.floweringDays}d bloom</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -923,6 +1001,179 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   <span className="text-[10px] text-zinc-500 block">
                     * Ideal duration under standard conditions. Suboptimal VPD, cold roots, or low PPFD will proportionally slow down progress in the physics loop.
                   </span>
+                </div>
+              )}
+            </div>
+
+            {/* Cultivation System & Soil Dynamics Customizer */}
+            <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowSoilCustomizer(!showSoilCustomizer)}
+                className="w-full px-3 py-2 flex items-center justify-between text-xs text-zinc-300 hover:bg-zinc-900/50 transition-colors"
+              >
+                <span className="font-semibold flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                  Cultivation System, Container &amp; Soil Dynamics
+                </span>
+                <span className="text-[11px] text-emerald-400 font-mono">
+                  {showSoilCustomizer ? '▲ Collapse' : '▼ Customize Soil / Hydro'}
+                </span>
+              </button>
+
+              {showSoilCustomizer && (
+                <div className="p-3 pt-1 border-t border-zinc-800/80 space-y-3 text-xs">
+                  {/* System Type */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Cultivation System</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      {[
+                        { id: 'soil_container', label: 'Soil Container', desc: 'Fabric / Plastic Pot' },
+                        { id: 'raised_bed', label: 'Cedar Raised Bed', desc: 'Outdoor / Living Soil' },
+                        { id: 'in_ground', label: 'In-Ground Soil', desc: 'Direct Garden Earth' },
+                        { id: 'dwc', label: 'DWC Hydroponics', desc: 'Aerated Res Bucket' },
+                        { id: 'ebb_and_flow', label: 'Ebb & Flow', desc: 'Flood & Drain Table' },
+                        { id: 'drip_hydro', label: 'Drip Hydro', desc: 'Automated Drippers' },
+                        { id: 'aeroponics', label: 'Aeroponics', desc: 'Misted Root Chamber' },
+                        { id: 'wick_system', label: 'Wick System', desc: 'Passive Sub-Irrigated' },
+                      ].map(sys => (
+                        <button
+                          key={sys.id}
+                          type="button"
+                          onClick={() => {
+                            setSystemType(sys.id as CultivationSystemType);
+                            if (sys.id === 'dwc') {
+                              setContainerType('dwc_reservoir_bucket');
+                              setGrowingMedium('hydroton_clay_pebbles');
+                              setNutrientProgram('salt_mineral_ab');
+                              setContainerVolume(5);
+                            } else if (sys.id === 'raised_bed') {
+                              setContainerType('raised_bed_cedar');
+                              setGrowingMedium('living_organic_soil');
+                              setNutrientProgram('organic_living_soil');
+                              setContainerVolume(50);
+                            } else if (sys.id === 'in_ground') {
+                              setContainerType('in_ground_earth');
+                              setGrowingMedium('native_garden_loam');
+                              setNutrientProgram('organic_living_soil');
+                              setContainerVolume(100);
+                            }
+                          }}
+                          className={`p-1.5 rounded-lg border text-left transition-all ${
+                            systemType === sys.id
+                              ? 'bg-emerald-950 border-emerald-500 text-emerald-200'
+                              : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div className="font-semibold text-[11px] truncate">{sys.label}</div>
+                          <div className="text-[9px] text-zinc-500 truncate">{sys.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Container & Volume */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Container Vessel</label>
+                      <select
+                        value={containerType}
+                        onChange={e => setContainerType(e.target.value as ContainerType)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        <option value="fabric_pot">Fabric Smart Pot (High Aeration)</option>
+                        <option value="plastic_nursery_pot">Plastic Nursery Pot</option>
+                        <option value="terracotta_pot">Clay Terracotta Pot (Breathable)</option>
+                        <option value="raised_bed_cedar">Cedar Raised Garden Bed</option>
+                        <option value="in_ground_earth">In-Ground Garden Trench</option>
+                        <option value="dwc_reservoir_bucket">5-Gal DWC Aerated Reservoir</option>
+                        <option value="flood_drain_tray">Hydroponic Flood Tray</option>
+                        <option value="aeroponic_chamber">Aeroponic Mist Chamber</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">
+                        Volume Capacity ({containerVolume} Gallons)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="1"
+                          max="100"
+                          step="1"
+                          value={containerVolume}
+                          onChange={e => setContainerVolume(Number(e.target.value))}
+                          className="flex-1 accent-emerald-500"
+                        />
+                        <span className="font-mono text-xs font-bold text-emerald-400 w-12 text-right">
+                          {containerVolume} gal
+                        </span>
+                      </div>
+                      <div className="flex gap-1.5 mt-1">
+                        {[3, 5, 10, 25, 50, 100].map(vol => (
+                          <button
+                            key={vol}
+                            type="button"
+                            onClick={() => setContainerVolume(vol)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                              containerVolume === vol
+                                ? 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                            }`}
+                          >
+                            {vol}g
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Medium & Nutrient Program */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Substrate / Growing Medium</label>
+                      <select
+                        value={growingMedium}
+                        onChange={e => setGrowingMedium(e.target.value as GrowingMedium)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        <option value="living_organic_soil">Living Organic Soil (High Microbes &amp; Buffering)</option>
+                        <option value="coco_perlite">70/30 Coco Coir &amp; Perlite (Fast Growth, Fast Drain)</option>
+                        <option value="peat_potting_mix">Peat Moss / Pro-Mix Blend</option>
+                        <option value="native_garden_loam">Native Garden Loam (Outdoor Garden Bed)</option>
+                        <option value="hydroton_clay_pebbles">Expanded Clay Hydroton Pebbles (DWC/Hydro)</option>
+                        <option value="rockwool_cubes">Rockwool Horticultural Matrix</option>
+                        <option value="aeroponic_mist">Aeroponic Oxygenated Mist</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Nutrient &amp; Biology Program</label>
+                      <select
+                        value={nutrientProgram}
+                        onChange={e => setNutrientProgram(e.target.value as NutrientProgram)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        <option value="organic_living_soil">Organic Living Soil (Mycorrhizae &amp; Bio-Buffering)</option>
+                        <option value="salt_mineral_ab">Mineral Salts A+B (Chelated Hydroponic Formulation)</option>
+                        <option value="bloom_booster_pk">Phosphorus-Potassium PK Bloom Booster</option>
+                        <option value="compost_tea_inoculant">Active Aerated Compost Tea (AACT)</option>
+                        <option value="water_only_flush">Plain Dechlorinated RO Water</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="p-2 bg-zinc-900/60 rounded-lg border border-zinc-800 text-[10px] text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {growingMedium.includes('soil') || growingMedium.includes('loam') 
+                        ? '🌱 Soil Buffer active: Ideal pH 6.2 - 6.8 · Higher microbial resistance & drought resilience.' 
+                        : '💧 Hydroponic dynamic: Ideal pH 5.6 - 6.2 · Direct root uptake, rapid growth, requires EC monitoring.'}
+                    </span>
+                    <span className="font-mono text-emerald-400 shrink-0 ml-2">
+                      Vol: {containerVolume} gal
+                    </span>
+                  </div>
                 </div>
               )}
             </div>

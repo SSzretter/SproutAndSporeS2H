@@ -45,7 +45,7 @@ export interface OutdoorLocation {
   customCo2Ppm?: number;
 }
 
-export type PlantSpecies = 'Cannabis' | 'Tomato' | 'Chili Pepper' | 'Basil';
+export type PlantSpecies = 'Cannabis' | 'Tomato' | 'Chili Pepper' | 'Basil' | 'Hops';
 export type PropagationType = 'seed' | 'cutting';
 export type PlantStage = 
   | 'germination' 
@@ -56,6 +56,42 @@ export type PlantStage =
   | 'flowering' 
   | 'ripening' 
   | 'ready';
+
+export type CultivationSystemType = 
+  | 'soil_container'     // Living Organic Soil in Potted Container
+  | 'raised_bed'          // Deep Raised Wooden Bed
+  | 'in_ground'           // Native Garden Earth / Topsoil Patch
+  | 'dwc'                 // Deep Water Culture Hydroponics
+  | 'ebb_and_flow'        // Flood & Drain Hydroponics
+  | 'drip_hydro'          // Top-Feed Drip / Dutch Bucket
+  | 'aeroponics'          // High-Pressure Aeroponic Root Chamber
+  | 'wick_system';        // Sub-Irrigated Planter / Passive Wick
+
+export type ContainerType = 
+  | 'fabric_pot'          // Breathable Smart Fabric Pot (aerates roots, air-prunes)
+  | 'plastic_nursery_pot' // Rigid Plastic Nursery Pot
+  | 'terracotta_pot'      // Porous Earthenware Terracotta
+  | 'raised_bed_cedar'    // Cedar Wood Raised Bed Box
+  | 'in_ground_earth'     // Direct In-Ground Earth Bed
+  | 'dwc_reservoir_bucket'// 5-Gallon DWC Deep Water Reservoir Bucket with Net Pot & Air Stone
+  | 'flood_drain_tray'    // Hydroponic Ebb & Flow Flood Tray
+  | 'aeroponic_chamber';  // Sealed Aeroponic Mist Chamber
+
+export type GrowingMedium = 
+  | 'living_organic_soil' // Super Soil with Compost, Worm Castings, Biochar & Mycorrhizae
+  | 'coco_perlite'        // 70% Coco Coir / 30% Perlite (inert, rapid drainage)
+  | 'peat_potting_mix'    // Peat Moss + Perlite + Dolomite Lime (Pro-Mix)
+  | 'native_garden_loam'  // Mineral-Rich Outdoor Garden Loam
+  | 'hydroton_clay_pebbles' // Expanded Clay Pellets (LECA for DWC / Ebb&Flow)
+  | 'rockwool_cubes'      // Grodan Rockwool Blocks
+  | 'aeroponic_mist';     // Bare Suspended Roots in Oxygenated Mist
+
+export type NutrientProgram = 
+  | 'organic_living_soil' // Slow-Release Organic Amendments & Compost Teas
+  | 'salt_mineral_ab'     // 2-Part Mineral Synthetic Salt Nutrients (A & B)
+  | 'bloom_booster_pk'    // High Phosphorus & Potassium Bloom Enhancer
+  | 'compost_tea_inoculant' // Microbial Aerated Compost Tea with Mycorrhizae
+  | 'water_only_flush';   // Pure pH-Balanced Water Flush
 
 export interface PlantKeyDates {
   plantedDate: number; // Date seed sown or cutting taken (ms timestamp)
@@ -111,6 +147,22 @@ export interface PlantItem {
   ripeningDaysExpected?: number;   // e.g. 10 days
   stageRequirements?: Partial<Record<PlantStage, StageConditionRequirements>>;
 
+  // Container, Medium & System Customization:
+  systemType?: CultivationSystemType;
+  containerType?: ContainerType;
+  containerVolumeGallons?: number; // 1, 3, 5, 7, 10, 15, 25, 50, 100
+  growingMedium?: GrowingMedium;
+  nutrientProgram?: NutrientProgram;
+
+  // Real-time Soil & Hydroponic Dynamics:
+  soilPh?: number;             // 5.2 - 7.5 (soil optimal 6.2 - 6.8; hydro optimal 5.6 - 6.2)
+  ecTdsPpm?: number;           // 200 - 2400 PPM (salt concentration / nutrient strength)
+  microbialHealth?: number;    // 0 - 100% (vitality of mycorrhizal and beneficial rhizobacteria colonies)
+  aerationOxygenPct?: number;  // 0 - 100% (root zone oxygenation / dissolved oxygen)
+  drainageRate?: number;       // 0 - 100%
+  reservoirTempF?: number;     // For hydro systems: 64-68°F optimal
+
+  // Botanical metrics:
   health: number; // 0 - 100%
   soilMoisture: number; // 0 - 100%
   rootTempF: number; // Root zone temperature influenced by ambient/floor/heat mat
@@ -122,6 +174,8 @@ export interface PlantItem {
   dimensions: Dimensions;
   notes?: string;
   lastWateredTime?: number;
+  lastFedTime?: number;
+  alphaAcidsPct?: number; // Specific to Hops brewing potential (e.g. 4.5% - 14.0%)
 }
 
 export type MushroomSpecies = 'Golden Oyster' | 'Lion\'s Mane' | 'Shiitake' | 'Reishi' | 'Medicinal';
@@ -255,6 +309,14 @@ export interface Tent {
 
 export type ConstructionStandard = 'colonial_2005' | 'modern_tight' | 'older_drafty' | 'insulated_basement';
 
+export type RoomEnvironmentType = 'indoor' | 'outdoor_garden' | 'greenhouse';
+export type GardenLayoutConfig = 
+  | 'raised_beds_courtyard' // Multiple cedar raised beds (4x8 ft) with gravel walkways
+  | 'hop_yard_trellis'      // Craft/commercial hop yard with 16ft bines on coir twine
+  | 'in_ground_permaculture' // Deep tilled organic soil patch with woodchip paths
+  | 'patio_container_deck'   // Sunny deck with fabric smart pots, terracotta, & DWC tubs
+  | 'greenhouse_polytunnel'; // High-tunnel hoop house solar greenhouse
+
 export interface Room {
   id: string;
   name: string;
@@ -262,6 +324,10 @@ export interface Room {
   climate: Climate;
   tents: Tent[];
   items: Item[]; // Items placed directly in the room (outside tents)
+  environmentType?: RoomEnvironmentType; // 'indoor' | 'outdoor_garden' | 'greenhouse'
+  gardenConfig?: GardenLayoutConfig;
+  gardenBedCount?: number;
+  trellisHeightFt?: number;
   constructionStandard?: ConstructionStandard; // Default 'colonial_2005'
   wallRValue?: number; // R-19 exterior walls for 2005 colonial
   airChangesPerHour?: number; // 0.35 ACH

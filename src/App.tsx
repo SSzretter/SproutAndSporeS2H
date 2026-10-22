@@ -9,6 +9,7 @@ import {
   EquipmentItem, 
   HarvestRecord, 
   JournalEntry, 
+  JournalCategory,
   OutdoorLocation,
   OutsideConditions 
 } from './types/sim';
@@ -24,6 +25,8 @@ import { HarvestLogModal } from './components/HarvestLogModal';
 import { GrowJournal } from './components/GrowJournal';
 import { LocationModal } from './components/LocationModal';
 import { AddRoomModal } from './components/AddRoomModal';
+import { GameWorld } from './components/game/GameWorld';
+import { broadcastSimulationState, subscribeToSimulationSync } from './utils/syncChannel';
 
 export default function App() {
   const [state, setState] = useState<SimulationState>(() => loadSimulation());
@@ -34,6 +37,14 @@ export default function App() {
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'floorplan'>('dashboard');
+  const [viewMode, setViewMode] = useState<'dashboard' | 'game'>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.hash === '#game' || new URLSearchParams(window.location.search).get('view') === 'game' 
+        ? 'game' 
+        : 'dashboard';
+    }
+    return 'dashboard';
+  });
 
   // Ref to hold current state for interval tick without stale closures
   const stateRef = useRef(state);
@@ -68,6 +79,26 @@ export default function App() {
     saveSimulation(state);
     setLastSavedAt(Date.now());
   }, [state.room, state.rooms, state.activeRoomId, state.outside, state.outdoorLocation, state.tempUnit, state.harvests]);
+
+  // Dual-screen cross-window sync & Hash routing (#game vs dashboard)
+  useEffect(() => {
+    const handleHash = () => {
+      const isGame = window.location.hash === '#game' || new URLSearchParams(window.location.search).get('view') === 'game';
+      setViewMode(isGame ? 'game' : 'dashboard');
+    };
+    window.addEventListener('hashchange', handleHash);
+
+    const unsubscribe = subscribeToSimulationSync((syncedState) => {
+      if (syncedState && syncedState.simTime) {
+        setState(syncedState);
+      }
+    });
+
+    return () => {
+      window.removeEventListener('hashchange', handleHash);
+      unsubscribe();
+    };
+  }, []);
 
   // Main Simulation Loop
   useEffect(() => {
@@ -109,20 +140,25 @@ export default function App() {
           id: `j-${Date.now()}-${Math.random()}`,
           time: newSimTime,
           type: e.type,
+          category: e.category || 'crop',
+          tentName: e.tentName,
           title: e.title,
           message: e.message
         }));
         updatedJournal = [...updatedJournal, ...newEntries];
       }
 
-      setState(prev => ({
-        ...prev,
+      const nextState: SimulationState = {
+        ...cur,
         simTime: newSimTime,
         outside: newOutside,
         rooms: updatedRooms,
         room: updatedActiveRoom,
         journal: updatedJournal
-      }));
+      };
+
+      setState(nextState);
+      broadcastSimulationState(nextState);
     }, 1000);
 
     return () => clearInterval(interval);
@@ -130,7 +166,11 @@ export default function App() {
 
   // Speed changer
   const handleSetSpeed = useCallback((speed: number) => {
-    setState(prev => ({ ...prev, speed }));
+    setState(prev => {
+      const next = { ...prev, speed };
+      broadcastSimulationState(next);
+      return next;
+    });
   }, []);
 
   // Time jump (e.g., +6h, +24h)
@@ -142,18 +182,33 @@ export default function App() {
       const newOutside = getOutdoorConditionsForSimTime(weatherPackageRef.current, newSimTime, customCo2);
       
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const skipEvents: JournalEntry[] = [];
+
       const updatedRooms = currentRooms.map(rm => {
-        const { room: simRoom } = simulateEnvironmentTick(
+        const { room: simRoom, events } = simulateEnvironmentTick(
           rm,
           newOutside,
           newSimTime,
           elapsedMinutes
         );
+        if (events && events.length > 0) {
+          events.forEach(e => {
+            skipEvents.push({
+              id: `j-${Date.now()}-${Math.random()}`,
+              time: newSimTime,
+              type: e.type,
+              category: e.category || 'crop',
+              tentName: e.tentName || rm.name,
+              title: e.title,
+              message: e.message
+            });
+          });
+        }
         return simRoom;
       });
       const updatedActiveRoom = updatedRooms.find(r => r.id === (prev.activeRoomId || prev.room.id)) || updatedRooms[0];
 
-      return {
+      const nextState: SimulationState = {
         ...prev,
         simTime: newSimTime,
         outside: newOutside,
@@ -165,11 +220,15 @@ export default function App() {
             id: `j-${Date.now()}`,
             time: newSimTime,
             type: 'action',
+            category: 'general',
             title: `Time Jump (+${hours} Hours)`,
             message: `Fast-forwarded cultivation simulation by ${hours} hours.`
-          }
+          },
+          ...skipEvents
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
@@ -650,127 +709,205 @@ export default function App() {
     }));
   }, [state.simTime, handleUpdateItem]);
 
+  // Add custom or care journal entry
+  const handleAddJournalEntry = useCallback((entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => {
+    setState(prev => {
+      const nextState: SimulationState = {
+        ...prev,
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}-${Math.random()}`,
+            time: prev.simTime,
+            type: entry.type,
+            category: entry.category || 'general',
+            title: entry.title,
+            message: entry.message,
+            author: 'Cultivator'
+          }
+        ]
+      };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, []);
+
+  // Clear all journal entries
+  const handleClearJournal = useCallback(() => {
+    setState(prev => {
+      const nextState: SimulationState = {
+        ...prev,
+        journal: []
+      };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, []);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
-      {/* 24-Hour Game Clock & Top Bar */}
-      <HeaderClock
-        state={state}
-        onSetSpeed={handleSetSpeed}
-        onSkipTime={handleSkipTime}
-        onToggleTempUnit={handleToggleTempUnit}
-        onResetSim={handleResetSim}
-        onOpenHarvests={() => setIsHarvestModalOpen(true)}
-        onExportJson={handleExportJson}
-        onImportJson={handleImportJson}
-        lastSavedAt={lastSavedAt}
-      />
-
-      {/* Main Workspace Body */}
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Environmental Climate Matrix Dashboard */}
-        <ClimateDashboard
-          outside={state.outside}
-          outdoorLocation={state.outdoorLocation}
-          room={state.room}
-          rooms={state.rooms || [state.room]}
-          activeRoomId={state.activeRoomId || state.room.id}
-          selectedId={state.selectedId}
-          selectedType={state.selectedType}
-          tempUnit={state.tempUnit}
-          onSelectRoom={handleSelectRoom}
-          onSelectTent={handleSelectTent}
-          onSelectActiveRoom={handleSelectActiveRoom}
-          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
-          onDeleteRoom={handleDeleteRoom}
-          onOpenAddTent={() => {
-            setAddModalTentId(null);
-            setIsAddModalOpen(true);
-          }}
-          onOpenLocationModal={() => setIsLocationModalOpen(true)}
-          onDeleteTent={handleDeleteTent}
-          onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
-        />
-
-        {/* View Switcher Tabs: Climate Overview vs 2D Layout Plan */}
-        <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                activeTab === 'dashboard'
-                  ? 'bg-zinc-800 text-emerald-400 border border-zinc-700 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-              }`}
-            >
-              Inspection &amp; Items Manager
-            </button>
-            <button
-              onClick={() => setActiveTab('floorplan')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                activeTab === 'floorplan'
-                  ? 'bg-zinc-800 text-emerald-400 border border-zinc-700 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-              }`}
-            >
-              Interactive Spatial Floorplan
-            </button>
-          </div>
-
-          <span className="text-xs text-zinc-400 hidden sm:inline">
-            Active Target: <strong className="text-zinc-200 uppercase font-mono">{state.selectedType || 'None'}</strong>
-          </span>
-        </div>
-
-        {/* Spatial Floorplan View */}
-        {activeTab === 'floorplan' && (
-          <InteractiveFloorplan
-            room={state.room}
-            rooms={state.rooms || [state.room]}
-            activeRoomId={state.activeRoomId || state.room.id}
-            selectedId={state.selectedId}
-            selectedType={state.selectedType}
-            onSelectRoom={handleSelectRoom}
-            onSelectTent={handleSelectTent}
-            onSelectItem={handleSelectItem}
-            onSelectActiveRoom={handleSelectActiveRoom}
-            onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
-            onDeleteTent={handleDeleteTent}
-            onDeleteItem={handleDeleteItem}
-          />
-        )}
-
-        {/* Item & Room Inspector Panel */}
-        <ItemInspector
-          room={state.room}
-          rooms={state.rooms || [state.room]}
-          outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
-          selectedType={state.selectedType}
-          selectedId={state.selectedId}
-          selectedParentTentId={state.selectedParentTentId}
-          tempUnit={state.tempUnit}
-          onSelectRoom={handleSelectRoom}
-          onSelectTent={handleSelectTent}
-          onSelectItem={handleSelectItem}
-          onUpdateRoom={handleUpdateRoom}
-          onUpdateTent={handleUpdateTent}
-          onUpdateItem={handleUpdateItem}
-          onDeleteItem={handleDeleteItem}
-          onDeleteTent={handleDeleteTent}
-          onDeleteRoom={handleDeleteRoom}
-          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
-          onOpenLocationModal={() => setIsLocationModalOpen(true)}
+      {viewMode === 'game' ? (
+        <GameWorld
+          state={state}
+          onUpdateState={(updater) => setState(prev => {
+            const next = updater(prev);
+            broadcastSimulationState(next);
+            return next;
+          })}
           onOpenAddItem={(tentId) => {
             setAddModalTentId(tentId || null);
             setIsAddModalOpen(true);
           }}
-          onHarvestPlant={handleHarvestPlant}
-          onHarvestMushroom={handleHarvestMushroom}
-          simTime={state.simTime}
+          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+          onOpenHarvestModal={() => setIsHarvestModalOpen(true)}
+          onSwitchToDashboard={() => {
+            window.location.hash = '';
+            setViewMode('dashboard');
+          }}
         />
+      ) : (
+        <>
+          {/* 24-Hour Game Clock & Top Bar */}
+          <HeaderClock
+            state={state}
+            onSetSpeed={handleSetSpeed}
+            onSkipTime={handleSkipTime}
+            onToggleTempUnit={handleToggleTempUnit}
+            onResetSim={handleResetSim}
+            onOpenHarvests={() => setIsHarvestModalOpen(true)}
+            onExportJson={handleExportJson}
+            onImportJson={handleImportJson}
+            lastSavedAt={lastSavedAt}
+            onSwitchToGame={() => {
+              window.location.hash = '#game';
+              setViewMode('game');
+            }}
+            onPopOutGame={() => {
+              const width = 1280;
+              const height = 800;
+              const left = window.screen.availWidth ? window.screen.availWidth : 0;
+              window.open(
+                window.location.origin + window.location.pathname + '#game',
+                'SproutSporeGameWindow',
+                `width=${width},height=${height},left=${left},top=100,resizable=yes,scrollbars=yes`
+              );
+            }}
+          />
 
-        {/* Cultivation Journal Drawer */}
-        <GrowJournal entries={state.journal} />
-      </main>
+          {/* Main Workspace Body */}
+          <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            {/* Environmental Climate Matrix Dashboard */}
+            <ClimateDashboard
+              outside={state.outside}
+              outdoorLocation={state.outdoorLocation}
+              room={state.room}
+              rooms={state.rooms || [state.room]}
+              activeRoomId={state.activeRoomId || state.room.id}
+              selectedId={state.selectedId}
+              selectedType={state.selectedType}
+              tempUnit={state.tempUnit}
+              onSelectRoom={handleSelectRoom}
+              onSelectTent={handleSelectTent}
+              onSelectActiveRoom={handleSelectActiveRoom}
+              onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+              onDeleteRoom={handleDeleteRoom}
+              onOpenAddTent={() => {
+                setAddModalTentId(null);
+                setIsAddModalOpen(true);
+              }}
+              onOpenLocationModal={() => setIsLocationModalOpen(true)}
+              onDeleteTent={handleDeleteTent}
+              onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
+            />
+
+            {/* View Switcher Tabs: Climate Overview vs 2D Layout Plan */}
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setActiveTab('dashboard')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                    activeTab === 'dashboard'
+                      ? 'bg-zinc-800 text-emerald-400 border border-zinc-700 shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  Inspection &amp; Items Manager
+                </button>
+                <button
+                  onClick={() => setActiveTab('floorplan')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                    activeTab === 'floorplan'
+                      ? 'bg-zinc-800 text-emerald-400 border border-zinc-700 shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  Interactive Spatial Floorplan
+                </button>
+              </div>
+
+              <span className="text-xs text-zinc-400 hidden sm:inline">
+                Active Target: <strong className="text-zinc-200 uppercase font-mono">{state.selectedType || 'None'}</strong>
+              </span>
+            </div>
+
+            {/* Spatial Floorplan View */}
+            {activeTab === 'floorplan' && (
+              <InteractiveFloorplan
+                room={state.room}
+                rooms={state.rooms || [state.room]}
+                activeRoomId={state.activeRoomId || state.room.id}
+                selectedId={state.selectedId}
+                selectedType={state.selectedType}
+                onSelectRoom={handleSelectRoom}
+                onSelectTent={handleSelectTent}
+                onSelectItem={handleSelectItem}
+                onSelectActiveRoom={handleSelectActiveRoom}
+                onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+                onDeleteTent={handleDeleteTent}
+                onDeleteItem={handleDeleteItem}
+              />
+            )}
+
+            {/* Item & Room Inspector Panel */}
+            <ItemInspector
+              room={state.room}
+              rooms={state.rooms || [state.room]}
+              outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
+              selectedType={state.selectedType}
+              selectedId={state.selectedId}
+              selectedParentTentId={state.selectedParentTentId}
+              tempUnit={state.tempUnit}
+              onSelectRoom={handleSelectRoom}
+              onSelectTent={handleSelectTent}
+              onSelectItem={handleSelectItem}
+              onUpdateRoom={handleUpdateRoom}
+              onUpdateTent={handleUpdateTent}
+              onUpdateItem={handleUpdateItem}
+              onDeleteItem={handleDeleteItem}
+              onDeleteTent={handleDeleteTent}
+              onDeleteRoom={handleDeleteRoom}
+              onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+              onOpenLocationModal={() => setIsLocationModalOpen(true)}
+              onOpenAddItem={(tentId) => {
+                setAddModalTentId(tentId || null);
+                setIsAddModalOpen(true);
+              }}
+              onHarvestPlant={handleHarvestPlant}
+              onHarvestMushroom={handleHarvestMushroom}
+              simTime={state.simTime}
+              onLogJournalEntry={handleAddJournalEntry}
+            />
+
+            {/* Cultivation Journal Drawer */}
+            <GrowJournal 
+              entries={state.journal} 
+              simTime={state.simTime}
+              onAddEntry={handleAddJournalEntry}
+              onClearEntries={handleClearJournal}
+            />
+          </main>
+        </>
+      )}
 
       {/* Add Item / Tent Modal */}
       <AddItemModal

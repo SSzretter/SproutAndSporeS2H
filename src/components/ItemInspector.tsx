@@ -55,7 +55,7 @@ import {
 } from '../types/sim';
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
-import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
+import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime } from '../utils/plantLifecycle';
 
 interface ItemInspectorProps {
@@ -81,6 +81,7 @@ interface ItemInspectorProps {
   onHarvestPlant: (plant: PlantItem, tentId?: string) => void;
   onHarvestMushroom: (mushroom: MushroomItem, tentId?: string) => void;
   simTime?: number;
+  onLogJournalEntry?: (entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => void;
 }
 
 export const ItemInspector: React.FC<ItemInspectorProps> = ({
@@ -92,6 +93,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   selectedParentTentId,
   tempUnit,
   simTime,
+  onLogJournalEntry,
   onUpdateRoom,
   onUpdateTent,
   onUpdateItem,
@@ -1911,6 +1913,12 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         health: Math.min(100, plant.health + 5),
                         lastWateredTime: Date.now()
                       }, selectedParentTentId);
+                      onLogJournalEntry?.({
+                        title: `💧 Watered ${plant.name}`,
+                        message: `Hydrated root zone (+35% moisture). Soil moisture restored to ${Math.min(100, plant.soilMoisture + 35)}%.`,
+                        type: 'action',
+                        category: 'care'
+                      });
                     }}
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-medium transition-all shadow-md shadow-cyan-950/40"
                   >
@@ -1926,6 +1934,12 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         nutrientLevel: 'balanced',
                         health: Math.min(100, plant.health + 8),
                       }, selectedParentTentId);
+                      onLogJournalEntry?.({
+                        title: `🧪 Fed Nutrients: ${plant.name}`,
+                        message: `Applied balanced nutrition formula and microelements. Vitality reinforced.`,
+                        type: 'action',
+                        category: 'care'
+                      });
                     }}
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-medium transition-all shadow-md shadow-emerald-950/40"
                   >
@@ -1940,6 +1954,12 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         canopyWidthInches: plant.canopyWidthInches + 2.5,
                         yieldPotentialGrams: plant.yieldPotentialGrams + 15,
                       }, selectedParentTentId);
+                      onLogJournalEntry?.({
+                        title: `✂️ Pruned Canopy: ${plant.name}`,
+                        message: `Trimmed foliage to improve light penetration and airflow through inner canopy.`,
+                        type: 'action',
+                        category: 'care'
+                      });
                     }}
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors"
                   >
@@ -2252,6 +2272,248 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* 4. Soil & Hydroponic Dynamics */}
+              <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-5 h-5 text-emerald-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                        <span>Soil &amp; Hydroponic Substrate Dynamics</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-emerald-300">
+                          {plant.containerVolumeGallons || 5} Gal · {(plant.containerType || 'fabric_pot').replace(/_/g, ' ')}
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-zinc-400">
+                        Medium: <span className="text-zinc-200 capitalize">{(plant.growingMedium || 'living_organic_soil').replace(/_/g, ' ')}</span> · 
+                        System: <span className="text-zinc-200 capitalize">{(plant.systemType || 'soil_container').replace(/_/g, ' ')}</span> · 
+                        Nutrients: <span className="text-zinc-200 capitalize">{(plant.nutrientProgram || 'organic_living_soil').replace(/_/g, ' ')}</span>
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  {/* Soil / Reservoir pH */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-400">
+                      <span>Substrate pH</span>
+                      <span className={`font-mono font-bold text-sm ${
+                        (plant.soilPh || 6.4) >= 6.0 && (plant.soilPh || 6.4) <= 6.8
+                          ? 'text-emerald-400'
+                          : (plant.soilPh || 6.4) >= 5.5 && (plant.soilPh || 6.4) <= 7.2
+                            ? 'text-amber-400'
+                            : 'text-rose-400'
+                      }`}>
+                        {(plant.soilPh || 6.4).toFixed(2)} pH
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-zinc-500 font-mono">
+                      Target: {(plant.growingMedium || '').includes('soil') || (plant.growingMedium || '').includes('loam') ? '6.0 - 6.8 (Soil)' : '5.5 - 6.3 (Hydro)'}
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newPh = Math.max(4.5, Number(((plant.soilPh || 6.4) - 0.2).toFixed(2)));
+                          onUpdateItem({ ...plant, soilPh: newPh }, selectedParentTentId);
+                          onLogJournalEntry?.({
+                            title: `🧪 Adjusted pH Down: ${plant.name}`,
+                            message: `Applied citric acid / pH Down. Medium pH adjusted to ${newPh}.`,
+                            type: 'action',
+                            category: 'care'
+                          });
+                        }}
+                        className="flex-1 py-1 px-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] font-mono text-amber-300"
+                      >
+                        -0.2 (Down)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newPh = Math.min(8.5, Number(((plant.soilPh || 6.4) + 0.2).toFixed(2)));
+                          onUpdateItem({ ...plant, soilPh: newPh }, selectedParentTentId);
+                          onLogJournalEntry?.({
+                            title: `🧪 Adjusted pH Up: ${plant.name}`,
+                            message: `Applied potassium bicarbonate / pH Up. Medium pH adjusted to ${newPh}.`,
+                            type: 'action',
+                            category: 'care'
+                          });
+                        }}
+                        className="flex-1 py-1 px-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] font-mono text-cyan-300"
+                      >
+                        +0.2 (Up)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* EC / TDS Nutrient Strength */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-400">
+                      <span>EC / Nutrient PPM</span>
+                      <span className="font-mono font-bold text-sm text-emerald-400">
+                        {Math.round(plant.ecTdsPpm || 850)} PPM
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-zinc-500 font-mono">
+                      EC: {((plant.ecTdsPpm || 850) / 500).toFixed(2)} mS/cm · ~{((plant.ecTdsPpm || 850) * 0.7).toFixed(0)} TDS
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newEc = Math.min(2200, Math.round((plant.ecTdsPpm || 850) + 250));
+                          onUpdateItem({ ...plant, ecTdsPpm: newEc, lastFedTime: Date.now() }, selectedParentTentId);
+                          onLogJournalEntry?.({
+                            title: `🧪 Fed Nutrients: ${plant.name}`,
+                            message: `Dosed nutrient reservoir (+250 PPM). Live EC now ${newEc} PPM.`,
+                            type: 'action',
+                            category: 'care'
+                          });
+                        }}
+                        className="flex-1 py-1 px-1.5 rounded bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800/60 text-[10px] font-mono text-emerald-300"
+                      >
+                        +250 Feed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newEc = Math.max(150, Math.round((plant.ecTdsPpm || 850) - 350));
+                          onUpdateItem({ ...plant, ecTdsPpm: newEc, soilMoisture: Math.min(95, plant.soilMoisture + 15) }, selectedParentTentId);
+                          onLogJournalEntry?.({
+                            title: `💧 Flushed Substrate: ${plant.name}`,
+                            message: `Flushed root zone with fresh water (-350 PPM). EC reduced to ${newEc} PPM.`,
+                            type: 'action',
+                            category: 'care'
+                          });
+                        }}
+                        className="flex-1 py-1 px-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] font-mono text-zinc-300"
+                      >
+                        Flush
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Microbial Soil Biology */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-400">
+                      <span>Microbial Health</span>
+                      <span className="font-mono font-bold text-sm text-teal-400">
+                        {Math.round(plant.microbialHealth || 85)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-teal-400 rounded-full" 
+                        style={{ width: `${Math.min(100, plant.microbialHealth || 85)}%` }} 
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateItem({ 
+                          ...plant, 
+                          microbialHealth: Math.min(100, (plant.microbialHealth || 80) + 20),
+                          soilPh: Number(Math.max(6.2, Math.min(6.6, plant.soilPh || 6.4)).toFixed(2))
+                        }, selectedParentTentId);
+                        onLogJournalEntry?.({
+                          title: `🧫 Inoculated Compost Tea: ${plant.name}`,
+                          message: `Drenched root zone with aerated compost tea. Mycorrhizae & rhizobacteria replenished.`,
+                          type: 'action',
+                          category: 'care'
+                        });
+                      }}
+                      className="w-full py-1 rounded bg-teal-950/70 hover:bg-teal-900 border border-teal-800/60 text-[10px] font-mono text-teal-300 mt-1"
+                    >
+                      + Drench Compost Tea
+                    </button>
+                  </div>
+
+                  {/* Root Aeration & Dissolved Oxygen */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-400">
+                      <span>Root Aeration / DO</span>
+                      <span className="font-mono font-bold text-sm text-cyan-400">
+                        {Math.round(plant.aerationOxygenPct || 75)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-cyan-400 rounded-full" 
+                        style={{ width: `${Math.min(100, plant.aerationOxygenPct || 75)}%` }} 
+                      />
+                    </div>
+                    <div className="text-[10px] text-zinc-400 pt-1">
+                      {(plant.containerType === 'fabric_pot' || plant.systemType === 'dwc' || plant.systemType === 'aeroponics')
+                        ? 'High air-pruning & oxygenated roots'
+                        : 'Standard drainage root zone'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Craft Hop Trellis & Brewing Alpha Acid Profile */}
+              {plant.species === 'Hops' && (
+                <div className="bg-gradient-to-r from-amber-950/30 to-zinc-950 border border-amber-800/70 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-amber-900/40 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">🍺</span>
+                      <div>
+                        <h4 className="text-sm font-bold text-amber-200">
+                          Craft Hop Trellis Bine &amp; Brewing Quality (Humulus lupulus)
+                        </h4>
+                        <p className="text-[11px] text-amber-400/80">
+                          Twining Bine Height: {(plant.heightInches / 12).toFixed(1)} ft · Trellis Target: 14 - 16 ft
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-mono font-bold text-amber-300 px-2 py-0.5 rounded bg-amber-950 border border-amber-800">
+                        {(plant.alphaAcidsPct || 7.0).toFixed(1)}% Alpha Acids (AA)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                      <div className="text-zinc-400 text-[10px] uppercase font-mono">Brewing Profile</div>
+                      <div className="font-bold text-zinc-200 mt-0.5">
+                        {(plant.alphaAcidsPct || 7) >= 11 ? 'High-Alpha Bittering' : (plant.alphaAcidsPct || 7) >= 6 ? 'Dual Purpose Bittering & Aroma' : 'Noble Fine Aroma'}
+                      </div>
+                      <div className="text-[10px] text-amber-400/90 mt-1">
+                        Ideal for IPAs, Pale Ales, and Craft Lagers
+                      </div>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                      <div className="text-zinc-400 text-[10px] uppercase font-mono">Lupulin Resin Glands</div>
+                      <div className="font-bold text-emerald-300 mt-0.5">
+                        {['flowering', 'ripening', 'ready'].includes(plant.stage) 
+                          ? '✨ Golden Strobile Cones Active' 
+                          : '🌿 Vegetative Bine Vigorous Extension'}
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-1">
+                        Cone density: {plant.stage === 'flowering' ? 'Dense papery strobiles' : plant.stage === 'ripening' ? 'Fragrant lupulin dust' : 'Climbing trellis twine'}
+                      </div>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                      <div className="text-zinc-400 text-[10px] uppercase font-mono">Climbing Trellis Progress</div>
+                      <div className="flex items-center justify-between font-mono text-zinc-200 text-xs mt-0.5">
+                        <span>{plant.heightInches.toFixed(0)}″</span>
+                        <span>192″ Max (16′)</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden mt-1">
+                        <div 
+                          className="h-full bg-amber-500 rounded-full" 
+                          style={{ width: `${Math.min(100, (plant.heightInches / 192) * 100)}%` }} 
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -2329,6 +2591,12 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     health: Math.min(100, currentItem.health + 6),
                     lastMistedTime: Date.now()
                   }, selectedParentTentId);
+                  onLogJournalEntry?.({
+                    title: `💨 Misted Substrate: ${currentItem.name}`,
+                    message: `Provided surface micro-droplet misting. Substrate moisture refreshed to ${Math.min(95, currentItem.substrateMoisture + 25)}%.`,
+                    type: 'action',
+                    category: 'care'
+                  });
                 }}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-medium transition-all shadow-md shadow-cyan-950/40"
               >
@@ -2343,6 +2611,12 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     health: Math.min(100, currentItem.health + 5),
                     stageProgress: Math.min(100, currentItem.stageProgress + 10)
                   }, selectedParentTentId);
+                  onLogJournalEntry?.({
+                    title: `💨 Fresh Air Exchange: ${currentItem.name}`,
+                    message: `Displaced stagnant CO2 build-up in mushroom chamber to promote healthy pin formation and cap development.`,
+                    type: 'action',
+                    category: 'care'
+                  });
                 }}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors"
               >

@@ -617,12 +617,15 @@ export function simulateEnvironmentTick(
   outside: OutsideConditions,
   currentSimTime: number,
   elapsedMinutes: number
-): { room: Room; events: Array<{ type: 'warning' | 'info'; title: string; message: string }> } {
-  const events: Array<{ type: 'warning' | 'info'; title: string; message: string }> = [];
+): { room: Room; events: SimulationEvent[] } {
+  const events: SimulationEvent[] = [];
   const date = new Date(currentSimTime);
   const hour = date.getHours() + date.getMinutes() / 60;
   
-  // 1. UPDATE ROOM CLIMATE (2005 Colonial House Envelope)
+  // 1. UPDATE ROOM CLIMATE (Indoor Envelope vs Outdoor Garden vs Greenhouse)
+  const isOutdoorGarden = room.environmentType === 'outdoor_garden';
+  const isGreenhouse = room.environmentType === 'greenhouse';
+
   const roomVolCuFt = Math.max(100, room.dimensions.length * room.dimensions.width * room.dimensions.height);
   const wallAreaSqFt = 2 * (room.dimensions.length + room.dimensions.width) * room.dimensions.height;
   const rValue = room.wallRValue || 19;
@@ -631,102 +634,116 @@ export function simulateEnvironmentTick(
   let roomTempF = room.climate.tempF;
   let roomRH = room.climate.rh;
   let roomCo2 = room.climate.co2Ppm || 420;
+  let roomLightPPFD = 10;
   const hvacMode = room.hvacMode || 'central_ac_active';
   const coolingSetpoint = room.hvacCoolingSetpointF || 72.0;
   const heatingSetpoint = room.hvacHeatingSetpointF || 68.0;
 
-  // Heat conduction through exterior walls: Q = U * A * (T_out - T_room)
-  const uValue = 1 / Math.max(1, rValue);
-  const wallHeatGainRate = (uValue * wallAreaSqFt * (outside.tempF - roomTempF)) / (roomVolCuFt * 1.08);
-  const deltaTConduction = (wallHeatGainRate * (elapsedMinutes / 60));
-  roomTempF += deltaTConduction * 0.4;
+  if (isOutdoorGarden) {
+    // Open outdoor atmosphere directly governs temperature, humidity, CO2, and solar PPFD
+    roomTempF = outside.tempF;
+    roomRH = outside.rh;
+    roomCo2 = outside.co2Ppm || 420;
+    roomLightPPFD = outside.lightPPFD;
+  } else if (isGreenhouse) {
+    // Solar thermal gain through polycarbonate/glass glazing
+    const solarThermalBoost = outside.lightPPFD > 400 ? 5.5 : 1.5;
+    roomTempF = Math.max(outside.tempF, outside.tempF + solarThermalBoost);
+    roomRH = Math.min(95, outside.rh + 6);
+    roomCo2 = outside.co2Ppm || 420;
+    roomLightPPFD = Math.round(outside.lightPPFD * 0.82); // 82% solar transmittance
+  } else {
+    // Indoor conditioned living space (conduction, infiltration, central HVAC)
+    const uValue = 1 / Math.max(1, rValue);
+    const wallHeatGainRate = (uValue * wallAreaSqFt * (outside.tempF - roomTempF)) / (roomVolCuFt * 1.08);
+    const deltaTConduction = (wallHeatGainRate * (elapsedMinutes / 60));
+    roomTempF += deltaTConduction * 0.4;
 
-  // Infiltration: 0.35 ACH brings outdoor fresh air temp, humidity, and clean outdoor CO2
-  const airExchangeRatePerHour = ach;
-  const infiltrationFraction = Math.min(0.5, (airExchangeRatePerHour * (elapsedMinutes / 60)));
-  roomTempF += (outside.tempF - roomTempF) * infiltrationFraction;
-  roomRH += (outside.rh - roomRH) * infiltrationFraction * 0.3;
-  roomCo2 += (outside.co2Ppm - roomCo2) * infiltrationFraction;
+    const airExchangeRatePerHour = ach;
+    const infiltrationFraction = Math.min(0.5, (airExchangeRatePerHour * (elapsedMinutes / 60)));
+    roomTempF += (outside.tempF - roomTempF) * infiltrationFraction;
+    roomRH += (outside.rh - roomRH) * infiltrationFraction * 0.3;
+    roomCo2 += (outside.co2Ppm - roomCo2) * infiltrationFraction;
 
-  // Central HVAC Conditioning (Standard 2005 Colonial with AC)
-  if (hvacMode === 'central_ac_active') {
-    if (roomTempF > coolingSetpoint) {
-      const coolDelta = Math.min(roomTempF - coolingSetpoint, 0.08 * (elapsedMinutes / 5));
-      roomTempF -= coolDelta;
-      if (roomRH > 55) {
-        roomRH = Math.max(48, roomRH - 0.05 * (elapsedMinutes / 5));
-      }
-    }
-  } else if (hvacMode === 'heating_active') {
-    if (roomTempF < heatingSetpoint) {
-      const heatDelta = Math.min(heatingSetpoint - roomTempF, 0.08 * (elapsedMinutes / 5));
-      roomTempF += heatDelta;
-    }
-  }
-
-  // Biological Respiration from Occupants in Room (People & Pets)
-  const roomVolLiters = roomVolCuFt * 28.3168;
-  let roomOccupantCo2LitersPerHour = 0;
-  let roomOccupantHeatWatts = 0;
-  let roomOccupantMoistureLitersPerDay = 0;
-
-  room.items.forEach(item => {
-    if (item.category === 'person' || item.category === 'pet') {
-      roomOccupantCo2LitersPerHour += (item as any).co2RateLitersPerHour || 0;
-      roomOccupantHeatWatts += (item as any).heatOutputWatts || 0;
-      roomOccupantMoistureLitersPerDay += (item as any).moistureLitersPerDay || 0;
-    }
-  });
-
-  if (roomOccupantCo2LitersPerHour > 0) {
-    const emittedLiters = roomOccupantCo2LitersPerHour * (elapsedMinutes / 60);
-    const addedPpm = (emittedLiters / roomVolLiters) * 1_000_000;
-    roomCo2 += addedPpm;
-  }
-
-  if (roomOccupantHeatWatts > 0) {
-    const occupantHeatGainRate = (roomOccupantHeatWatts * 3.412) / (roomVolCuFt * 1.08);
-    roomTempF += occupantHeatGainRate * (elapsedMinutes / 60) * 0.35;
-  }
-
-  if (roomOccupantMoistureLitersPerDay > 0) {
-    const moistureGrams = (roomOccupantMoistureLitersPerDay * 1000 / 1440) * elapsedMinutes;
-    const rhDelta = (moistureGrams / (roomVolCuFt * 0.03)) * 0.01;
-    roomRH = Math.min(95, roomRH + rhDelta);
-  }
-
-  // Equipment in the main room
-  room.items.forEach(item => {
-    if (item.category === 'equipment' && item.powerOn) {
-      if (item.type === 'heater') {
-        const target = item.targetTempF ?? 74;
-        if (roomTempF < target) {
-          roomTempF += 0.06 * (item.setting / 100) * (elapsedMinutes / 10);
-        }
-      } else if (item.type === 'dehumidifier') {
-        const target = item.targetRh ?? 50;
-        if (roomRH > target) {
-          roomRH = Math.max(target, roomRH - 0.25 * (item.setting / 100) * (elapsedMinutes / 10));
-        }
-      } else if (item.type === 'humidifier') {
-        const target = item.targetRh ?? 60;
-        if (roomRH < target) {
-          roomRH = Math.min(target, roomRH + 0.35 * (item.setting / 100) * (elapsedMinutes / 10));
-        }
-      } else if (item.type === 'co2_regulator') {
-        const targetCo2 = item.targetCo2Ppm ?? 1000;
-        if (roomCo2 < targetCo2) {
-          roomCo2 = Math.min(targetCo2, roomCo2 + 15 * (item.setting / 100) * (elapsedMinutes / 5));
+    if (hvacMode === 'central_ac_active') {
+      if (roomTempF > coolingSetpoint) {
+        const coolDelta = Math.min(roomTempF - coolingSetpoint, 0.08 * (elapsedMinutes / 5));
+        roomTempF -= coolDelta;
+        if (roomRH > 55) {
+          roomRH = Math.max(48, roomRH - 0.05 * (elapsedMinutes / 5));
         }
       }
+    } else if (hvacMode === 'heating_active') {
+      if (roomTempF < heatingSetpoint) {
+        const heatDelta = Math.min(heatingSetpoint - roomTempF, 0.08 * (elapsedMinutes / 5));
+        roomTempF += heatDelta;
+      }
     }
-  });
 
-  roomTempF = Math.max(50, Math.min(105, parseFloat(roomTempF.toFixed(1))));
-  roomRH = Math.max(20, Math.min(95, Math.round(roomRH)));
-  roomCo2 = Math.max(350, Math.min(3000, Math.round(roomCo2)));
+    // Biological Respiration from Occupants in Room (People & Pets)
+    const roomVolLiters = roomVolCuFt * 28.3168;
+    let roomOccupantCo2LitersPerHour = 0;
+    let roomOccupantHeatWatts = 0;
+    let roomOccupantMoistureLitersPerDay = 0;
+
+    room.items.forEach(item => {
+      if (item.category === 'person' || item.category === 'pet') {
+        roomOccupantCo2LitersPerHour += (item as any).co2RateLitersPerHour || 0;
+        roomOccupantHeatWatts += (item as any).heatOutputWatts || 0;
+        roomOccupantMoistureLitersPerDay += (item as any).moistureLitersPerDay || 0;
+      }
+    });
+
+    if (roomOccupantCo2LitersPerHour > 0) {
+      const emittedLiters = roomOccupantCo2LitersPerHour * (elapsedMinutes / 60);
+      const addedPpm = (emittedLiters / roomVolLiters) * 1_000_000;
+      roomCo2 += addedPpm;
+    }
+
+    if (roomOccupantHeatWatts > 0) {
+      const occupantHeatGainRate = (roomOccupantHeatWatts * 3.412) / (roomVolCuFt * 1.08);
+      roomTempF += occupantHeatGainRate * (elapsedMinutes / 60) * 0.35;
+    }
+
+    if (roomOccupantMoistureLitersPerDay > 0) {
+      const moistureGrams = (roomOccupantMoistureLitersPerDay * 1000 / 1440) * elapsedMinutes;
+      const rhDelta = (moistureGrams / (roomVolCuFt * 0.03)) * 0.01;
+      roomRH = Math.min(95, roomRH + rhDelta);
+    }
+
+    // Equipment in the main room
+    room.items.forEach(item => {
+      if (item.category === 'equipment' && item.powerOn) {
+        if (item.type === 'heater') {
+          const target = item.targetTempF ?? 74;
+          if (roomTempF < target) {
+            roomTempF += 0.06 * (item.setting / 100) * (elapsedMinutes / 10);
+          }
+        } else if (item.type === 'dehumidifier') {
+          const target = item.targetRh ?? 50;
+          if (roomRH > target) {
+            roomRH = Math.max(target, roomRH - 0.25 * (item.setting / 100) * (elapsedMinutes / 10));
+          }
+        } else if (item.type === 'humidifier') {
+          const target = item.targetRh ?? 60;
+          if (roomRH < target) {
+            roomRH = Math.min(target, roomRH + 0.35 * (item.setting / 100) * (elapsedMinutes / 10));
+          }
+        } else if (item.type === 'co2_regulator') {
+          const targetCo2 = item.targetCo2Ppm ?? 1000;
+          if (roomCo2 < targetCo2) {
+            roomCo2 = Math.min(targetCo2, roomCo2 + 15 * (item.setting / 100) * (elapsedMinutes / 5));
+          }
+        }
+      }
+    });
+
+    roomTempF = Math.max(50, Math.min(105, parseFloat(roomTempF.toFixed(1))));
+    roomRH = Math.max(20, Math.min(95, Math.round(roomRH)));
+    roomCo2 = Math.max(350, Math.min(3000, Math.round(roomCo2)));
+  }
+
   const roomTempC = parseFloat(fahrenheitToCelsius(roomTempF).toFixed(1));
-  const roomLightPPFD = 10;
   const roomVPD = calculateVPD(roomTempF, roomRH, roomLightPPFD);
 
   // 2. UPDATE EACH TENT'S CLIMATE & ITS ITEMS
@@ -903,271 +920,34 @@ export function simulateEnvironmentTick(
       enclosurePhotoperiodHours = 24;
     }
 
-    // Update items inside tent (Plants & Mushrooms) using arbitrated equipment items
-    const updatedItems = arbitratedItems.map(item => {
-      if (item.category === 'plant') {
-        const plant = { ...item };
-        const isDay = tLightPPFD > 80;
-
-        // Ensure keyDates exists
-        if (!plant.keyDates) {
-          plant.keyDates = {
-            plantedDate: currentSimTime - (plant.ageDays || 1) * 86400000
-          };
-          if (plant.stage !== 'germination' && plant.stage !== 'rooting') {
-            plant.keyDates.sproutedDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
-            plant.keyDates.seedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
-          }
-          if (plant.stage === 'mature_seedling' || plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
-            plant.keyDates.matureSeedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 12)) * 86400000;
-          }
-          if (plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
-            plant.keyDates.vegetativeDate = currentSimTime - Math.max(1, (plant.ageDays - 20)) * 86400000;
-          }
-          if (plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
-            plant.keyDates.floweringDate = currentSimTime - Math.max(1, (plant.ageDays - 35)) * 86400000;
-          }
-          if (plant.stage === 'ripening' || plant.stage === 'ready') {
-            plant.keyDates.ripeningDate = currentSimTime - Math.max(1, (plant.ageDays - 50)) * 86400000;
-          }
-          if (plant.stage === 'ready') {
-            plant.keyDates.readyDate = currentSimTime - 86400000;
-          }
-        }
-
-        // A. Root Zone Temperature Simulation
-        // Pot soil slowly equilibrates with tent ambient, room floor, and heat mat
-        const floorTempF = room.foundationType === 'conditioned_basement' ? 66.0 : (roomTempF - 2.0);
-        let targetRootTemp = tTempF * 0.7 + floorTempF * 0.3;
-        if (heatMatActive) {
-          targetRootTemp += 8.0; // Heat mat adds bottom warmth
-        }
-        const currentRoot = plant.rootTempF || targetRootTemp;
-        plant.rootTempF = parseFloat((currentRoot + (targetRootTemp - currentRoot) * 0.05 * (elapsedMinutes / 10)).toFixed(1));
-
-        // B. Plant Transpiration & Soil Moisture:
-        // Transpiration draws soil moisture and adds water vapor to tent
-        const transpirationRate = isDay ? 0.09 : 0.02;
-        const moistureConsumed = transpirationRate * (elapsedMinutes / 60);
-        plant.soilMoisture = Math.max(0, parseFloat((plant.soilMoisture - moistureConsumed).toFixed(2)));
-
-        if (isDay && plant.soilMoisture > 15) {
-          tRH += 0.15 * (elapsedMinutes / 10);
-        }
-
-        // C. Stage Suitability & Environmental Stress Assessment
-        const tentVpd = calculateVPD(tTempF, tRH, tLightPPFD);
-        const stageSuitability = evaluatePlantStageSuitability(
-          plant,
-          { tempF: tTempF, tempC: parseFloat(fahrenheitToCelsius(tTempF).toFixed(1)), rh: tRH, lightPPFD: tLightPPFD, vpdKpa: tentVpd, co2Ppm: tCo2 },
-          plant.rootTempF,
-          enclosurePhotoperiodHours
-        );
-
-        let healthDelta = 0;
-
-        // Soil moisture stress
-        if (plant.soilMoisture < 15) {
-          healthDelta -= 0.25 * (elapsedMinutes / 60); // Drought stress
-        } else if (plant.soilMoisture > 92) {
-          healthDelta -= 0.15 * (elapsedMinutes / 60); // Saturated root rot
-        }
-
-        // Root zone temperature stress
-        if (plant.rootTempF < 58) {
-          healthDelta -= 0.1 * (elapsedMinutes / 60); // Chilled roots
-        } else if (plant.rootTempF > 78) {
-          healthDelta -= 0.15 * (elapsedMinutes / 60); // Root pathogens
-        }
-
-        // VPD stress
-        if (tentVpd > 1.8) {
-          healthDelta -= 0.2 * (elapsedMinutes / 60); // Stomata closed / leaf burn
-        } else if (tentVpd < 0.35) {
-          healthDelta -= 0.08 * (elapsedMinutes / 60); // Mold / guttation
-        } else if (tentVpd >= 0.8 && tentVpd <= 1.4 && plant.soilMoisture > 40 && plant.soilMoisture < 80) {
-          healthDelta += 0.25 * (elapsedMinutes / 60); // Healthy recovery
-        }
-
-        // Factor in stage suitability
-        if (stageSuitability.status === 'optimal') {
-          healthDelta += 0.1 * (elapsedMinutes / 60);
-        } else if (stageSuitability.status === 'critical') {
-          healthDelta -= 0.3 * (elapsedMinutes / 60);
-        }
-
-        plant.health = Math.max(0, Math.min(100, parseFloat((plant.health + healthDelta).toFixed(1))));
-
-        // Track age & stage days
-        const elapsedDays = elapsedMinutes / (60 * 24);
-        plant.ageDays = parseFloat((plant.ageDays + elapsedDays).toFixed(2));
-        plant.currentStageDays = parseFloat(((plant.currentStageDays || 0) + elapsedDays).toFixed(2));
-
-        // D. Growth Progress & Cultivar Milestone Progression
-        if (plant.health > 25 && !plant.isHarvested) {
-          // Elevated CO2 (800-1400 ppm) with high PPFD provides +25% growth acceleration!
-          let co2Multiplier = 1.0;
-          if (isDay && tLightPPFD > 600) {
-            if (tCo2 >= 1000 && tCo2 <= 1500) {
-              co2Multiplier = 1.25; // Supercharged photosynthesis!
-            } else if (tCo2 < 350) {
-              co2Multiplier = 0.65; // CO2 starved
-            }
-          }
-
-          // Expected days for current stage
-          let expectedDays = DEFAULT_STAGE_DURATIONS[plant.stage] || 30;
-          if (plant.stage === 'germination' && plant.germinationDaysExpected) expectedDays = plant.germinationDaysExpected;
-          else if (plant.stage === 'rooting' && plant.rootingDaysExpected) expectedDays = plant.rootingDaysExpected;
-          else if (plant.stage === 'seedling' && plant.seedlingDaysExpected) expectedDays = plant.seedlingDaysExpected;
-          else if (plant.stage === 'mature_seedling' && plant.matureSeedlingDaysExpected) expectedDays = plant.matureSeedlingDaysExpected;
-          else if (plant.stage === 'vegetative' && plant.vegetativeDaysExpected) expectedDays = plant.vegetativeDaysExpected;
-          else if (plant.stage === 'flowering' && plant.floweringDaysExpected) expectedDays = plant.floweringDaysExpected;
-          else if (plant.stage === 'ripening' && plant.ripeningDaysExpected) expectedDays = plant.ripeningDaysExpected;
-
-          const baseDailyPercent = 100 / Math.max(1, expectedDays);
-          const progressDelta = baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * co2Multiplier;
-          plant.stageProgress = Math.min(100, plant.stageProgress + progressDelta);
-
-          // Check for Stage Advancement & Milestone Date Recording!
-          if (plant.stageProgress >= 100 && plant.stage !== 'ready') {
-            plant.stageProgress = 0;
-            plant.currentStageDays = 0;
-            const previousStage = plant.stage;
-            const nextStage = getNextPlantStage(plant.stage, plant.propagationType || 'seed');
-            plant.stage = nextStage;
-
-            // Record precise key date timestamps
-            if (previousStage === 'germination') {
-              plant.keyDates.sproutedDate = currentSimTime;
-              plant.keyDates.seedlingDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🌱 Seed Sprouted: ${plant.name}`,
-                message: `${plant.name} has successfully germinated and broken through soil! Entered Seedling stage.`
-              });
-            } else if (previousStage === 'rooting') {
-              plant.keyDates.rootedDate = currentSimTime;
-              plant.keyDates.seedlingDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🌱 Clone Rooted: ${plant.name}`,
-                message: `${plant.name} cutting has successfully struck roots! Entered Seedling stage.`
-              });
-            } else if (previousStage === 'seedling') {
-              plant.keyDates.matureSeedlingDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🌿 Mature Seedling: ${plant.name}`,
-                message: `${plant.name} has established multiple leaf sets. Entered Mature Seedling stage.`
-              });
-            } else if (previousStage === 'mature_seedling') {
-              plant.keyDates.vegetativeDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🌿 Vegetative Growth: ${plant.name}`,
-                message: `${plant.name} is now in rapid vegetative growth under 18h lighting.`
-              });
-            } else if (previousStage === 'vegetative') {
-              plant.keyDates.floweringDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🌸 Flowering Transition: ${plant.name}`,
-                message: `${plant.name} has initiated flowering! Calyx and pistil formation underway.`
-              });
-            } else if (previousStage === 'flowering') {
-              plant.keyDates.ripeningDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `✨ Ripening Stage: ${plant.name}`,
-                message: `${plant.name} entering late ripen phase. Trichome ambering and aroma peaking.`
-              });
-            } else if (previousStage === 'ripening') {
-              plant.keyDates.readyDate = currentSimTime;
-              events.push({
-                type: 'info',
-                title: `🏆 Ready for Harvest: ${plant.name}`,
-                message: `${plant.name} has reached peak maturity and resin density. Ready to harvest!`
-              });
-            }
-          }
-
-          // Size & yield potential scaling based on stage
-          if (plant.stage === 'seedling') {
-            plant.heightInches = Math.min(8, plant.heightInches + 0.005 * progressDelta);
-            plant.canopyWidthInches = Math.min(6, plant.canopyWidthInches + 0.004 * progressDelta);
-          } else if (plant.stage === 'mature_seedling') {
-            plant.heightInches = Math.min(14, plant.heightInches + 0.01 * progressDelta);
-            plant.canopyWidthInches = Math.min(12, plant.canopyWidthInches + 0.01 * progressDelta);
-          } else if (plant.stage === 'vegetative') {
-            plant.heightInches = Math.min(48, plant.heightInches + 0.025 * progressDelta);
-            plant.canopyWidthInches = Math.min(36, plant.canopyWidthInches + 0.025 * progressDelta);
-          } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
-            plant.yieldPotentialGrams = Math.min(380, plant.yieldPotentialGrams + 0.18 * progressDelta);
-          }
-        }
-
-        return plant;
-      } else if (item.category === 'mushroom') {
-        const shroom = { ...item };
-
-        // Fungi cellular respiration:
-        // Canopy CO2 enrichment is continuously calculated via ventilation mass balance.
-
-        let healthDelta = 0;
-        // High humidity requirement
-        if (tRH < 70) {
-          healthDelta -= 0.35 * (elapsedMinutes / 60); // Pins drying
-        } else if (tRH >= 85) {
-          healthDelta += 0.25 * (elapsedMinutes / 60);
-        }
-
-        // High CO2 impact on mushroom stages:
-        // Colonization loves high CO2 (2000-5000 ppm)
-        // Fruiting requires Fresh Air Exchange (FAE) (<1000 ppm) to prevent leggy fuzzy stems
-        if (shroom.stage === 'fruiting' || shroom.stage === 'pinning') {
-          if (tCo2 > 1300) {
-            healthDelta -= 0.15 * (elapsedMinutes / 60); // Fuzzy feet / cap deformity
-          }
-        }
-
-        // Substrate moisture loss
-        const loss = 0.03 * (elapsedMinutes / 60);
-        shroom.substrateMoisture = Math.max(0, parseFloat((shroom.substrateMoisture - loss).toFixed(2)));
-        if (shroom.substrateMoisture < 40) {
-          healthDelta -= 0.25 * (elapsedMinutes / 60);
-        }
-
-        shroom.health = Math.max(0, Math.min(100, parseFloat((shroom.health + healthDelta).toFixed(1))));
-
-        if (shroom.health > 35 && !shroom.isHarvested) {
-          const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24));
-          shroom.ageDays = parseFloat((shroom.ageDays + elapsedMinutes / (60 * 24)).toFixed(2));
-          shroom.stageProgress = Math.min(100, shroom.stageProgress + shroomProgressRate * 14);
-
-          if (shroom.stageProgress >= 100) {
-            shroom.stageProgress = 0;
-            if (shroom.stage === 'colonizing') shroom.stage = 'pinning';
-            else if (shroom.stage === 'pinning') shroom.stage = 'fruiting';
-            else if (shroom.stage === 'fruiting') shroom.stage = 'mature';
-            else if (shroom.stage === 'mature') shroom.stage = 'ready';
-          }
-
-          if (shroom.stage === 'fruiting' || shroom.stage === 'mature') {
-            shroom.yieldPotentialGrams = Math.min(480, shroom.yieldPotentialGrams + 0.3 * (elapsedMinutes / 60));
-          }
-        }
-
-        return shroom;
-      }
-      return item;
-    });
-
     tTempF = Math.max(45, Math.min(115, parseFloat(tTempF.toFixed(1))));
     tRH = Math.max(15, Math.min(99, Math.round(tRH)));
     tCo2 = Math.max(200, Math.min(5000, Math.round(tCo2)));
     const tTempC = parseFloat(fahrenheitToCelsius(tTempF).toFixed(1));
     const tVPD = calculateVPD(tTempF, tRH, tLightPPFD);
+
+    // Update items inside tent (Plants & Mushrooms) using arbitrated equipment items
+    const updatedItems = arbitratedItems.map(item => {
+      return simulateCropItem({
+        item,
+        enclosureClimate: {
+          tempF: tTempF,
+          tempC: tTempC,
+          rh: tRH,
+          lightPPFD: tLightPPFD,
+          vpdKpa: tVPD,
+          co2Ppm: tCo2
+        },
+        photoperiodHours: enclosurePhotoperiodHours,
+        elapsedMinutes,
+        currentSimTime,
+        events,
+        room,
+        outside,
+        tentName: tent.name,
+        heatMatActive
+      });
+    });
 
     return {
       ...tent,
@@ -1186,6 +966,29 @@ export function simulateEnvironmentTick(
     };
   });
 
+  // 3. UPDATE FREESTANDING ITEMS IN ROOM OR OUTDOOR GARDEN
+  const updatedRoomItems = room.items.map(item => {
+    return simulateCropItem({
+      item,
+      enclosureClimate: {
+        tempF: roomTempF,
+        tempC: roomTempC,
+        rh: roomRH,
+        lightPPFD: roomLightPPFD,
+        vpdKpa: roomVPD,
+        co2Ppm: roomCo2
+      },
+      photoperiodHours: (isOutdoorGarden || isGreenhouse) ? 14 : 18,
+      elapsedMinutes,
+      currentSimTime,
+      events,
+      room,
+      outside,
+      tentName: isOutdoorGarden ? room.name : undefined,
+      heatMatActive: false
+    });
+  });
+
   return {
     room: {
       ...room,
@@ -1197,8 +1000,374 @@ export function simulateEnvironmentTick(
         vpdKpa: roomVPD,
         co2Ppm: roomCo2
       },
-      tents: updatedTents
+      tents: updatedTents,
+      items: updatedRoomItems
     },
     events
   };
+}
+
+/**
+ * Universal Crop Simulation Helper:
+ * Evaluates soil dynamics, container volume buffering, medium drainage,
+ * natural rainfall, microbial health, EC nutrient uptake, pH drift, and Hops lupulin accumulation.
+ */
+function simulateCropItem(params: {
+  item: any;
+  enclosureClimate: { tempF: number; tempC: number; rh: number; lightPPFD: number; vpdKpa: number; co2Ppm: number };
+  photoperiodHours: number;
+  elapsedMinutes: number;
+  currentSimTime: number;
+  events: SimulationEvent[];
+  room: Room;
+  outside?: OutsideConditions;
+  tentName?: string;
+  heatMatActive?: boolean;
+}): any {
+  const { item, enclosureClimate, photoperiodHours, elapsedMinutes, currentSimTime, events, room, outside, tentName, heatMatActive } = params;
+
+  if (item.category === 'plant') {
+    const plant = { ...item } as PlantItem;
+    const isDay = enclosureClimate.lightPPFD > 60;
+    const isOutdoor = room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
+
+    // Ensure keyDates exists
+    if (!plant.keyDates) {
+      plant.keyDates = {
+        plantedDate: currentSimTime - (plant.ageDays || 1) * 86400000
+      };
+      if (plant.stage !== 'germination' && plant.stage !== 'rooting') {
+        plant.keyDates.sproutedDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
+        plant.keyDates.seedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 5)) * 86400000;
+      }
+      if (plant.stage === 'mature_seedling' || plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+        plant.keyDates.matureSeedlingDate = currentSimTime - Math.max(1, (plant.ageDays - 12)) * 86400000;
+      }
+      if (plant.stage === 'vegetative' || plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+        plant.keyDates.vegetativeDate = currentSimTime - Math.max(1, (plant.ageDays - 20)) * 86400000;
+      }
+      if (plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready') {
+        plant.keyDates.floweringDate = currentSimTime - Math.max(1, (plant.ageDays - 35)) * 86400000;
+      }
+      if (plant.stage === 'ripening' || plant.stage === 'ready') {
+        plant.keyDates.ripeningDate = currentSimTime - Math.max(1, (plant.ageDays - 50)) * 86400000;
+      }
+      if (plant.stage === 'ready') {
+        plant.keyDates.readyDate = currentSimTime - 86400000;
+      }
+    }
+
+    // A. Root Zone Temperature Simulation
+    let targetRootTemp = enclosureClimate.tempF * 0.75 + 16.0;
+    if (heatMatActive) {
+      targetRootTemp += 8.0;
+    }
+    if (isOutdoor) {
+      targetRootTemp = enclosureClimate.tempF * 0.82 + 12.0;
+    }
+    const currentRoot = plant.rootTempF || targetRootTemp;
+    plant.rootTempF = parseFloat((currentRoot + (targetRootTemp - currentRoot) * 0.05 * (elapsedMinutes / 10)).toFixed(1));
+
+    // B. Soil & Medium Dynamics:
+    // Volume buffering: 1-gal pot dries quickly; 10-gal or 50-gal raised bed buffers moisture
+    const volGallons = plant.containerVolumeGallons || (plant.containerType === 'raised_bed_cedar' ? 50 : plant.containerType === 'in_ground_earth' ? 100 : 5);
+    const volBuffer = Math.max(0.2, Math.min(2.5, 5 / volGallons));
+    
+    let mediumDrainFactor = 1.0;
+    if (plant.growingMedium === 'coco_perlite') mediumDrainFactor = 1.35;
+    else if (plant.growingMedium === 'living_organic_soil' || plant.growingMedium === 'native_garden_loam') mediumDrainFactor = 0.85;
+    else if (plant.systemType === 'dwc') mediumDrainFactor = 0.05;
+
+    const transpirationRate = (isDay ? 0.08 : 0.02) * volBuffer * mediumDrainFactor;
+    const moistureConsumed = transpirationRate * (elapsedMinutes / 60);
+    plant.soilMoisture = Math.max(0, parseFloat((plant.soilMoisture - moistureConsumed).toFixed(2)));
+
+    // Rain hydration for outdoor gardens
+    if (isOutdoor && outside?.weather === 'rainy') {
+      const rainHydration = (room.environmentType === 'outdoor_garden' ? 0.45 : 0.08) * (elapsedMinutes / 10);
+      plant.soilMoisture = Math.min(100, parseFloat((plant.soilMoisture + rainHydration).toFixed(1)));
+    }
+
+    // Soil pH drift & microbial buffering
+    const elapsedDays = elapsedMinutes / (60 * 24);
+    if (plant.soilPh === undefined) {
+      plant.soilPh = plant.systemType === 'dwc' || plant.systemType === 'ebb_and_flow' ? 5.8 : 6.4;
+    }
+    if (plant.systemType === 'dwc' || plant.systemType === 'ebb_and_flow') {
+      plant.soilPh = parseFloat(Math.min(7.2, plant.soilPh + 0.015 * elapsedDays).toFixed(2));
+    } else if (plant.growingMedium === 'living_organic_soil') {
+      const drift = (6.5 - plant.soilPh) * 0.06 * elapsedDays;
+      plant.soilPh = parseFloat((plant.soilPh + drift).toFixed(2));
+    }
+
+    // EC / Nutrient consumption
+    if (plant.ecTdsPpm === undefined) {
+      plant.ecTdsPpm = plant.stage === 'seedling' ? 450 : plant.stage === 'vegetative' ? 1100 : 1350;
+    }
+    if (plant.stageProgress > 0 && !plant.isHarvested) {
+      const dailyConsumption = plant.stage === 'vegetative' ? 16 : plant.stage === 'flowering' ? 24 : 8;
+      plant.ecTdsPpm = Math.max(120, Math.round(plant.ecTdsPpm - dailyConsumption * elapsedDays));
+    }
+
+    // Aeration & Microbial Colony initialization
+    if (plant.microbialHealth === undefined) {
+      plant.microbialHealth = plant.growingMedium === 'living_organic_soil' ? 95 : plant.growingMedium === 'coco_perlite' ? 45 : 30;
+    }
+    if (plant.aerationOxygenPct === undefined) {
+      plant.aerationOxygenPct = plant.systemType === 'dwc' ? 96 : plant.containerType === 'fabric_pot' ? 88 : 72;
+    }
+
+    // Hops Alpha Acid Accumulation
+    if (plant.species === 'Hops') {
+      let maxAA = 6.5;
+      const sLower = (plant.strainName || '').toLowerCase();
+      if (sLower.includes('citra')) maxAA = 12.8;
+      else if (sLower.includes('chinook')) maxAA = 13.5;
+      else if (sLower.includes('centennial')) maxAA = 10.8;
+      else if (sLower.includes('saaz')) maxAA = 3.9;
+      else if (sLower.includes('amarillo')) maxAA = 9.8;
+      else maxAA = 6.2; // Cascade
+
+      if (plant.alphaAcidsPct === undefined) {
+        plant.alphaAcidsPct = plant.stage === 'flowering' ? maxAA * 0.5 : plant.stage === 'ripening' || plant.stage === 'ready' ? maxAA : 0.5;
+      } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+        plant.alphaAcidsPct = Math.min(maxAA, parseFloat((plant.alphaAcidsPct + 0.12 * elapsedDays).toFixed(1)));
+      }
+    }
+
+    // C. Stage Suitability & Stress Assessment
+    const stageSuitability = evaluatePlantStageSuitability(
+      plant,
+      enclosureClimate,
+      plant.rootTempF,
+      photoperiodHours
+    );
+
+    let healthDelta = 0;
+    if (plant.soilMoisture < 15) {
+      healthDelta -= 0.25 * (elapsedMinutes / 60);
+    } else if (plant.soilMoisture > 92 && plant.systemType !== 'dwc') {
+      healthDelta -= 0.15 * (elapsedMinutes / 60);
+    }
+
+    if (plant.rootTempF < 58) {
+      healthDelta -= 0.1 * (elapsedMinutes / 60);
+    } else if (plant.rootTempF > 78) {
+      healthDelta -= 0.15 * (elapsedMinutes / 60);
+    }
+
+    if (enclosureClimate.vpdKpa > 1.8) {
+      healthDelta -= 0.2 * (elapsedMinutes / 60);
+    } else if (enclosureClimate.vpdKpa < 0.35) {
+      healthDelta -= 0.08 * (elapsedMinutes / 60);
+    } else if (enclosureClimate.vpdKpa >= 0.8 && enclosureClimate.vpdKpa <= 1.4 && plant.soilMoisture > 40 && plant.soilMoisture < 80) {
+      healthDelta += 0.25 * (elapsedMinutes / 60);
+    }
+
+    if (stageSuitability.status === 'optimal') {
+      healthDelta += 0.12 * (elapsedMinutes / 60);
+    } else if (stageSuitability.status === 'critical') {
+      healthDelta -= 0.3 * (elapsedMinutes / 60);
+    }
+
+    plant.health = Math.max(0, Math.min(100, parseFloat((plant.health + healthDelta).toFixed(1))));
+    plant.ageDays = parseFloat((plant.ageDays + elapsedDays).toFixed(2));
+    plant.currentStageDays = parseFloat(((plant.currentStageDays || 0) + elapsedDays).toFixed(2));
+
+    // D. Growth Progress & Cultivar Milestone Progression
+    if (plant.health > 25 && !plant.isHarvested) {
+      let co2Multiplier = 1.0;
+      if (isDay && enclosureClimate.lightPPFD > 500) {
+        if (enclosureClimate.co2Ppm >= 1000 && enclosureClimate.co2Ppm <= 1500) {
+          co2Multiplier = 1.25;
+        } else if (enclosureClimate.co2Ppm < 350) {
+          co2Multiplier = 0.65;
+        }
+      }
+
+      let expectedDays = DEFAULT_STAGE_DURATIONS[plant.stage] || 30;
+      if (plant.stage === 'germination' && plant.germinationDaysExpected) expectedDays = plant.germinationDaysExpected;
+      else if (plant.stage === 'rooting' && plant.rootingDaysExpected) expectedDays = plant.rootingDaysExpected;
+      else if (plant.stage === 'seedling' && plant.seedlingDaysExpected) expectedDays = plant.seedlingDaysExpected;
+      else if (plant.stage === 'mature_seedling' && plant.matureSeedlingDaysExpected) expectedDays = plant.matureSeedlingDaysExpected;
+      else if (plant.stage === 'vegetative' && plant.vegetativeDaysExpected) expectedDays = plant.vegetativeDaysExpected;
+      else if (plant.stage === 'flowering' && plant.floweringDaysExpected) expectedDays = plant.floweringDaysExpected;
+      else if (plant.stage === 'ripening' && plant.ripeningDaysExpected) expectedDays = plant.ripeningDaysExpected;
+
+      const baseDailyPercent = 100 / Math.max(1, expectedDays);
+      const progressDelta = baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * co2Multiplier;
+      plant.stageProgress = Math.min(100, plant.stageProgress + progressDelta);
+
+      if (plant.stageProgress >= 100 && plant.stage !== 'ready') {
+        plant.stageProgress = 0;
+        plant.currentStageDays = 0;
+        const previousStage = plant.stage;
+        const nextStage = getNextPlantStage(plant.stage, plant.propagationType || 'seed');
+        plant.stage = nextStage;
+
+        if (previousStage === 'germination') {
+          plant.keyDates.sproutedDate = currentSimTime;
+          plant.keyDates.seedlingDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🌱 Seed Sprouted: ${plant.name}`,
+            message: `${plant.name} has successfully germinated and emerged! Entered Seedling stage.`
+          });
+        } else if (previousStage === 'rooting') {
+          plant.keyDates.rootedDate = currentSimTime;
+          plant.keyDates.seedlingDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🌱 Clone Rooted: ${plant.name}`,
+            message: `${plant.name} cutting has struck vigorous roots! Entered Seedling stage.`
+          });
+        } else if (previousStage === 'seedling') {
+          plant.keyDates.matureSeedlingDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🌿 Mature Seedling: ${plant.name}`,
+            message: `${plant.name} has established multiple leaf sets. Entered Mature Seedling stage.`
+          });
+        } else if (previousStage === 'mature_seedling') {
+          plant.keyDates.vegetativeDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🌿 Vegetative Growth: ${plant.name}`,
+            message: `${plant.name} is now in rapid vegetative growth canopy expansion.`
+          });
+        } else if (previousStage === 'vegetative') {
+          plant.keyDates.floweringDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🌸 Flowering Transition: ${plant.name}`,
+            message: `${plant.name} has initiated flowering! Calyx and cone formation underway.`
+          });
+        } else if (previousStage === 'flowering') {
+          plant.keyDates.ripeningDate = currentSimTime;
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `✨ Ripening Stage: ${plant.name}`,
+            message: `${plant.name} entering late ripen phase. Aromatics, essential oils, and resins peaking.`
+          });
+        } else if (previousStage === 'ripening') {
+          plant.keyDates.readyDate = currentSimTime;
+          events.push({
+            type: 'success',
+            category: 'crop',
+            tentName,
+            title: `🏆 Ready for Harvest: ${plant.name}`,
+            message: `${plant.name} has reached peak maturity. Ready to harvest!`
+          });
+        }
+      }
+
+      // Size & yield scaling
+      if (plant.stage === 'seedling') {
+        plant.heightInches = Math.min(10, plant.heightInches + 0.006 * progressDelta);
+        plant.canopyWidthInches = Math.min(8, plant.canopyWidthInches + 0.005 * progressDelta);
+      } else if (plant.stage === 'mature_seedling') {
+        plant.heightInches = Math.min(18, plant.heightInches + 0.015 * progressDelta);
+        plant.canopyWidthInches = Math.min(14, plant.canopyWidthInches + 0.012 * progressDelta);
+      } else if (plant.stage === 'vegetative') {
+        const maxHeight = plant.species === 'Hops' ? 180 : 54;
+        plant.heightInches = Math.min(maxHeight, plant.heightInches + (plant.species === 'Hops' ? 0.09 : 0.03) * progressDelta);
+        plant.canopyWidthInches = Math.min(42, plant.canopyWidthInches + 0.025 * progressDelta);
+      } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+        const maxYield = plant.species === 'Hops' ? 450 : 380;
+        plant.yieldPotentialGrams = Math.min(maxYield, plant.yieldPotentialGrams + 0.22 * progressDelta);
+      }
+    }
+
+    return plant;
+  } else if (item.category === 'mushroom') {
+    const shroom = { ...item } as MushroomItem;
+    let healthDelta = 0;
+    if (enclosureClimate.rh < 70) {
+      healthDelta -= 0.35 * (elapsedMinutes / 60);
+    } else if (enclosureClimate.rh >= 85) {
+      healthDelta += 0.25 * (elapsedMinutes / 60);
+    }
+
+    if (shroom.stage === 'fruiting' || shroom.stage === 'pinning') {
+      if (enclosureClimate.co2Ppm > 1300) {
+        healthDelta -= 0.15 * (elapsedMinutes / 60);
+      }
+    }
+
+    const loss = 0.03 * (elapsedMinutes / 60);
+    shroom.substrateMoisture = Math.max(0, parseFloat((shroom.substrateMoisture - loss).toFixed(2)));
+    if (shroom.substrateMoisture < 40) {
+      healthDelta -= 0.25 * (elapsedMinutes / 60);
+    }
+
+    shroom.health = Math.max(0, Math.min(100, parseFloat((shroom.health + healthDelta).toFixed(1))));
+
+    if (shroom.health > 35 && !shroom.isHarvested) {
+      const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24));
+      shroom.ageDays = parseFloat((shroom.ageDays + elapsedMinutes / (60 * 24)).toFixed(2));
+      shroom.stageProgress = Math.min(100, shroom.stageProgress + shroomProgressRate * 14);
+
+      if (shroom.stageProgress >= 100) {
+        shroom.stageProgress = 0;
+        const prevShroomStage = shroom.stage;
+        if (prevShroomStage === 'colonizing') {
+          shroom.stage = 'pinning';
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🍄 Primordia Pinning: ${shroom.name}`,
+            message: `Tiny pinhead primordia are emerging from the colonized substrate! Maintain high RH.`
+          });
+        } else if (prevShroomStage === 'pinning') {
+          shroom.stage = 'fruiting';
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🍄 Fruiting Flush: ${shroom.name}`,
+            message: `Pins are rapidly expanding into clustered fruiting caps! Ensure adequate fresh air exchange.`
+          });
+        } else if (prevShroomStage === 'fruiting') {
+          shroom.stage = 'mature';
+          events.push({
+            type: 'info',
+            category: 'crop',
+            tentName,
+            title: `🍄 Mature Caps: ${shroom.name}`,
+            message: `Veils are stretching and caps are uncurling. Spore drop imminent.`
+          });
+        } else if (prevShroomStage === 'mature') {
+          shroom.stage = 'ready';
+          events.push({
+            type: 'success',
+            category: 'crop',
+            tentName,
+            title: `🏆 Ready for Harvest: ${shroom.name}`,
+            message: `${shroom.name} has reached maximum prime flush density. Harvest before heavy spore drop!`
+          });
+        }
+      }
+
+      if (shroom.stage === 'fruiting' || shroom.stage === 'mature') {
+        shroom.yieldPotentialGrams = Math.min(480, shroom.yieldPotentialGrams + 0.3 * (elapsedMinutes / 60));
+      }
+    }
+
+    return shroom;
+  }
+
+  return item;
 }
