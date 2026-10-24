@@ -1,5 +1,6 @@
-import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, OutdoorLocation } from '../types/sim';
+import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, OutdoorLocation, Position3D, Item } from '../types/sim';
 import { simulateOutsideConditions, calculateVPD } from './physics';
+import { getDefaultSpatialPosition, getDefaultItemDimensions } from './spatial';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -37,6 +38,7 @@ export function createDefaultSimulationState(): SimulationState {
       controlMode: 'schedule',
       schedule: { enabled: true, onHour: 6, offHour: 0 }, // 18/6 light schedule
       dimensions: { length: 3.5, width: 3.5, height: 0.3, unit: 'ft' },
+      position: { x: 2.0, y: 2.0, z: 5.6 }, // Centered overhead
       notes: 'Full spectrum Samsung LM301H diodes + 660nm deep red for canopy penetration.'
     },
     {
@@ -58,6 +60,7 @@ export function createDefaultSimulationState(): SimulationState {
         maxSpeedPercent: 70
       },
       dimensions: { length: 1.2, width: 0.8, height: 0.8, unit: 'ft' },
+      position: { x: 3.2, y: 3.2, z: 5.8 }, // Top corner duct port
       notes: 'Smart controller adjusts speed based on canopy heat, excess RH, and CO2.'
     },
     {
@@ -71,6 +74,7 @@ export function createDefaultSimulationState(): SimulationState {
       controlMode: 'auto',
       targetRh: 62,
       dimensions: { length: 0.8, width: 0.8, height: 1.2, unit: 'ft' },
+      position: { x: 0.6, y: 3.2, z: 0 }, // Floor back-left corner
       notes: 'Maintains optimal VPD during vegetative growth.'
     },
     {
@@ -84,6 +88,7 @@ export function createDefaultSimulationState(): SimulationState {
       controlMode: 'auto',
       targetCo2Ppm: 1200,
       dimensions: { length: 0.8, width: 0.6, height: 1.4, unit: 'ft' },
+      position: { x: 0.6, y: 0.6, z: 0 }, // Floor front-left corner
       notes: 'Connected to 20lb CO2 tank. Enriches canopy to 1200 PPM under 480W LED.'
     }
   ];
@@ -123,6 +128,7 @@ export function createDefaultSimulationState(): SimulationState {
       yieldPotentialGrams: 140,
       isHarvested: false,
       dimensions: { length: 2.0, width: 2.0, height: 2.7, unit: 'ft' },
+      position: { x: 1.2, y: 1.5, z: 0 },
       notes: 'Rich terpene production, tight nodal spacing under the 480W LED.',
       lastWateredTime: simTime - 3600000 * 8
     },
@@ -159,6 +165,7 @@ export function createDefaultSimulationState(): SimulationState {
       yieldPotentialGrams: 120,
       isHarvested: false,
       dimensions: { length: 1.8, width: 1.8, height: 2.0, unit: 'ft' },
+      position: { x: 2.8, y: 1.5, z: 0 },
       notes: 'Topped at node 4 for an even four-mainline canopy.',
       lastWateredTime: simTime - 3600000 * 12
     },
@@ -196,6 +203,7 @@ export function createDefaultSimulationState(): SimulationState {
       yieldPotentialGrams: 220,
       isHarvested: false,
       dimensions: { length: 1.7, width: 1.7, height: 3.0, unit: 'ft' },
+      position: { x: 2.0, y: 2.8, z: 0 },
       notes: 'Prolific yellow blossom trusses forming along the trellis.',
       lastWateredTime: simTime - 3600000 * 6
     }
@@ -210,6 +218,7 @@ export function createDefaultSimulationState(): SimulationState {
     poleDiameter: '22mm Steel Poles',
     ventPorts: 'Dual 6", 8" & 10" Cinch Ports',
     dimensions: { length: 4, width: 4, height: 6.7, unit: 'ft' },
+    position: { x: 2.5, y: 2.0, z: 0 }, // Safe buffer from left doorway and back wall
     climate: {
       tempF: 75.4,
       tempC: 24.1,
@@ -236,6 +245,7 @@ export function createDefaultSimulationState(): SimulationState {
       controlMode: 'schedule',
       schedule: { enabled: true, onHour: 7, offHour: 19 }, // 12/12 light schedule
       dimensions: { length: 2.0, width: 0.5, height: 0.2, unit: 'ft' },
+      position: { x: 1.5, y: 1.5, z: 5.5 },
       notes: 'Provides directional light cues for cap orientation without heat drying.'
     },
     {
@@ -249,6 +259,7 @@ export function createDefaultSimulationState(): SimulationState {
       controlMode: 'auto',
       targetRh: 92,
       dimensions: { length: 1.2, width: 1.0, height: 1.5, unit: 'ft' },
+      position: { x: 0.5, y: 2.3, z: 0 },
       notes: 'Ultrasonic fine cold droplet mist piped into top shelf.'
     },
     {
@@ -271,6 +282,7 @@ export function createDefaultSimulationState(): SimulationState {
         cycleOffMinutes: 15
       },
       dimensions: { length: 0.8, width: 0.8, height: 0.8, unit: 'ft' },
+      position: { x: 2.4, y: 2.4, z: 5.2 },
       notes: 'Intelligent FAE evacuation fan: monitors CO2 build-up and pauses when humidifier is active.'
     }
   ];
@@ -293,6 +305,7 @@ export function createDefaultSimulationState(): SimulationState {
       isHarvested: false,
       containerType: 'monotub',
       dimensions: { length: 1.8, width: 1.2, height: 0.9, unit: 'ft' },
+      position: { x: 1.5, y: 1.0, z: 0 },
       notes: 'Vibrant yellow umbrella caps unfurling in dense clusters.',
       lastMistedTime: simTime - 3600000 * 3
     },
@@ -313,6 +326,7 @@ export function createDefaultSimulationState(): SimulationState {
       isHarvested: false,
       containerType: 'fruiting_block',
       dimensions: { length: 0.9, width: 0.9, height: 1.1, unit: 'ft' },
+      position: { x: 1.5, y: 2.2, z: 2.0 },
       notes: 'Snowy pom-poms with delicate icicle-like spines beginning to cascade.',
       lastMistedTime: simTime - 3600000 * 5
     }
@@ -327,6 +341,7 @@ export function createDefaultSimulationState(): SimulationState {
     poleDiameter: '19mm Steel Rods',
     ventPorts: 'Dual 6" & 8" Duct Ports',
     dimensions: { length: 3, width: 3, height: 6, unit: 'ft' },
+    position: { x: 8.5, y: 2.0, z: 0 }, // Positioned side-by-side with tentA with generous aisle
     climate: {
       tempF: 68.2,
       tempC: 20.1,
@@ -352,6 +367,7 @@ export function createDefaultSimulationState(): SimulationState {
       setting: 65,
       targetRh: 52,
       dimensions: { length: 1.5, width: 1.2, height: 2.2, unit: 'ft' },
+      position: { x: 14.0, y: 11.0, z: 0 }, // Along perimeter wall
       notes: 'Keeps main lung room humidity balanced and prevents wall condensation.'
     },
     {
@@ -363,6 +379,7 @@ export function createDefaultSimulationState(): SimulationState {
       powerWatts: 55,
       setting: 70,
       dimensions: { length: 1.4, width: 1.4, height: 3.8, unit: 'ft' },
+      position: { x: 1.8, y: 10.5, z: 0 },
       notes: 'Prevents microclimate dead zones in the primary room space.'
     }
   ];
@@ -483,7 +500,7 @@ export function loadSimulation(): SimulationState {
       state.room.climate.co2Ppm = 420;
     }
 
-    const migrateTent = (t: Tent): Tent => {
+    const migrateTent = (t: Tent, tIdx: number, roomDimensions: any): Tent => {
       const isShroomTent = t.items.some(i => i.category === 'mushroom');
       let tentCo2 = t.climate.co2Ppm;
       if (!tentCo2 || tentCo2 < 350) {
@@ -502,9 +519,11 @@ export function loadSimulation(): SimulationState {
       }
 
       const controllerPriority = t.controllerPriority || (isShroomTent ? 'humidity_first' : 'balanced_auto');
+      const tentPos = t.position || getDefaultSpatialPosition('tent', roomDimensions, tIdx);
 
       return {
         ...t,
+        position: tentPos,
         controllerPriority,
         climate: {
           ...t.climate,
@@ -512,7 +531,17 @@ export function loadSimulation(): SimulationState {
           vpdKpa: calculateVPD(t.climate.tempF, tentRh, t.climate.lightPPFD || 0),
           co2Ppm: tentCo2
         },
-        items: t.items.map(i => {
+        items: t.items.map((i, iIdx) => {
+          const itemPos = i.position || getDefaultSpatialPosition(i.category, t.dimensions, iIdx, (i as any).type);
+          const itemDims = i.dimensions || getDefaultItemDimensions({
+            category: i.category,
+            type: (i as any).type,
+            species: (i as any).species,
+            stage: (i as any).stage,
+            containerType: (i as any).containerType,
+            petType: (i as any).petType
+          });
+
           if (i.category === 'plant') {
             const p = i as PlantItem;
             const age = p.ageDays || 10;
@@ -544,6 +573,8 @@ export function loadSimulation(): SimulationState {
 
             return {
               ...p,
+              dimensions: itemDims,
+              position: itemPos,
               propagationType: p.propagationType || 'seed',
               keyDates,
               currentStageDays: p.currentStageDays ?? Math.min(age, 5),
@@ -562,6 +593,8 @@ export function loadSimulation(): SimulationState {
             if (eq.type === 'exhaust_fan') {
               return {
                 ...eq,
+                dimensions: itemDims,
+                position: itemPos,
                 controlMode: eq.controlMode || 'auto',
                 autoTriggers: eq.autoTriggers || (isShroomTent ? {
                   tempTriggerHighF: 76,
@@ -586,6 +619,8 @@ export function loadSimulation(): SimulationState {
             if (eq.type === 'grow_light') {
               return {
                 ...eq,
+                dimensions: itemDims,
+                position: itemPos,
                 controlMode: eq.controlMode || 'schedule',
                 schedule: eq.schedule || { enabled: true, onHour: 6, offHour: 0 }
               };
@@ -593,20 +628,55 @@ export function loadSimulation(): SimulationState {
             if (eq.type === 'humidifier' || eq.type === 'dehumidifier' || eq.type === 'co2_regulator') {
               return {
                 ...eq,
+                dimensions: itemDims,
+                position: itemPos,
                 controlMode: eq.controlMode || 'auto'
               };
             }
+            return {
+              ...eq,
+              dimensions: itemDims,
+              position: itemPos
+            };
           }
-          return i;
+          return {
+            ...i,
+            dimensions: itemDims,
+            position: itemPos
+          };
         })
       };
     };
 
     state.rooms = state.rooms.map(rm => ({
       ...rm,
-      tents: rm.tents.map(migrateTent)
+      items: rm.items.map((i, iIdx) => ({
+        ...i,
+        dimensions: i.dimensions || getDefaultItemDimensions({
+          category: i.category,
+          type: (i as any).type,
+          species: (i as any).species,
+          stage: (i as any).stage,
+          containerType: (i as any).containerType,
+          petType: (i as any).petType
+        }),
+        position: i.position || getDefaultSpatialPosition(i.category, rm.dimensions, iIdx, (i as any).type)
+      })),
+      tents: rm.tents.map((t, tIdx) => migrateTent(t, tIdx, rm.dimensions))
     }));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
+
+    // Ensure backwards compatibility for harvest records
+    if (Array.isArray(state.harvests)) {
+      state.harvests = state.harvests.map(h => ({
+        ...h,
+        timeStr: h.timeStr || (h.timestamp ? new Date(h.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '10:00 AM'),
+        cureStatus: h.cureStatus || 'Cured & Ready',
+        originRoomName: h.originRoomName || state.room.name
+      }));
+    } else {
+      state.harvests = [];
+    }
 
     return state;
   } catch (err) {

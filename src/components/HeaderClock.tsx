@@ -10,6 +10,7 @@ import {
   Moon, 
   Clock, 
   Award,
+  Package,
   Calendar,
   Sparkles,
   Save,
@@ -197,15 +198,15 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
             °{state.tempUnit}
           </button>
 
-          {/* Harvests Trophy Button */}
+          {/* Harvests Inventory Button */}
           <button
             onClick={onOpenHarvests}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/40 border border-amber-800/50 hover:bg-amber-900/40 text-amber-300 text-xs font-medium transition-colors"
-            title="View Harvests Inventory"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/40 border border-emerald-800/50 hover:bg-emerald-900/40 text-emerald-300 text-xs font-medium transition-colors"
+            title="Open Cultivator Harvest Inventory"
           >
-            <Award className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Harvests</span>
-            <span className="px-1 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono">
+            <Package className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Inventory</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono font-bold">
               {state.harvests.length}
             </span>
           </button>

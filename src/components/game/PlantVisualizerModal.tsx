@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Play, RotateCcw, Droplets, Sparkles, Scissors, Award, Sun, Thermometer, Wind, Check, Calendar, Activity } from 'lucide-react';
+import { X, Play, RotateCcw, Droplets, Sparkles, Scissors, Award, Sun, Thermometer, Wind, Check, Calendar, Activity, Sliders } from 'lucide-react';
 import { PlantItem, MushroomItem, PlantStage, Climate } from '../../types/sim';
 import { drawPlant, drawMushroom } from './PlantSprites';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime } from '../../utils/plantLifecycle';
@@ -14,6 +14,7 @@ interface PlantVisualizerModalProps {
   onFeed: (item: PlantItem) => void;
   onPrune: (item: PlantItem) => void;
   onHarvest: (item: PlantItem | MushroomItem) => void;
+  onOpenFullInspector?: () => void;
 }
 
 export const PlantVisualizerModal: React.FC<PlantVisualizerModalProps> = ({
@@ -24,7 +25,8 @@ export const PlantVisualizerModal: React.FC<PlantVisualizerModalProps> = ({
   onWater,
   onFeed,
   onPrune,
-  onHarvest
+  onHarvest,
+  onOpenFullInspector
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [timelapseMode, setTimelapseMode] = useState(false);
@@ -364,6 +366,20 @@ export const PlantVisualizerModal: React.FC<PlantVisualizerModalProps> = ({
               <Award className="w-4 h-4" />
               <span>Harvest Crop ({item.yieldPotentialGrams.toFixed(0)}g)</span>
             </button>
+
+            {onOpenFullInspector && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEffects.playClick();
+                  onOpenFullInspector();
+                }}
+                className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-500/30 text-emerald-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+              >
+                <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+                <span>⚙️ Full Properties &amp; Stage Editor</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

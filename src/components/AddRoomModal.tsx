@@ -19,7 +19,7 @@ import {
   Sprout,
   Flower2
 } from 'lucide-react';
-import { Room, ConstructionStandard, Dimensions, Climate, RoomEnvironmentType, GardenLayoutConfig, PlantItem } from '../types/sim';
+import { Room, ConstructionStandard, Dimensions, Climate, RoomEnvironmentType, GardenLayoutConfig, PlantItem, OutsideConditions } from '../types/sim';
 import { calculateVPD } from '../utils/physics';
 
 interface AddRoomModalProps {
@@ -27,7 +27,7 @@ interface AddRoomModalProps {
   onClose: () => void;
   onAddRoom: (room: Room) => void;
   outdoorCo2Ppm?: number;
-  outsideClimate?: Climate;
+  outsideClimate?: OutsideConditions;
 }
 
 interface RoomPreset {

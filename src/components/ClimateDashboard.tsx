@@ -411,20 +411,30 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
 
             {/* Dynamic Room CO2 Readout Row */}
             {(() => {
+              const isOutdoor = room.environmentType === 'outdoor_garden';
+              const isGreenhouse = room.environmentType === 'greenhouse';
               const peopleInRoom = room.items.filter(i => i.category === 'person');
               const petsInRoom = room.items.filter(i => i.category === 'pet');
               const totalOccupants = peopleInRoom.length + petsInRoom.length;
               
-              let co2BadgeText = 'Unoccupied · 420 PPM';
-              let co2BadgeTitle = 'Room has no people or pets. Standard 0.35 ACH fresh air infiltration maintains clean outdoor ambient equilibrium (~420 PPM).';
-              let co2BadgeClass = 'bg-zinc-800 text-zinc-400 border border-zinc-750';
+              let co2BadgeText = isOutdoor ? 'Open Sky' : isGreenhouse ? 'Ridge Louvers' : 'Unoccupied · 420 PPM';
+              let co2BadgeTitle = isOutdoor 
+                ? 'Open outdoor atmosphere: Free ambient wind circulation keeps CO₂ at natural ambient outdoor levels.' 
+                : isGreenhouse 
+                  ? 'Greenhouse passive ventilation: Convective ridge louvers exchange air with outdoor atmosphere.' 
+                  : 'Room has no people or pets. Standard fresh air infiltration maintains clean outdoor ambient equilibrium (~420 PPM).';
+              let co2BadgeClass = isOutdoor
+                ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
+                : isGreenhouse
+                  ? 'bg-teal-950/80 text-teal-300 border border-teal-800'
+                  : 'bg-zinc-800 text-zinc-400 border border-zinc-750';
 
-              if (totalOccupants > 0) {
+              if (totalOccupants > 0 && !isOutdoor) {
                 const parts: string[] = [];
                 if (peopleInRoom.length > 0) parts.push(`${peopleInRoom.length} ${peopleInRoom.length === 1 ? 'Person' : 'People'}`);
                 if (petsInRoom.length > 0) parts.push(`${petsInRoom.length} ${petsInRoom.length === 1 ? 'Pet' : 'Pets'}`);
                 co2BadgeText = `${parts.join(', ')} Respiration`;
-                co2BadgeTitle = `${parts.join(' and ')} actively exhaling biological CO₂ and radiating body warmth into the room envelope.`;
+                co2BadgeTitle = `${parts.join(' and ')} actively exhaling biological CO₂ and radiating body warmth into the room space.`;
                 co2BadgeClass = 'bg-violet-950/80 text-violet-300 border border-violet-800';
               }
 

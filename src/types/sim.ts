@@ -9,6 +9,12 @@ export interface Dimensions {
   unit: 'ft' | 'in' | 'cm';
 }
 
+export interface Position3D {
+  x: number; // in feet from left/west container boundary (0 <= x <= length)
+  y: number; // in feet from back/north container boundary (0 <= y <= width)
+  z: number; // in feet from floor/elevation (0 <= z <= height)
+}
+
 export interface Climate {
   tempF: number;
   tempC: number;
@@ -172,10 +178,12 @@ export interface PlantItem {
   yieldPotentialGrams: number;
   isHarvested: boolean;
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
   lastWateredTime?: number;
   lastFedTime?: number;
   alphaAcidsPct?: number; // Specific to Hops brewing potential (e.g. 4.5% - 14.0%)
+  scovilleHeatUnits?: number; // Capsaicin pungency for Chili Peppers (e.g. 2,500 - 2,200,000 SHU)
 }
 
 export type MushroomSpecies = 'Golden Oyster' | 'Lion\'s Mane' | 'Shiitake' | 'Reishi' | 'Medicinal';
@@ -199,6 +207,7 @@ export interface MushroomItem {
   isHarvested: boolean;
   containerType: MushroomContainer;
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
   lastMistedTime?: number;
 }
@@ -253,6 +262,7 @@ export interface EquipmentItem {
   interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
   effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
 }
 
@@ -267,6 +277,7 @@ export interface PersonItem {
   heatOutputWatts: number; // metabolic heat: 75W - 200W
   moistureLitersPerDay: number; // respiration/perspiration: 0.8L - 2.5L/day
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
 }
 
@@ -282,6 +293,7 @@ export interface PetItem {
   heatOutputWatts: number; // metabolic heat: 12W - 45W
   moistureLitersPerDay: number; // 0.18L - 0.6L/day
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
 }
 
@@ -298,6 +310,7 @@ export interface Tent {
   poleDiameter?: string;
   ventPorts?: string;
   dimensions: Dimensions;
+  position?: Position3D; // Coordinates (x, y, z) in feet within host room
   climate: Climate;
   items: Item[];
   exhaustFanSpeed: number; // 0 - 100%
@@ -357,10 +370,22 @@ export interface HarvestRecord {
   id: string;
   name: string;
   species: string;
+  strainName?: string;
   type: 'plant' | 'mushroom';
   yieldGrams: number;
   dateStr: string;
+  timeStr?: string;
+  timestamp?: number;
   quality: 'Legendary' | 'Excellent' | 'Good' | 'Fair';
+  health?: number;
+  containerType?: string;
+  growingMedium?: string;
+  originRoomName?: string;
+  originTentName?: string;
+  cureStatus?: 'Fresh Cut' | 'Drying' | 'Curing' | 'Cured & Ready';
+  estimatedValue?: number;
+  potencyNote?: string;
+  notes?: string;
 }
 
 export interface SimulationState {

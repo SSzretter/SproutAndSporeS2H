@@ -329,6 +329,9 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
                       </h4>
                       <span className="text-[10px] font-mono text-zinc-400">
                         {tent.dimensions.length}′ × {tent.dimensions.width}′ × {tent.dimensions.height}′
+                        {tent.position && (
+                          <span className="text-zinc-500 ml-1 font-mono">· ({tent.position.x}′, {tent.position.y}′, {tent.position.z}′)</span>
+                        )}
                       </span>
                     </div>
                   </div>

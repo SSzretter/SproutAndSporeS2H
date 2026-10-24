@@ -8,12 +8,25 @@ import {
   MushroomItem, 
   EquipmentItem,
   HarvestRecord,
-  JournalEntry
+  JournalEntry,
+  JournalCategory
 } from '../../types/sim';
 import { drawPlant, drawMushroom } from './PlantSprites';
 import { soundEffects } from './AudioEffects';
 import { PlantVisualizerModal } from './PlantVisualizerModal';
-import { broadcastSimulationState, subscribeToSimulationSync } from '../../utils/syncChannel';
+import { TentInspectorModal } from './TentInspectorModal';
+import { PlayerInventoryModal } from './PlayerInventoryModal';
+import { ItemInspector } from '../ItemInspector';
+import { 
+  getSafeTentCanvasPosition, 
+  getSafeTentItemCanvasPosition,
+  CANVAS_GRID_SIZE,
+  CANVAS_FLOOR_ORIGIN_X,
+  CANVAS_FLOOR_ORIGIN_Y,
+  CANVAS_MAX_FLOOR_X,
+  CANVAS_MAX_FLOOR_Y
+} from '../../utils/spatial';
+import { broadcastSimulationState } from '../../utils/syncChannel';
 import { 
   Volume2, 
   VolumeX, 
@@ -28,10 +41,15 @@ import {
   Scissors, 
   Plus, 
   Search, 
-  ArrowLeft,
-  Award,
-  ChevronRight,
-  Maximize2
+  ArrowLeft, 
+  Award, 
+  Package, 
+  ChevronRight, 
+  Maximize2,
+  X,
+  Box,
+  Home,
+  Sliders
 } from 'lucide-react';
 
 interface GameWorldProps {
@@ -41,6 +59,15 @@ interface GameWorldProps {
   onOpenAddRoom: () => void;
   onOpenHarvestModal: () => void;
   onSwitchToDashboard: () => void;
+  onUpdateRoom?: (room: Room) => void;
+  onUpdateTent?: (tent: Tent) => void;
+  onUpdateItem?: (item: Item, parentTentId?: string | null) => void;
+  onDeleteTent?: (tentId: string) => void;
+  onDeleteItem?: (itemId: string, parentTentId?: string | null) => void;
+  onDeleteRoom?: (roomId: string) => void;
+  onHarvestPlant?: (plant: PlantItem, tentId?: string) => void;
+  onHarvestMushroom?: (mushroom: MushroomItem, tentId?: string) => void;
+  onLogJournalEntry?: (entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => void;
 }
 
 type ToolType = 'inspect' | 'water' | 'harvest' | 'feed' | 'mist' | 'build';
@@ -51,7 +78,16 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   onOpenAddItem,
   onOpenAddRoom,
   onOpenHarvestModal,
-  onSwitchToDashboard
+  onSwitchToDashboard,
+  onUpdateRoom,
+  onUpdateTent,
+  onUpdateItem,
+  onDeleteTent,
+  onDeleteItem,
+  onDeleteRoom,
+  onHarvestPlant,
+  onHarvestMushroom,
+  onLogJournalEntry
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -84,12 +120,157 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     stepTimer: 0
   });
 
-  // Tents unzipped status (tentId -> boolean)
-  const [unzippedTents, setUnzippedTents] = useState<Record<string, boolean>>({});
+  // Currently inspected target in the In-Game Pro Inspector (Tent, Item, or Room)
+  const [inGameInspectorTarget, setInGameInspectorTarget] = useState<{
+    type: 'tent' | 'item' | 'room';
+    id: string;
+    parentTentId?: string | null;
+  } | null>(null);
+
+  // Player Harvest Inventory Modal state
+  const [isInventoryOpen, setIsInventoryOpen] = useState(false);
+
+  // Tent, Item, and Room update & delete handlers for 2D game mode
+  const handleUpdateTentFromGame = (updatedTent: Tent) => {
+    if (onUpdateTent) {
+      onUpdateTent(updatedTent);
+    } else {
+      onUpdateState(prev => {
+        const activeRId = prev.activeRoomId || prev.room.id;
+        const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+        const nextRooms = rooms.map(rm => {
+          if (!rm.tents.some(t => t.id === updatedTent.id)) return rm;
+          return {
+            ...rm,
+            tents: rm.tents.map(t => t.id === updatedTent.id ? updatedTent : t)
+          };
+        });
+        const nextActiveRoom = nextRooms.find(r => r.id === activeRId) || nextRooms[0];
+        const nextState: SimulationState = {
+          ...prev,
+          rooms: nextRooms,
+          room: nextActiveRoom
+        };
+        broadcastSimulationState(nextState);
+        return nextState;
+      });
+    }
+  };
+
+  const handleDeleteTentFromGame = (tentId: string) => {
+    if (onDeleteTent) {
+      onDeleteTent(tentId);
+    } else {
+      onUpdateState(prev => {
+        const activeRId = prev.activeRoomId || prev.room.id;
+        const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+        const nextRooms = rooms.map(rm => {
+          if (!rm.tents.some(t => t.id === tentId)) return rm;
+          return {
+            ...rm,
+            tents: rm.tents.filter(t => t.id !== tentId)
+          };
+        });
+        const nextActiveRoom = nextRooms.find(r => r.id === activeRId) || nextRooms[0];
+        const nextState: SimulationState = {
+          ...prev,
+          rooms: nextRooms,
+          room: nextActiveRoom
+        };
+        broadcastSimulationState(nextState);
+        return nextState;
+      });
+    }
+    setInGameInspectorTarget(null);
+  };
+
+  const handleUpdateItemFromGame = (updatedItem: Item, parentTentId?: string | null) => {
+    if (onUpdateItem) {
+      onUpdateItem(updatedItem, parentTentId);
+    } else {
+      onUpdateState(prev => {
+        const activeRId = prev.activeRoomId || prev.room.id;
+        const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+        const nextRooms = rooms.map(rm => {
+          if (parentTentId) {
+            if (!rm.tents.some(t => t.id === parentTentId)) return rm;
+            return {
+              ...rm,
+              tents: rm.tents.map(t => {
+                if (t.id === parentTentId) {
+                  return {
+                    ...t,
+                    items: t.items.map(it => it.id === updatedItem.id ? updatedItem : it)
+                  };
+                }
+                return t;
+              })
+            };
+          } else {
+            if (!rm.items.some(it => it.id === updatedItem.id)) return rm;
+            return {
+              ...rm,
+              items: rm.items.map(it => it.id === updatedItem.id ? updatedItem : it)
+            };
+          }
+        });
+        const nextActiveRoom = nextRooms.find(r => r.id === activeRId) || nextRooms[0];
+        const nextState: SimulationState = {
+          ...prev,
+          rooms: nextRooms,
+          room: nextActiveRoom
+        };
+        broadcastSimulationState(nextState);
+        return nextState;
+      });
+    }
+  };
+
+  const handleDeleteItemFromGame = (itemId: string, parentTentId?: string | null) => {
+    if (onDeleteItem) {
+      onDeleteItem(itemId, parentTentId);
+    } else {
+      onUpdateState(prev => {
+        const next = removeCropFromSimulation(prev, itemId, parentTentId || undefined);
+        broadcastSimulationState(next);
+        return next;
+      });
+    }
+    if (parentTentId) {
+      setInGameInspectorTarget({ type: 'tent', id: parentTentId, parentTentId: null });
+    } else {
+      setInGameInspectorTarget(null);
+    }
+  };
+
+  const handleUpdateRoomFromGame = (updatedRoom: Room) => {
+    if (onUpdateRoom) {
+      onUpdateRoom(updatedRoom);
+    } else {
+      onUpdateState(prev => {
+        const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+        const nextRooms = rooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+        const nextState: SimulationState = {
+          ...prev,
+          rooms: nextRooms,
+          room: prev.activeRoomId === updatedRoom.id ? updatedRoom : prev.room
+        };
+        broadcastSimulationState(nextState);
+        return nextState;
+      });
+    }
+  };
+
+  const handleDeleteRoomFromGame = (roomId: string) => {
+    if (onDeleteRoom) {
+      onDeleteRoom(roomId);
+    }
+    setInGameInspectorTarget(null);
+  };
 
   // Hovered interactable object in world
   const [hoveredObject, setHoveredObject] = useState<{
-    type: 'tent' | 'plant' | 'mushroom' | 'door';
+    type: 'tent' | 'plant' | 'mushroom' | 'door' | 'equipment' | 'occupant';
     id: string;
     parentTentId?: string;
     title: string;
@@ -115,6 +296,30 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   // Active room reference
   const currentRoom = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
   const allRooms = state.rooms && state.rooms.length > 0 ? state.rooms : [state.room];
+
+  // Live refs to guarantee immediate 60FPS canvas repaints without closure lag
+  const currentRoomRef = useRef(currentRoom);
+  currentRoomRef.current = currentRoom;
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const hoveredObjectRef = useRef(hoveredObject);
+  hoveredObjectRef.current = hoveredObject;
+
+  const floatingTextsRef = useRef(floatingTexts);
+  floatingTextsRef.current = floatingTexts;
+
+  // Immediate notification when a new item is added to any tent or room
+  const prevItemsTotalRef = useRef<number>(-1);
+  useEffect(() => {
+    const totalItems = currentRoom.items.length + currentRoom.tents.reduce((sum, t) => sum + t.items.length, 0);
+    if (prevItemsTotalRef.current !== -1 && totalItems > prevItemsTotalRef.current) {
+      soundEffects.playClick();
+      addFloatingText('✨ New Item Added to Facility!', playerRef.current.x, playerRef.current.y - 45, '#34d399');
+    }
+    prevItemsTotalRef.current = totalItems;
+  }, [currentRoom]);
 
   // Travel to room helper
   const handleTravelToRoom = (roomId: string) => {
@@ -152,8 +357,26 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     const keysPressed: Record<string, boolean> = {};
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture inputs if typing inside an input/textarea
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+      // Don't capture inputs if typing inside an input/textarea/select
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return;
+
+      if (e.key === 'Escape') {
+        if (inGameInspectorTarget) {
+          setInGameInspectorTarget(null);
+          return;
+        }
+        if (inspectedCrop) {
+          setInspectedCrop(null);
+          return;
+        }
+        if (isInventoryOpen) {
+          setIsInventoryOpen(false);
+          return;
+        }
+      }
+
+      // If an inspection modal is open, avoid hotkey / movement interference
+      if (inGameInspectorTarget || inspectedCrop || isInventoryOpen) return;
 
       keysPressed[e.key.toLowerCase()] = true;
 
@@ -171,9 +394,14 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         triggerProximityAction();
       }
 
-      // [Z] or [O] to toggle zipper on nearby tent
-      if (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'o') {
-        toggleNearbyTentZipper();
+      // [T] to inspect nearby tent properties & internal items
+      if (e.key.toLowerCase() === 't') {
+        inspectNearbyTent();
+      }
+
+      // [I] to toggle Player Harvest Inventory
+      if (e.key.toLowerCase() === 'i') {
+        setIsInventoryOpen(prev => !prev);
       }
     };
 
@@ -187,6 +415,12 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     // Continuous movement loop
     const moveInterval = setInterval(() => {
       const p = playerRef.current;
+
+      if (inGameInspectorTarget || inspectedCrop || isInventoryOpen) {
+        p.isMoving = false;
+        return;
+      }
+
       const speed = 4.2;
       let dx = 0;
       let dy = 0;
@@ -203,11 +437,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           dy *= 0.7071;
         }
 
-        // Room boundaries
-        const minX = 70;
-        const maxX = 930;
-        const minY = 90;
-        const maxY = 560;
+        // Room boundaries (inside walls)
+        const minX = 75;
+        const maxX = 925;
+        const minY = 65;
+        const maxY = 595;
 
         p.x = Math.max(minX, Math.min(maxX, p.x + dx));
         p.y = Math.max(minY, Math.min(maxY, p.y + dy));
@@ -258,7 +492,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       window.removeEventListener('keyup', handleKeyUp);
       clearInterval(moveInterval);
     };
-  }, [currentRoom]);
+  }, [currentRoom, inGameInspectorTarget, inspectedCrop, isInventoryOpen]);
 
 // Helper to calculate clean coordinates for crops inside a tent so they never overflow
 function getTentCropCoordinates(
@@ -297,40 +531,34 @@ function getRoomCropCoordinates(
     const colsPerRow = Math.min(6, Math.max(3, Math.ceil(totalCrops / 2)));
     const col = cropIndex % colsPerRow;
     const row = Math.floor(cropIndex / colsPerRow);
-    const spacing = Math.min(130, (canvasWidth - 260) / Math.max(1, colsPerRow - 1 || 1));
     return {
-      x: 140 + col * spacing,
-      y: row === 0 ? 190 : 280 + (row - 1) * 130
+      x: CANVAS_FLOOR_ORIGIN_X + (2 + col * 3) * CANVAS_GRID_SIZE,
+      y: CANVAS_FLOOR_ORIGIN_Y + (3 + row * 4) * CANVAS_GRID_SIZE
     };
   }
   return {
-    x: 700 + (cropIndex % 3) * 70,
-    y: 400 + Math.floor(cropIndex / 3) * 60
+    x: CANVAS_FLOOR_ORIGIN_X + (16 + (cropIndex % 3) * 2) * CANVAS_GRID_SIZE,
+    y: CANVAS_FLOOR_ORIGIN_Y + (8 + Math.floor(cropIndex / 3) * 2) * CANVAS_GRID_SIZE
   };
 }
 
-  // Proximity action: find nearest interactable item or tent
+  // Proximity action: find nearest interactable crop or tent
   const triggerProximityAction = () => {
     const p = playerRef.current;
 
-    // Check all crops inside unzipped tents or room
+    // Check all crops inside tents or room
     let closestCrop: { item: PlantItem | MushroomItem; tentId?: string; dist: number; wx: number; wy: number } | null = null;
     
     for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
       const tent = currentRoom.tents[tIdx];
-      const tentBaseX = 140 + (tIdx % 3) * 280;
-      const tentBaseY = 170 + Math.floor(tIdx / 3) * 230;
-      const isUnzipped = unzippedTents[tent.id] ?? true;
-
-      if (isUnzipped) {
-        const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-        for (let cIdx = 0; cIdx < crops.length; cIdx++) {
-          const item = crops[cIdx];
-          const pos = getTentCropCoordinates(tentBaseX, tentBaseY, cIdx, crops.length);
-          const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
-          if (dist < 90 && (!closestCrop || dist < closestCrop.dist)) {
-            closestCrop = { item: item as PlantItem | MushroomItem, tentId: tent.id, dist, wx: pos.x, wy: pos.y };
-          }
+      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
+      const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
+      for (let cIdx = 0; cIdx < crops.length; cIdx++) {
+        const item = crops[cIdx];
+        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, cIdx, crops.length);
+        const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
+        if (dist < 90 && (!closestCrop || dist < closestCrop.dist)) {
+          closestCrop = { item: item as PlantItem | MushroomItem, tentId: tent.id, dist, wx: pos.x, wy: pos.y };
         }
       }
     }
@@ -339,7 +567,15 @@ function getRoomCropCoordinates(
     const roomCrops = currentRoom.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
     for (let cIdx = 0; cIdx < roomCrops.length; cIdx++) {
       const item = roomCrops[cIdx];
-      const pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
+      let pos: { x: number; y: number };
+      if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
+        pos = {
+          x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
+          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
+        };
+      } else {
+        pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
+      }
       const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
       if (dist < 90 && (!closestCrop || dist < closestCrop.dist)) {
         closestCrop = { item: item as PlantItem | MushroomItem, dist, wx: pos.x, wy: pos.y };
@@ -352,20 +588,19 @@ function getRoomCropCoordinates(
       return;
     }
 
-    // Otherwise toggle nearest tent zipper
-    toggleNearbyTentZipper();
+    // Otherwise inspect nearest tent
+    inspectNearbyTent();
   };
 
-  const toggleNearbyTentZipper = () => {
+  const inspectNearbyTent = () => {
     const p = playerRef.current;
     let closestTent: Tent | null = null;
-    let minDist = 140;
+    let minDist = 150;
 
     for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
       const tent = currentRoom.tents[tIdx];
-      const tentBaseX = 140 + (tIdx % 3) * 280;
-      const tentBaseY = 170 + Math.floor(tIdx / 3) * 230;
-      const dist = Math.hypot(p.x - tentBaseX, p.y - tentBaseY);
+      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
+      const dist = Math.hypot(p.x - tentPos.x, p.y - tentPos.y);
       if (dist < minDist) {
         minDist = dist;
         closestTent = tent;
@@ -373,18 +608,13 @@ function getRoomCropCoordinates(
     }
 
     if (closestTent) {
-      const tentId = (closestTent as Tent).id;
       soundEffects.playClick();
-      setUnzippedTents(prev => ({
-        ...prev,
-        [tentId]: !(prev[tentId] ?? true)
-      }));
-      addFloatingText(
-        !(unzippedTents[tentId] ?? true) ? 'Door Zipper Opened 🌿' : 'Door Zipper Sealed 🔒',
-        playerRef.current.x,
-        playerRef.current.y - 40,
-        '#6ee7b7'
-      );
+      setInGameInspectorTarget({
+        type: 'tent',
+        id: closestTent.id,
+        parentTentId: null
+      });
+      addFloatingText('Opening Tent & Items Inspector ⛺', playerRef.current.x, playerRef.current.y - 40, '#6ee7b7');
     }
   };
 
@@ -498,27 +728,60 @@ function getRoomCropCoordinates(
       soundEffects.playHarvest();
       const yieldGrams = Math.round(crop.yieldPotentialGrams || 120);
       const quality = crop.health > 85 ? 'Legendary' : crop.health > 70 ? 'Excellent' : 'Good';
+      const simDate = new Date(state.simTime);
+      const dateStr = simDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const timeStr = simDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+      const isPlant = crop.category === 'plant';
+      const plantItem = isPlant ? (crop as PlantItem) : null;
+      const shroomItem = !isPlant ? (crop as MushroomItem) : null;
+      const strainName = plantItem?.strainName || shroomItem?.strainName;
+      const containerType = plantItem?.containerType || plantItem?.systemType || shroomItem?.containerType;
+      const growingMedium = plantItem?.growingMedium;
+      const originTent = tentId ? currentRoom.tents.find(t => t.id === tentId) : null;
+
+      const potencyNote = isPlant
+        ? (crop.species === 'Hops' 
+            ? `${plantItem?.alphaAcidsPct || 8.5}% Alpha Acids` 
+            : crop.species === 'Chili Pepper' 
+              ? `${(plantItem?.scovilleHeatUnits || 45000).toLocaleString()} SHU` 
+              : `${crop.health > 85 ? '26%' : crop.health > 70 ? '22%' : '18%'} Cannabinoids`)
+        : `${crop.health > 85 ? 'High' : 'Optimal'} Beta-Glucans`;
+
+      const estimatedValue = Math.round(yieldGrams * (quality === 'Legendary' ? 12 : quality === 'Excellent' ? 9 : 6));
 
       const harvestRecord: HarvestRecord = {
-        id: `h-${Date.now()}`,
+        id: `h-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         name: crop.name,
         species: crop.species,
-        type: crop.category === 'plant' ? 'plant' : 'mushroom',
+        strainName,
+        type: isPlant ? 'plant' : 'mushroom',
         yieldGrams,
-        dateStr: new Date(state.simTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        quality
+        dateStr,
+        timeStr,
+        timestamp: state.simTime,
+        quality,
+        health: crop.health,
+        containerType,
+        growingMedium,
+        originRoomName: currentRoom.name,
+        originTentName: originTent ? originTent.name : 'Room Floor / Garden',
+        cureStatus: 'Fresh Cut',
+        estimatedValue,
+        potencyNote,
+        notes: crop.notes
       };
 
       onUpdateState(prev => {
         const next = removeCropFromSimulation(prev, crop.id, tentId);
-        next.harvests = [...next.harvests, harvestRecord];
+        next.harvests = [harvestRecord, ...prev.harvests];
         next.journal.push({
           id: `j-${Date.now()}`,
           time: next.simTime,
           type: 'success',
           category: 'crop',
           title: `🏆 Harvest Completed: ${crop.name}`,
-          message: `Yielded ${yieldGrams}g of ${quality} grade ${crop.species}. Added to facility harvest inventory!`
+          message: `Yielded ${yieldGrams}g (${(yieldGrams / 28.3495).toFixed(1)} oz) of ${quality} grade ${crop.species}. Added to player harvest inventory!`
         });
         broadcastSimulationState(next);
         return next;
@@ -640,27 +903,55 @@ function getRoomCropCoordinates(
       }
     }
 
-    // Check if clicked on a Crop (inside tent or room)
-    const clickedCrop = findCropAtPosition(clickX, clickY);
-    if (clickedCrop) {
-      applyToolToCrop(clickedCrop.item, clickedCrop.tentId, clickX, clickY);
-      return;
+    // Check if clicked on an Item (Crop, Equipment, or Occupant)
+    const clickedItem = findItemAtPosition(clickX, clickY);
+    if (clickedItem) {
+      if (clickedItem.type === 'crop') {
+        applyToolToCrop(clickedItem.item as PlantItem | MushroomItem, clickedItem.tentId, clickX, clickY);
+        return;
+      } else if (clickedItem.type === 'equipment') {
+        const eq = clickedItem.item as EquipmentItem;
+        if (activeTool === 'inspect') {
+          soundEffects.playClick();
+          setInGameInspectorTarget({
+            type: 'item',
+            id: eq.id,
+            parentTentId: clickedItem.tentId || null
+          });
+          return;
+        } else {
+          soundEffects.playClick();
+          onUpdateState(prev => {
+            const next = updateCropInSimulation(prev, eq.id, clickedItem.tentId, (item) => ({
+              ...item,
+              powerOn: !(item as EquipmentItem).powerOn
+            }));
+            broadcastSimulationState(next);
+            return next;
+          });
+          addFloatingText(`${eq.name}: ${!eq.powerOn ? 'ON ⚡' : 'Standby / OFF'}`, clickX, clickY - 15, !eq.powerOn ? '#34d399' : '#94a3b8');
+          return;
+        }
+      } else if (clickedItem.type === 'occupant') {
+        soundEffects.playClick();
+        setInGameInspectorTarget({
+          type: 'item',
+          id: clickedItem.item.id,
+          parentTentId: clickedItem.tentId || null
+        });
+        return;
+      }
     }
 
-    // Check if clicked on a Tent Door flap
+    // Check if clicked on a Tent (Open properties & internal items inspector)
     const clickedTent = findTentAtPosition(clickX, clickY);
     if (clickedTent) {
       soundEffects.playClick();
-      setUnzippedTents(prev => ({
-        ...prev,
-        [clickedTent.id]: !(prev[clickedTent.id] ?? true)
-      }));
-      addFloatingText(
-        !(unzippedTents[clickedTent.id] ?? true) ? 'Door Zipper Opened 🌿' : 'Door Zipper Sealed 🔒',
-        clickedTent.x + 100,
-        clickedTent.y + 40,
-        '#6ee7b7'
-      );
+      setInGameInspectorTarget({
+        type: 'tent',
+        id: clickedTent.id,
+        parentTentId: null
+      });
       return;
     }
 
@@ -680,17 +971,42 @@ function getRoomCropCoordinates(
     const mouseX = (e.clientX - rect.left) * scaleX;
     const mouseY = (e.clientY - rect.top) * scaleY;
 
-    const crop = findCropAtPosition(mouseX, mouseY);
-    if (crop) {
-      setHoveredObject({
-        type: crop.item.category === 'plant' ? 'plant' : 'mushroom',
-        id: crop.item.id,
-        parentTentId: crop.tentId,
-        title: `${crop.item.name} (${crop.item.stage})`,
-        x: mouseX,
-        y: mouseY
-      });
-      return;
+    const hoveredItem = findItemAtPosition(mouseX, mouseY);
+    if (hoveredItem) {
+      if (hoveredItem.type === 'crop') {
+        const crop = hoveredItem.item as PlantItem | MushroomItem;
+        setHoveredObject({
+          type: crop.category === 'plant' ? 'plant' : 'mushroom',
+          id: crop.id,
+          parentTentId: hoveredItem.tentId,
+          title: `${crop.name} (${crop.stage}) [Click to Inspect & Care]`,
+          x: mouseX,
+          y: mouseY
+        });
+        return;
+      } else if (hoveredItem.type === 'equipment') {
+        const eq = hoveredItem.item as EquipmentItem;
+        setHoveredObject({
+          type: 'equipment',
+          id: eq.id,
+          parentTentId: hoveredItem.tentId,
+          title: `⚙️ ${eq.name} (${eq.powerOn ? 'ON' : 'OFF'} • ${eq.powerWatts}W) [Inspect to Edit • Click to Toggle]`,
+          x: mouseX,
+          y: mouseY
+        });
+        return;
+      } else if (hoveredItem.type === 'occupant') {
+        const occ = hoveredItem.item;
+        setHoveredObject({
+          type: 'occupant',
+          id: occ.id,
+          parentTentId: hoveredItem.tentId,
+          title: `${occ.category === 'person' ? '👤' : '🐾'} ${occ.name} [Click to Edit]`,
+          x: mouseX,
+          y: mouseY
+        });
+        return;
+      }
     }
 
     const tent = findTentAtPosition(mouseX, mouseY);
@@ -698,7 +1014,7 @@ function getRoomCropCoordinates(
       setHoveredObject({
         type: 'tent',
         id: tent.id,
-        title: `${tent.name} [Click Zipper]`,
+        title: `${tent.name} [Click to Edit Tent & Items]`,
         x: mouseX,
         y: mouseY
       });
@@ -757,32 +1073,76 @@ function getRoomCropCoordinates(
     return doors;
   };
 
-  // Helper to find crop under cursor
-  const findCropAtPosition = (x: number, y: number) => {
+  // Helper to find any item (crop, equipment, occupant) under cursor
+  const findItemAtPosition = (x: number, y: number) => {
     for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
       const tent = currentRoom.tents[tIdx];
-      const tentBaseX = 140 + (tIdx % 3) * 280;
-      const tentBaseY = 170 + Math.floor(tIdx / 3) * 230;
-      const isUnzipped = unzippedTents[tent.id] ?? true;
+      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
 
-      if (isUnzipped) {
-        const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-        for (let cIdx = 0; cIdx < crops.length; cIdx++) {
-          const item = crops[cIdx];
-          const pos = getTentCropCoordinates(tentBaseX, tentBaseY, cIdx, crops.length);
-          if (Math.hypot(x - pos.x, y - pos.y) < 28) {
-            return { item: item as PlantItem | MushroomItem, tentId: tent.id, x: pos.x, y: pos.y };
-          }
+      // 1. Crops in tent
+      const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
+      for (let cIdx = 0; cIdx < crops.length; cIdx++) {
+        const item = crops[cIdx];
+        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, cIdx, crops.length);
+        if (Math.hypot(x - pos.x, y - pos.y) < 28) {
+          return { item: item as PlantItem | MushroomItem, type: 'crop' as const, tentId: tent.id, x: pos.x, y: pos.y };
+        }
+      }
+
+      // 2. Equipment in tent
+      const equipment = tent.items.filter(it => it.category === 'equipment') as EquipmentItem[];
+      for (let eqIdx = 0; eqIdx < equipment.length; eqIdx++) {
+        const eq = equipment[eqIdx];
+        const pos = getSafeTentItemCanvasPosition(eq, tent, tentPos.x, tentPos.y, eqIdx, equipment.length);
+        if (Math.hypot(x - pos.x, y - pos.y) < 22) {
+          return { item: eq, type: 'equipment' as const, tentId: tent.id, x: pos.x, y: pos.y };
+        }
+      }
+
+      // 3. Occupants in tent
+      const occupants = tent.items.filter(it => it.category === 'person' || it.category === 'pet');
+      for (let oIdx = 0; oIdx < occupants.length; oIdx++) {
+        const occ = occupants[oIdx];
+        const pos = getSafeTentItemCanvasPosition(occ, tent, tentPos.x, tentPos.y, oIdx, occupants.length);
+        if (Math.hypot(x - pos.x, y - pos.y) < 22) {
+          return { item: occ, type: 'occupant' as const, tentId: tent.id, x: pos.x, y: pos.y };
         }
       }
     }
 
+    // Room crops
     const roomCrops = currentRoom.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
     for (let cIdx = 0; cIdx < roomCrops.length; cIdx++) {
       const item = roomCrops[cIdx];
-      const pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
+      let pos: { x: number; y: number };
+      if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
+        pos = {
+          x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
+          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
+        };
+      } else {
+        pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
+      }
       if (Math.hypot(x - pos.x, y - pos.y) < 32) {
-        return { item: item as PlantItem | MushroomItem, x: pos.x, y: pos.y };
+        return { item: item as PlantItem | MushroomItem, type: 'crop' as const, x: pos.x, y: pos.y };
+      }
+    }
+
+    // Room equipment
+    const roomEquipment = currentRoom.items.filter(it => it.category === 'equipment') as EquipmentItem[];
+    for (let eqIdx = 0; eqIdx < roomEquipment.length; eqIdx++) {
+      const eq = roomEquipment[eqIdx];
+      let pos: { x: number; y: number };
+      if (eq.position && typeof eq.position.x === 'number' && typeof eq.position.y === 'number') {
+        pos = {
+          x: Math.round(CANVAS_FLOOR_ORIGIN_X + eq.position.x * CANVAS_GRID_SIZE),
+          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + eq.position.y * CANVAS_GRID_SIZE)
+        };
+      } else {
+        pos = { x: CANVAS_FLOOR_ORIGIN_X + (eqIdx + 1) * 3 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 };
+      }
+      if (Math.hypot(x - pos.x, y - pos.y) < 24) {
+        return { item: eq, type: 'equipment' as const, x: pos.x, y: pos.y };
       }
     }
 
@@ -793,10 +1153,11 @@ function getRoomCropCoordinates(
   const findTentAtPosition = (x: number, y: number) => {
     for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
       const tent = currentRoom.tents[tIdx];
-      const tx = 140 + (tIdx % 3) * 280;
-      const ty = 170 + Math.floor(tIdx / 3) * 230;
-      const width = 230;
-      const height = 180;
+      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
+      const tx = tentPos.x;
+      const ty = tentPos.y;
+      const width = tentPos.width;
+      const height = tentPos.height;
 
       if (
         x >= tx - width / 2 && x <= tx + width / 2 &&
@@ -820,58 +1181,83 @@ function getRoomCropCoordinates(
     const render = (time: number) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      const room = currentRoomRef.current;
+      const simTime = stateRef.current.simTime;
+      const hovered = hoveredObjectRef.current;
+      const floatList = floatingTextsRef.current;
+
       // 1. Draw Architectural Floor & Walls
-      drawRoomEnvironment(ctx, canvas.width, canvas.height, currentRoom, state.simTime);
+      drawRoomEnvironment(ctx, canvas.width, canvas.height, room, simTime);
 
       // 2. Draw Doorways / Travel Portals
       drawDoorways(ctx, getRoomDoorways(), time);
 
       // 3. Draw Facility Tents & Contents
-      currentRoom.tents.forEach((tent, tIdx) => {
-        const tx = 140 + (tIdx % 3) * 280;
-        const ty = 170 + Math.floor(tIdx / 3) * 230;
-        const isUnzipped = unzippedTents[tent.id] ?? true;
-        drawTentStructure(ctx, tent, tx, ty, isUnzipped, time);
+      room.tents.forEach((tent, tIdx) => {
+        const tentPos = getSafeTentCanvasPosition(tent, room, tIdx, canvas.width, canvas.height);
+        const tx = tentPos.x;
+        const ty = tentPos.y;
+        const isTentHovered = hovered?.id === tent.id;
+        drawTentStructure(ctx, tent, tx, ty, tentPos.width, tentPos.height, isTentHovered, time);
 
-        // If unzipped, draw plants / mushrooms inside
-        if (isUnzipped) {
-          const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-          crops.forEach((item, cIdx) => {
-            const pos = getTentCropCoordinates(tx, ty, cIdx, crops.length);
-            const cropX = pos.x;
-            const cropY = pos.y;
-            const isHovered = hoveredObject?.id === item.id;
+        // A. Always draw crops (plants & mushrooms) inside tent
+        const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
+        crops.forEach((item, cIdx) => {
+          const pos = getSafeTentItemCanvasPosition(item, tent, tx, ty, cIdx, crops.length);
+          const isCropHovered = hovered?.id === item.id;
 
-            if (item.category === 'plant') {
-              drawPlant(item as PlantItem, {
-                ctx,
-                x: cropX,
-                y: cropY,
-                scale: 0.85,
-                time,
-                highlighted: isHovered
-              });
-            } else if (item.category === 'mushroom') {
-              drawMushroom(item as MushroomItem, {
-                ctx,
-                x: cropX,
-                y: cropY,
-                scale: 0.85,
-                time,
-                highlighted: isHovered
-              });
-            }
-          });
-        }
+          if (item.category === 'plant') {
+            drawPlant(item as PlantItem, {
+              ctx,
+              x: pos.x,
+              y: pos.y,
+              scale: 0.85,
+              time,
+              highlighted: isCropHovered
+            });
+          } else if (item.category === 'mushroom') {
+            drawMushroom(item as MushroomItem, {
+              ctx,
+              x: pos.x,
+              y: pos.y,
+              scale: 0.85,
+              time,
+              highlighted: isCropHovered
+            });
+          }
+        });
+
+        // B. Draw equipment inside tent (Humidifiers, Fans, Lights, Heaters, CO2)
+        const equipment = tent.items.filter(it => it.category === 'equipment') as EquipmentItem[];
+        equipment.forEach((eq, eqIdx) => {
+          const pos = getSafeTentItemCanvasPosition(eq, tent, tx, ty, eqIdx, equipment.length);
+          const isEqHovered = hovered?.id === eq.id;
+          drawEquipmentSprite(ctx, eq, pos.x, pos.y, isEqHovered, time);
+        });
+
+        // C. Draw occupants inside tent (Person, Pet)
+        const occupants = tent.items.filter(it => it.category === 'person' || it.category === 'pet');
+        occupants.forEach((occ, oIdx) => {
+          const pos = getSafeTentItemCanvasPosition(occ, tent, tx, ty, oIdx, occupants.length);
+          const isOccHovered = hovered?.id === occ.id;
+          drawOccupantSprite(ctx, occ, pos.x, pos.y, isOccHovered);
+        });
       });
 
       // 4. Draw Free-standing Room Items (Outdoor Garden Beds, Trellises & freestanding plants)
-      const roomCrops = currentRoom.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
+      const roomCrops = room.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
       roomCrops.forEach((item, cIdx) => {
-        const pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length, canvas.width);
-        const cropX = pos.x;
-        const cropY = pos.y;
-        const isHovered = hoveredObject?.id === item.id;
+        let cropX: number;
+        let cropY: number;
+        if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
+          cropX = Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE);
+          cropY = Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE);
+        } else {
+          const pos = getRoomCropCoordinates(room, cIdx, roomCrops.length, canvas.width);
+          cropX = pos.x;
+          cropY = pos.y;
+        }
+        const isHoveredItem = hovered?.id === item.id;
 
         if (item.category === 'plant') {
           drawPlant(item as PlantItem, {
@@ -880,7 +1266,7 @@ function getRoomCropCoordinates(
             y: cropY,
             scale: 0.9,
             time,
-            highlighted: isHovered
+            highlighted: isHoveredItem
           });
         } else if (item.category === 'mushroom') {
           drawMushroom(item as MushroomItem, {
@@ -889,23 +1275,53 @@ function getRoomCropCoordinates(
             y: cropY,
             scale: 0.9,
             time,
-            highlighted: isHovered
+            highlighted: isHoveredItem
           });
         }
+      });
+
+      // Free-standing equipment in room
+      const roomEquipment = room.items.filter(it => it.category === 'equipment') as EquipmentItem[];
+      roomEquipment.forEach((eq, eqIdx) => {
+        let eqX: number;
+        let eqY: number;
+        if (eq.position && typeof eq.position.x === 'number' && typeof eq.position.y === 'number') {
+          eqX = Math.round(CANVAS_FLOOR_ORIGIN_X + eq.position.x * CANVAS_GRID_SIZE);
+          eqY = Math.round(CANVAS_FLOOR_ORIGIN_Y + eq.position.y * CANVAS_GRID_SIZE);
+        } else {
+          eqX = CANVAS_FLOOR_ORIGIN_X + (eqIdx + 1) * 3 * CANVAS_GRID_SIZE;
+          eqY = CANVAS_MAX_FLOOR_Y - 40;
+        }
+        drawEquipmentSprite(ctx, eq, eqX, eqY, hovered?.id === eq.id, time);
+      });
+
+      // Free-standing occupants in room
+      const roomOccupants = room.items.filter(it => it.category === 'person' || it.category === 'pet');
+      roomOccupants.forEach((occ, oIdx) => {
+        let occX: number;
+        let occY: number;
+        if (occ.position && typeof occ.position.x === 'number' && typeof occ.position.y === 'number') {
+          occX = Math.round(CANVAS_FLOOR_ORIGIN_X + occ.position.x * CANVAS_GRID_SIZE);
+          occY = Math.round(CANVAS_FLOOR_ORIGIN_Y + occ.position.y * CANVAS_GRID_SIZE);
+        } else {
+          occX = CANVAS_FLOOR_ORIGIN_X + (oIdx + 1) * 4 * CANVAS_GRID_SIZE;
+          occY = CANVAS_MAX_FLOOR_Y - 40;
+        }
+        drawOccupantSprite(ctx, occ, occX, occY, hovered?.id === occ.id);
       });
 
       // 5. Draw Player Avatar
       drawCultivatorAvatar(ctx, playerRef.current);
 
       // 6. Draw Floating Notifications & Sparkles
-      drawFloatingPopups(ctx, floatingTexts);
+      drawFloatingPopups(ctx, floatList);
 
       animId = requestAnimationFrame(render);
     };
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [currentRoom, unzippedTents, hoveredObject, floatingTexts, state.simTime]);
+  }, []);
 
   // Clean expired floating texts
   useEffect(() => {
@@ -965,16 +1381,16 @@ function getRoomCropCoordinates(
           {/* Climate Metrics Quick Bar */}
           <div className="hidden lg:flex items-center gap-2 text-xs font-mono">
             <span className="px-2 py-0.5 rounded bg-zinc-950/80 border border-zinc-800 text-amber-300">
-              🌡️ {state.tempUnit === 'F' ? `${currentRoom.climate.tempF}°F` : `${currentRoom.climate.tempC}°C`}
+              🌡️ {state.tempUnit === 'F' ? `${currentRoom.climate.tempF.toFixed(1)}°F` : `${currentRoom.climate.tempC.toFixed(1)}°C`}
             </span>
             <span className="px-2 py-0.5 rounded bg-zinc-950/80 border border-zinc-800 text-cyan-300">
-              💧 {currentRoom.climate.rh}% RH
+              💧 {currentRoom.climate.rh.toFixed(1)}% RH
             </span>
             <span className="px-2 py-0.5 rounded bg-zinc-950/80 border border-zinc-800 text-emerald-300">
-              🌿 {currentRoom.climate.vpdKpa} kPa
+              🌿 {currentRoom.climate.vpdKpa.toFixed(2)} kPa
             </span>
             <span className="px-2 py-0.5 rounded bg-zinc-950/80 border border-zinc-800 text-purple-300">
-              🌫️ {currentRoom.climate.co2Ppm} ppm
+              🌫️ {Math.round(currentRoom.climate.co2Ppm)} ppm
             </span>
           </div>
         </div>
@@ -1025,7 +1441,7 @@ function getRoomCropCoordinates(
           </button>
         </div>
 
-        {/* Right: Sound, Harvest Log, Dual-Screen Popout */}
+        {/* Right: Sound, Player Inventory, Dual-Screen Popout */}
         <div className="flex items-center gap-2">
           {/* Audio toggle */}
           <button
@@ -1040,16 +1456,17 @@ function getRoomCropCoordinates(
             {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
           </button>
 
-          {/* Harvests */}
+          {/* Player Harvest Inventory Button (Replaces Vault Button) */}
           <button
             onClick={() => {
               soundEffects.playClick();
-              onOpenHarvestModal();
+              setIsInventoryOpen(true);
             }}
-            className="px-2.5 py-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-amber-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-750/70 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm hover:scale-[1.02]"
+            title="Open Cultivator Harvest Inventory [I]"
           >
-            <Award className="w-3.5 h-3.5" />
-            <span>{state.harvests.length} Harvests</span>
+            <Package className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Inventory ({state.harvests.length})</span>
           </button>
 
           {/* Dual Screen Popout */}
@@ -1100,8 +1517,10 @@ function getRoomCropCoordinates(
           <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
             <div><span className="text-zinc-200 font-semibold">[WASD / Click]</span> Walk around</div>
             <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
-            <div><span className="text-zinc-200 font-semibold">[Z / O]</span> Unzip / Zip Tent Door</div>
+            <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
+            <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>
             <div><span className="text-zinc-200 font-semibold">[1 - 6]</span> Switch Hotbar Tool</div>
+            <div className="pt-0.5 text-emerald-400"><span className="text-zinc-200 font-semibold">[Grid]</span> 1 Square = 1 Foot (1:1 Scale)</div>
           </div>
         </div>
 
@@ -1212,6 +1631,16 @@ function getRoomCropCoordinates(
           enclosureClimate={currentRoom.climate}
           isOpen={true}
           onClose={() => setInspectedCrop(null)}
+          onOpenFullInspector={() => {
+            const cropId = inspectedCrop.item.id;
+            const parentTentId = inspectedCrop.parentTentId;
+            setInspectedCrop(null);
+            setInGameInspectorTarget({
+              type: 'item',
+              id: cropId,
+              parentTentId: parentTentId || null
+            });
+          }}
           onWater={(crop) => applyToolToCrop(crop, inspectedCrop.parentTentId)}
           onFeed={(plant) => applyToolToCrop(plant, inspectedCrop.parentTentId)}
           onPrune={(plant) => {
@@ -1235,6 +1664,152 @@ function getRoomCropCoordinates(
           onHarvest={(crop) => {
             applyToolToCrop(crop, inspectedCrop.parentTentId);
             setInspectedCrop(null);
+          }}
+        />
+      )}
+
+      {/* 2D Mode Pro Inspector Modal: Tent & Internal Items Manager */}
+      {inGameInspectorTarget && (
+        <div 
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 animate-in fade-in duration-150"
+          onClick={() => setInGameInspectorTarget(null)}
+        >
+          <div 
+            className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Top Modal Navigation & Action Bar */}
+            <div className="flex items-center justify-between px-5 py-3.5 bg-zinc-950/90 border-b border-zinc-800 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                  {inGameInspectorTarget.type === 'tent' ? (
+                    <Box className="w-5 h-5" />
+                  ) : inGameInspectorTarget.type === 'item' ? (
+                    <Layers className="w-5 h-5" />
+                  ) : (
+                    <Home className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-zinc-100 uppercase tracking-wide">
+                      Grow Space &amp; Tent Inspector
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
+                      {inGameInspectorTarget.type === 'tent' 
+                        ? '⛺ Tent & Internal Items' 
+                        : inGameInspectorTarget.type === 'item' 
+                          ? '🌿 Item Editor & Controls' 
+                          : '🏠 Room Properties'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400">
+                    {inGameInspectorTarget.type === 'tent'
+                      ? 'Inspect tent microclimate, tweak exhaust fan speeds, and click individual items below to edit them.'
+                      : inGameInspectorTarget.type === 'item'
+                        ? 'Edit growth stage, health, watering, equipment power/mode/schedules, or care for crops.'
+                        : 'Adjust room dimensions, HVAC, insulation, and ambient parameters.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setInGameInspectorTarget(null)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white text-xs font-semibold border border-zinc-750 transition-colors shadow-sm"
+                >
+                  <span>Done / Back to Game</span>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body: Complete Dashboard ItemInspector */}
+            <div className="overflow-y-auto p-4 sm:p-6 flex-1 bg-zinc-900/60">
+              <ItemInspector
+                room={currentRoom}
+                rooms={allRooms}
+                outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation?.customCo2Ppm || 420}
+                selectedType={inGameInspectorTarget.type}
+                selectedId={inGameInspectorTarget.id}
+                selectedParentTentId={inGameInspectorTarget.parentTentId}
+                tempUnit={state.tempUnit}
+                onSelectRoom={() => {
+                  soundEffects.playClick();
+                  setInGameInspectorTarget({ type: 'room', id: currentRoom.id, parentTentId: null });
+                }}
+                onSelectTent={(tentId) => {
+                  soundEffects.playClick();
+                  setInGameInspectorTarget({ type: 'tent', id: tentId, parentTentId: null });
+                }}
+                onSelectItem={(itemId, parentTentId) => {
+                  soundEffects.playClick();
+                  setInGameInspectorTarget({ 
+                    type: 'item', 
+                    id: itemId, 
+                    parentTentId: parentTentId || (inGameInspectorTarget.type === 'tent' ? inGameInspectorTarget.id : null) 
+                  });
+                }}
+                onUpdateRoom={handleUpdateRoomFromGame}
+                onUpdateTent={handleUpdateTentFromGame}
+                onUpdateItem={handleUpdateItemFromGame}
+                onDeleteTent={handleDeleteTentFromGame}
+                onDeleteItem={handleDeleteItemFromGame}
+                onDeleteRoom={handleDeleteRoomFromGame}
+                onOpenAddRoom={onOpenAddRoom}
+                onOpenAddItem={(tentId) => {
+                  setInGameInspectorTarget(null);
+                  onOpenAddItem(tentId);
+                }}
+                onHarvestPlant={(plant, tentId) => {
+                  if (onHarvestPlant) {
+                    onHarvestPlant(plant, tentId);
+                  } else {
+                    applyToolToCrop(plant, tentId);
+                  }
+                }}
+                onHarvestMushroom={(mushroom, tentId) => {
+                  if (onHarvestMushroom) {
+                    onHarvestMushroom(mushroom, tentId);
+                  } else {
+                    applyToolToCrop(mushroom, tentId);
+                  }
+                }}
+                simTime={state.simTime}
+                onLogJournalEntry={onLogJournalEntry}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Player Harvest Inventory Modal */}
+      {isInventoryOpen && (
+        <PlayerInventoryModal
+          harvests={state.harvests}
+          isOpen={isInventoryOpen}
+          onClose={() => setIsInventoryOpen(false)}
+          onUpdateHarvestRecord={(updatedRecord) => {
+            onUpdateState(prev => {
+              const nextState: SimulationState = {
+                ...prev,
+                harvests: prev.harvests.map(h => h.id === updatedRecord.id ? updatedRecord : h)
+              };
+              broadcastSimulationState(nextState);
+              return nextState;
+            });
+          }}
+          onDeleteHarvestRecord={(recordId) => {
+            soundEffects.playClick();
+            onUpdateState(prev => {
+              const nextState: SimulationState = {
+                ...prev,
+                harvests: prev.harvests.filter(h => h.id !== recordId)
+              };
+              broadcastSimulationState(nextState);
+              return nextState;
+            });
           }}
         />
       )}
@@ -1264,19 +1839,32 @@ function drawRoomEnvironment(
     ctx.fillStyle = grassGrad;
     ctx.fillRect(0, 0, width, height);
 
-    // Mowed lawn stripes
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-    for (let x = 0; x < width; x += 80) {
-      ctx.fillRect(x, 0, 40, height);
+    // Floor grid lines starting at CANVAS_FLOOR_ORIGIN_X and CANVAS_FLOOR_ORIGIN_Y
+    ctx.lineWidth = 1;
+    for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
+      const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
+      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)';
+      ctx.beginPath();
+      ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
+      ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
+      ctx.stroke();
+    }
+    for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
+      const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
+      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)';
+      ctx.beginPath();
+      ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
+      ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
+      ctx.stroke();
     }
 
     // Flagstone garden walkway
     ctx.fillStyle = '#52525b';
-    ctx.fillRect(60, 350, width - 120, 38);
+    ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, 350, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 38);
     ctx.strokeStyle = '#3f3f46';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(60, 350, width - 120, 38);
-    for (let px = 85; px < width - 120; px += 45) {
+    ctx.strokeRect(CANVAS_FLOOR_ORIGIN_X, 350, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 38);
+    for (let px = CANVAS_FLOOR_ORIGIN_X + 25; px < CANVAS_MAX_FLOOR_X - 25; px += 45) {
       ctx.beginPath();
       ctx.moveTo(px, 350);
       ctx.lineTo(px, 388);
@@ -1286,7 +1874,7 @@ function drawRoomEnvironment(
     // Wooden Trellis Posts & Top Cable Wire across garden rows
     ctx.strokeStyle = '#78350f'; // Cedar wood posts
     ctx.lineWidth = 6;
-    for (let postX = 120; postX <= width - 120; postX += 160) {
+    for (let postX = CANVAS_FLOOR_ORIGIN_X + 60; postX <= CANVAS_MAX_FLOOR_X - 60; postX += 160) {
       ctx.beginPath();
       ctx.moveTo(postX, 100);
       ctx.lineTo(postX, 260);
@@ -1296,22 +1884,22 @@ function drawRoomEnvironment(
     ctx.strokeStyle = '#a1a1aa';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(90, 105);
-    ctx.lineTo(width - 90, 105);
+    ctx.moveTo(CANVAS_FLOOR_ORIGIN_X + 30, 105);
+    ctx.lineTo(CANVAS_MAX_FLOOR_X - 30, 105);
     ctx.stroke();
 
     // Cedar Wood Garden Fence Perimeter
     ctx.fillStyle = '#451a03';
-    ctx.fillRect(0, 0, width, 40);
-    ctx.fillRect(0, 0, 40, height);
-    ctx.fillRect(width - 40, 0, 40, height);
-    ctx.fillRect(0, height - 30, width, 30);
+    ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y);
+    ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height);
+    ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height);
+    ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y);
 
     // Fence pickets
     ctx.fillStyle = '#78350f';
     for (let fx = 10; fx < width; fx += 25) {
       ctx.fillRect(fx, 4, 18, 36);
-      ctx.fillRect(fx, height - 30, 18, 26);
+      ctx.fillRect(fx, CANVAS_MAX_FLOOR_Y + 4, 18, 26);
     }
 
     // Natural sunlight / night tint based on live light PPFD
@@ -1331,35 +1919,41 @@ function drawRoomEnvironment(
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(0, 0, width, height);
 
-    // Gravel pea stones
-    ctx.fillStyle = '#334155';
-    for (let gx = 60; gx < width - 60; gx += 45) {
-      for (let gy = 60; gy < height - 60; gy += 45) {
-        ctx.beginPath();
-        ctx.arc(gx + (gy % 20), gy, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    // Floor grid lines
+    ctx.lineWidth = 1;
+    for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
+      const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
+      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(148, 163, 184, 0.25)' : 'rgba(148, 163, 184, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
+      ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
+      ctx.stroke();
+    }
+    for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
+      const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
+      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(148, 163, 184, 0.25)' : 'rgba(148, 163, 184, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
+      ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
+      ctx.stroke();
     }
 
     // Galvanized steel hoop arches
     ctx.strokeStyle = '#94a3b8';
     ctx.lineWidth = 4;
-    for (let archX = 100; archX < width - 60; archX += 180) {
+    for (let archX = CANVAS_FLOOR_ORIGIN_X + 80; archX < CANVAS_MAX_FLOOR_X - 40; archX += 160) {
       ctx.beginPath();
-      ctx.moveTo(archX, 50);
-      ctx.lineTo(archX, height - 35);
+      ctx.moveTo(archX, CANVAS_FLOOR_ORIGIN_Y);
+      ctx.lineTo(archX, CANVAS_MAX_FLOOR_Y);
       ctx.stroke();
     }
 
-    // Polycarbonate greenhouse frame
-    ctx.fillStyle = 'rgba(240, 253, 250, 0.08)';
-    ctx.fillRect(0, 0, width, height);
-
+    // Polycarbonate greenhouse frame border
     ctx.fillStyle = '#334155';
-    ctx.fillRect(0, 0, width, 45);
-    ctx.fillRect(0, 0, 45, height);
-    ctx.fillRect(width - 45, 0, 45, height);
-    ctx.fillRect(0, height - 35, width, 35);
+    ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y);
+    ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height);
+    ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height);
+    ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y);
     return;
   }
 
@@ -1367,44 +1961,69 @@ function drawRoomEnvironment(
   ctx.fillStyle = '#18181b';
   ctx.fillRect(0, 0, width, height);
 
-  // Floor grid tiles
-  ctx.strokeStyle = '#27272a';
-  ctx.lineWidth = 1;
-  const tileSize = 40;
-  for (let x = 0; x < width; x += tileSize) {
+  // Floor grid tiles starting from CANVAS_FLOOR_ORIGIN_X and CANVAS_FLOOR_ORIGIN_Y
+  // 1 square = 1 foot (40px)
+  for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
+    const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
+    const isMajor = ft % 5 === 0;
+    ctx.strokeStyle = isMajor ? '#3f3f46' : '#27272a';
+    ctx.lineWidth = isMajor ? 1.5 : 1;
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
+    ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
+    ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
     ctx.stroke();
-  }
-  for (let y = 0; y < height; y += tileSize) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
+
+    // Subtle foot label every 5ft at top wall edge
+    if (isMajor && ft > 0 && ft < 22) {
+      ctx.fillStyle = '#52525b';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${ft}ft`, x, CANVAS_FLOOR_ORIGIN_Y - 6);
+    }
   }
 
-  // 2. Room Border Walls
+  for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
+    const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
+    const isMajor = ft % 5 === 0;
+    ctx.strokeStyle = isMajor ? '#3f3f46' : '#27272a';
+    ctx.lineWidth = isMajor ? 1.5 : 1;
+    ctx.beginPath();
+    ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
+    ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
+    ctx.stroke();
+
+    // Subtle foot label every 5ft at left wall edge
+    if (isMajor && ft > 0 && ft < 14) {
+      ctx.fillStyle = '#52525b';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${ft}ft`, CANVAS_FLOOR_ORIGIN_X - 6, y + 3);
+    }
+  }
+
+  // 2. Room Border Walls (Inner faces at 60, 50, 940, 610)
   ctx.fillStyle = '#27272a';
-  ctx.fillRect(0, 0, width, 50); // Top wall
-  ctx.fillRect(0, 0, 50, height); // Left wall
-  ctx.fillRect(width - 50, 0, 50, height); // Right wall
-  ctx.fillRect(0, height - 35, width, 35); // Bottom wall
+  ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y); // Top wall: 0 to 50
+  ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height); // Left wall: 0 to 60
+  ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height); // Right wall: 940 to 1000
+  ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y); // Bottom wall: 610 to 650
 
   // Wall Baseboards
   ctx.fillStyle = '#3f3f46';
-  ctx.fillRect(50, 46, width - 100, 4);
-  ctx.fillRect(50, height - 39, width - 100, 4);
+  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, CANVAS_FLOOR_ORIGIN_Y - 4, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 4);
+  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, CANVAS_MAX_FLOOR_Y, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 4);
+  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X - 4, CANVAS_FLOOR_ORIGIN_Y, 4, CANVAS_MAX_FLOOR_Y - CANVAS_FLOOR_ORIGIN_Y);
+  ctx.fillRect(CANVAS_MAX_FLOOR_X, CANVAS_FLOOR_ORIGIN_Y, 4, CANVAS_MAX_FLOOR_Y - CANVAS_FLOOR_ORIGIN_Y);
 
   // Ceiling Ventilation Duct running across top
   ctx.fillStyle = '#52525b';
-  ctx.fillRect(80, 16, width - 160, 18);
+  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X + 20, 16, (CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X) - 40, 18);
   ctx.strokeStyle = '#71717a';
   ctx.lineWidth = 2;
-  ctx.strokeRect(80, 16, width - 160, 18);
+  ctx.strokeRect(CANVAS_FLOOR_ORIGIN_X + 20, 16, (CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X) - 40, 18);
 
   // Duct vent grates
-  for (let vx = 140; vx < width - 140; vx += 120) {
+  for (let vx = CANVAS_FLOOR_ORIGIN_X + 80; vx < CANVAS_MAX_FLOOR_X - 80; vx += 120) {
     ctx.fillStyle = '#18181b';
     ctx.fillRect(vx, 20, 24, 10);
   }
@@ -1448,11 +2067,11 @@ function drawTentStructure(
   tent: Tent,
   x: number,
   y: number,
-  isUnzipped: boolean,
+  width: number,
+  height: number,
+  isHovered: boolean,
   time: number
 ) {
-  const width = 230;
-  const height = 180;
   const halfW = width / 2;
   const halfH = height / 2;
 
@@ -1460,115 +2079,335 @@ function drawTentStructure(
   ctx.translate(x, y);
 
   // Tent Outer Shell Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.beginPath();
-  ctx.roundRect(-halfW + 6, -halfH + 8, width, height, 12);
+  ctx.roundRect(-halfW + 4, -halfH + 6, width, height, 10);
   ctx.fill();
 
   // Tent Diamond Mylar Shell (Dark Oxford exterior)
   ctx.fillStyle = '#18181b';
   ctx.beginPath();
-  ctx.roundRect(-halfW, -halfH, width, height, 10);
+  ctx.roundRect(-halfW, -halfH, width, height, 8);
   ctx.fill();
 
-  ctx.strokeStyle = isUnzipped ? '#34d399' : '#3f3f46';
-  ctx.lineWidth = 2;
+  // Highlight outline when hovered
+  if (isHovered) {
+    ctx.shadowColor = 'rgba(52, 211, 153, 0.5)';
+    ctx.shadowBlur = 10;
+  }
+  ctx.strokeStyle = isHovered ? '#34d399' : '#3f3f46';
+  ctx.lineWidth = isHovered ? 2.5 : 2;
   ctx.stroke();
+  ctx.shadowBlur = 0;
 
-  // Duct Port on Top Right with animated airflow particles
+  // Duct Port on Top Right with exhaust vent ring
+  const ductX = halfW - Math.min(22, width * 0.18);
   ctx.fillStyle = '#3f3f46';
   ctx.beginPath();
-  ctx.arc(halfW - 25, -halfH, 14, 0, Math.PI * 2);
+  ctx.arc(ductX, -halfH, 12, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#09090b';
   ctx.beginPath();
-  ctx.arc(halfW - 25, -halfH, 10, 0, Math.PI * 2);
+  ctx.arc(ductX, -halfH, 8, 0, Math.PI * 2);
   ctx.fill();
 
-  // If unzipped: render internal reflective diamond mylar + warm LED grow light glow
-  if (isUnzipped) {
-    ctx.save();
-    // Inner floor
-    ctx.fillStyle = '#27272a';
-    ctx.beginPath();
-    ctx.roundRect(-halfW + 8, -halfH + 8, width - 16, height - 16, 8);
-    ctx.fill();
+  // Internal reflective diamond mylar + warm LED grow light glow (Always visible)
+  ctx.save();
+  // Inner floor
+  ctx.fillStyle = '#27272a';
+  ctx.beginPath();
+  ctx.roundRect(-halfW + 6, -halfH + 6, width - 12, height - 12, 6);
+  ctx.fill();
 
-    // Warm overhead LED light cone glow
-    const lightGlow = ctx.createRadialGradient(0, -halfH + 30, 10, 0, 0, 110);
-    lightGlow.addColorStop(0, 'rgba(254, 240, 138, 0.28)');
-    lightGlow.addColorStop(0.7, 'rgba(254, 240, 138, 0.08)');
-    lightGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = lightGlow;
-    ctx.beginPath();
-    ctx.roundRect(-halfW + 8, -halfH + 8, width - 16, height - 16, 8);
-    ctx.fill();
+  // Warm overhead LED light cone glow
+  const lightGlow = ctx.createRadialGradient(0, -halfH + 25, 8, 0, 0, Math.min(halfW, halfH) * 1.15);
+  lightGlow.addColorStop(0, 'rgba(254, 240, 138, 0.28)');
+  lightGlow.addColorStop(0.7, 'rgba(254, 240, 138, 0.08)');
+  lightGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = lightGlow;
+  ctx.beginPath();
+  ctx.roundRect(-halfW + 6, -halfH + 6, width - 12, height - 12, 6);
+  ctx.fill();
 
-    // Hanging Quantum Board LED Light
-    ctx.fillStyle = '#d4d4d8';
-    ctx.fillRect(-45, -halfH + 12, 90, 8);
-    ctx.fillStyle = '#fef08a';
-    ctx.fillRect(-42, -halfH + 17, 84, 3);
+  // Hanging Quantum Board LED Light
+  const ledW = Math.min(width * 0.55, 85);
+  const ledH = 7;
+  ctx.fillStyle = '#d4d4d8';
+  ctx.fillRect(-ledW / 2, -halfH + 10, ledW, ledH);
+  ctx.fillStyle = '#fef08a';
+  ctx.fillRect(-ledW / 2 + 2, -halfH + 14, ledW - 4, 3);
 
-    // Hanging wire cables
-    ctx.strokeStyle = '#71717a';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(-40, -halfH + 8);
-    ctx.lineTo(-40, -halfH + 12);
-    ctx.moveTo(40, -halfH + 8);
-    ctx.lineTo(40, -halfH + 12);
-    ctx.stroke();
+  // Hanging wire cables
+  ctx.strokeStyle = '#71717a';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-ledW / 2 + 4, -halfH + 6);
+  ctx.lineTo(-ledW / 2 + 4, -halfH + 10);
+  ctx.moveTo(ledW / 2 - 4, -halfH + 6);
+  ctx.lineTo(ledW / 2 - 4, -halfH + 10);
+  ctx.stroke();
 
-    ctx.restore();
-  } else {
-    // Closed Door Flap with Heavy Duty Zipper
-    ctx.fillStyle = '#27272a';
-    ctx.beginPath();
-    ctx.roundRect(-halfW + 10, -halfH + 10, width - 20, height - 20, 8);
-    ctx.fill();
+  ctx.restore();
 
-    // Zipper line
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(0, -halfH + 10);
-    ctx.lineTo(0, halfH - 10);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Zipper Pull Tab
-    ctx.fillStyle = '#fbbf24';
-    ctx.beginPath();
-    ctx.arc(0, 0, 6, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Unzip Prompt
-    ctx.fillStyle = '#a1a1aa';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('CLICK OR [Z] TO UNZIP', 0, 30);
-  }
-
-  // Tent Title & Climate HUD badge above
+  // Tent Title & Climate HUD badge above tent
   ctx.fillStyle = '#09090b';
   ctx.beginPath();
-  ctx.roundRect(-halfW + 6, -halfH - 22, width - 12, 18, 5);
+  ctx.roundRect(-halfW, -halfH - 24, width, 20, 5);
   ctx.fill();
-  ctx.strokeStyle = '#3f3f46';
+  ctx.strokeStyle = isHovered ? '#34d399' : '#3f3f46';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  ctx.fillStyle = '#e4e4e7';
+  ctx.fillStyle = isHovered ? '#6ee7b7' : '#e4e4e7';
   ctx.font = 'bold 10px sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(tent.name, -halfW + 12, -halfH - 9);
+  const itemCount = tent.items.length;
+  const countLabel = itemCount > 0 ? ` (${itemCount})` : '';
+  const tentLabel = isHovered ? `⚙️ ${tent.name}${countLabel}` : `⛺ ${tent.name}${countLabel}`;
+  ctx.fillText(tentLabel, -halfW + 6, -halfH - 11);
 
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'right';
-  ctx.fillStyle = '#34d399';
-  ctx.fillText(`${tent.climate.tempF}°F | ${tent.climate.rh}% | ${tent.climate.vpdKpa}kPa`, halfW - 12, -halfH - 9);
+  if (width >= 130) {
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#34d399';
+    const tentTemp = `${tent.climate.tempF.toFixed(0)}°F`;
+    const tentRh = `${tent.climate.rh.toFixed(0)}%`;
+    ctx.fillText(`${tentTemp} | ${tentRh}`, halfW - 6, -halfH - 11);
+  }
+
+  ctx.restore();
+}
+
+function drawEquipmentSprite(
+  ctx: CanvasRenderingContext2D,
+  eq: EquipmentItem,
+  x: number,
+  y: number,
+  isHovered: boolean,
+  time: number
+) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  if (isHovered) {
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 8;
+  }
+
+  const powerColor = eq.powerOn ? '#10b981' : '#71717a';
+
+  if (eq.type === 'humidifier') {
+    // Humidifier tank & base
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.roundRect(-12, -18, 24, 30, 4);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#38bdf8' : '#475569';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Water level window (cyan)
+    ctx.fillStyle = '#0284c7';
+    ctx.fillRect(-6, -10, 12, 16);
+
+    // Power LED
+    ctx.fillStyle = powerColor;
+    ctx.beginPath();
+    ctx.arc(0, 8, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Animated mist plume when powered ON
+    if (eq.powerOn) {
+      const mistOffset = Math.sin(time * 0.006) * 3;
+      ctx.fillStyle = 'rgba(186, 230, 253, 0.6)';
+      ctx.beginPath();
+      ctx.arc(mistOffset, -24, 5, 0, Math.PI * 2);
+      ctx.arc(-mistOffset, -30, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (eq.type === 'dehumidifier') {
+    // Dehumidifier cube
+    ctx.fillStyle = '#27272a';
+    ctx.beginPath();
+    ctx.roundRect(-14, -14, 28, 28, 4);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#38bdf8' : '#52525b';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Grille lines
+    ctx.fillStyle = '#3f3f46';
+    for (let gy = -8; gy <= 4; gy += 4) {
+      ctx.fillRect(-10, gy, 20, 2);
+    }
+    // Power LED
+    ctx.fillStyle = powerColor;
+    ctx.beginPath();
+    ctx.arc(8, 8, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (eq.type === 'oscillating_fan') {
+    // Clip-on oscillating fan
+    ctx.fillStyle = '#3f3f46';
+    ctx.beginPath();
+    ctx.roundRect(-3, 6, 6, 8, 2);
+    ctx.fill();
+
+    // Fan cage
+    ctx.strokeStyle = isHovered ? '#38bdf8' : '#64748b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, -2, 12, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Blades
+    ctx.save();
+    ctx.translate(0, -2);
+    if (eq.powerOn) {
+      ctx.rotate(time * 0.02);
+    }
+    ctx.fillStyle = eq.powerOn ? '#38bdf8' : '#94a3b8';
+    for (let b = 0; b < 3; b++) {
+      ctx.rotate((Math.PI * 2) / 3);
+      ctx.beginPath();
+      ctx.ellipse(0, 5, 3, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Fan center hub & LED
+    ctx.fillStyle = powerColor;
+    ctx.beginPath();
+    ctx.arc(0, -2, 3, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (eq.type === 'exhaust_fan') {
+    // Inline duct fan cylinder
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.roundRect(-15, -10, 30, 20, 5);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#38bdf8' : '#64748b';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Airflow impeller blades
+    ctx.fillStyle = eq.powerOn ? '#38bdf8' : '#94a3b8';
+    ctx.beginPath();
+    ctx.arc(0, 0, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = powerColor;
+    ctx.beginPath();
+    ctx.arc(10, -5, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (eq.type === 'grow_light') {
+    // Hanging LED quantum board
+    ctx.fillStyle = '#e2e8f0';
+    ctx.beginPath();
+    ctx.roundRect(-20, -6, 40, 12, 3);
+    ctx.fill();
+
+    // LED diodes glowing
+    ctx.fillStyle = eq.powerOn ? '#fef08a' : '#94a3b8';
+    for (let lx = -14; lx <= 14; lx += 7) {
+      ctx.fillRect(lx - 2, -2, 4, 4);
+    }
+    if (eq.powerOn) {
+      ctx.fillStyle = 'rgba(254, 240, 138, 0.2)';
+      ctx.beginPath();
+      ctx.moveTo(-20, 6);
+      ctx.lineTo(-28, 22);
+      ctx.lineTo(28, 22);
+      ctx.lineTo(20, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (eq.type === 'heater' || eq.type === 'heat_mat') {
+    // Radiant heater
+    ctx.fillStyle = '#451a03';
+    ctx.beginPath();
+    ctx.roundRect(-10, -14, 20, 28, 4);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#f97316' : '#78350f';
+    ctx.stroke();
+
+    // Orange glowing coils
+    ctx.fillStyle = eq.powerOn ? '#f97316' : '#78350f';
+    for (let hy = -8; hy <= 6; hy += 4) {
+      ctx.fillRect(-6, hy, 12, 2);
+    }
+  } else if (eq.type === 'co2_regulator' || eq.type === 'co2_bag') {
+    // CO2 cylinder / bag
+    ctx.fillStyle = '#14532d';
+    ctx.beginPath();
+    ctx.roundRect(-8, -16, 16, 30, 4);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#34d399' : '#166534';
+    ctx.stroke();
+
+    // Brass gauge
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(0, -18, 4, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // Generic environmental controller / gear box
+    ctx.fillStyle = '#27272a';
+    ctx.beginPath();
+    ctx.roundRect(-12, -12, 24, 24, 3);
+    ctx.fill();
+    ctx.strokeStyle = isHovered ? '#38bdf8' : '#52525b';
+    ctx.stroke();
+
+    ctx.fillStyle = powerColor;
+    ctx.beginPath();
+    ctx.arc(0, 0, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Mini label beneath device
+  ctx.fillStyle = isHovered ? '#e2e8f0' : '#a1a1aa';
+  ctx.font = 'bold 7.5px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(eq.name.length > 12 ? eq.name.substring(0, 10) + '..' : eq.name, 0, 18);
+
+  ctx.restore();
+}
+
+function drawOccupantSprite(
+  ctx: CanvasRenderingContext2D,
+  occ: Item,
+  x: number,
+  y: number,
+  isHovered: boolean
+) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  if (occ.category === 'person') {
+    // Worker / Cultivator
+    ctx.fillStyle = '#7c3aed';
+    ctx.beginPath();
+    ctx.roundRect(-7, -15, 14, 16, 3);
+    ctx.fill();
+    ctx.fillStyle = '#fed7aa';
+    ctx.beginPath();
+    ctx.arc(0, -20, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (occ.category === 'pet') {
+    // Cute dog or cat
+    ctx.fillStyle = '#f97316';
+    ctx.beginPath();
+    ctx.ellipse(0, -4, 9, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(6, -9, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = isHovered ? '#e2e8f0' : '#d4d4d8';
+  ctx.font = 'bold 7.5px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(occ.name.length > 10 ? occ.name.substring(0, 8) + '..' : occ.name, 0, 10);
 
   ctx.restore();
 }

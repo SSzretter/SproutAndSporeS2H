@@ -330,135 +330,196 @@ export default function App() {
   // Update Room
   const handleUpdateRoom = useCallback((updatedRoom: Room) => {
     setState(prev => {
+      const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
       const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
-      return {
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRoom;
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Update Tent
   const handleUpdateTent = useCallback((updatedTent: Tent) => {
     setState(prev => {
-      const updatedRoom = {
-        ...prev.room,
-        tents: prev.room.tents.map(t => t.id === updatedTent.id ? updatedTent : t)
-      };
+      const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
-      return {
+      const updatedRooms = currentRooms.map(rm => {
+        if (!rm.tents.some(t => t.id === updatedTent.id)) return rm;
+        return {
+          ...rm,
+          tents: rm.tents.map(t => t.id === updatedTent.id ? updatedTent : t)
+        };
+      });
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Update Item (Plant, Mushroom, or Equipment)
   const handleUpdateItem = useCallback((updatedItem: Item, parentTentId?: string | null) => {
     setState(prev => {
-      let updatedRoom: Room;
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+
+      let targetRoomId = activeRId;
       if (parentTentId) {
-        updatedRoom = {
-          ...prev.room,
-          tents: prev.room.tents.map(t => {
-            if (t.id === parentTentId) {
-              return {
-                ...t,
-                items: t.items.map(i => i.id === updatedItem.id ? updatedItem : i)
-              };
-            }
-            return t;
-          })
-        };
+        const found = currentRooms.find(r => r.tents.some(t => t.id === parentTentId));
+        if (found) targetRoomId = found.id;
       } else {
-        // Freestanding in room
-        updatedRoom = {
-          ...prev.room,
-          items: prev.room.items.map(i => i.id === updatedItem.id ? updatedItem : i)
-        };
+        const found = currentRooms.find(r => r.items.some(i => i.id === updatedItem.id));
+        if (found) targetRoomId = found.id;
       }
 
-      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+      const updatedRooms = currentRooms.map(rm => {
+        if (rm.id !== targetRoomId) return rm;
 
-      return {
+        if (parentTentId) {
+          return {
+            ...rm,
+            tents: rm.tents.map(t => {
+              if (t.id === parentTentId) {
+                return {
+                  ...t,
+                  items: t.items.map(i => i.id === updatedItem.id ? updatedItem : i)
+                };
+              }
+              return t;
+            })
+          };
+        } else {
+          return {
+            ...rm,
+            items: rm.items.map(i => i.id === updatedItem.id ? updatedItem : i)
+          };
+        }
+      });
+
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Delete Item
   const handleDeleteItem = useCallback((itemId: string, parentTentId?: string | null) => {
     setState(prev => {
-      let updatedRoom = { ...prev.room };
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+
+      let targetRoomId = activeRId;
       if (parentTentId) {
-        updatedRoom.tents = updatedRoom.tents.map(t => {
-          if (t.id === parentTentId) {
-            return {
-              ...t,
-              items: t.items.filter(i => i.id !== itemId)
-            };
-          }
-          return t;
-        });
+        const found = currentRooms.find(r => r.tents.some(t => t.id === parentTentId));
+        if (found) targetRoomId = found.id;
       } else {
-        updatedRoom.items = updatedRoom.items.filter(i => i.id !== itemId);
+        const found = currentRooms.find(r => r.items.some(i => i.id === itemId));
+        if (found) targetRoomId = found.id;
       }
 
-      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+      const updatedRooms = currentRooms.map(rm => {
+        if (rm.id !== targetRoomId) return rm;
 
-      return {
+        if (parentTentId) {
+          return {
+            ...rm,
+            tents: rm.tents.map(t => {
+              if (t.id === parentTentId) {
+                return {
+                  ...t,
+                  items: t.items.filter(i => i.id !== itemId)
+                };
+              }
+              return t;
+            })
+          };
+        } else {
+          return {
+            ...rm,
+            items: rm.items.filter(i => i.id !== itemId)
+          };
+        }
+      });
+
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms,
         selectedType: parentTentId ? 'tent' : 'room',
-        selectedId: parentTentId || prev.room.id,
+        selectedId: parentTentId || updatedActiveRoom.id,
         selectedParentTentId: null
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Delete Tent
   const handleDeleteTent = useCallback((tentId: string) => {
     setState(prev => {
-      const updatedRoom = {
-        ...prev.room,
-        tents: prev.room.tents.filter(t => t.id !== tentId)
-      };
+      const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
 
-      return {
+      const updatedRooms = currentRooms.map(rm => {
+        if (!rm.tents.some(t => t.id === tentId)) return rm;
+        return {
+          ...rm,
+          tents: rm.tents.filter(t => t.id !== tentId)
+        };
+      });
+
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms,
         selectedType: 'room',
-        selectedId: prev.room.id,
+        selectedId: updatedActiveRoom.id,
         selectedParentTentId: null
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Add Tent
   const handleAddTent = useCallback((newTent: Tent) => {
     setState(prev => {
-      const updatedRoom = {
-        ...prev.room,
-        tents: [...prev.room.tents, newTent]
-      };
+      const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
 
-      return {
+      const updatedRooms = currentRooms.map(r => {
+        if (r.id !== activeRId) return r;
+        return {
+          ...r,
+          tents: [...r.tents, newTent]
+        };
+      });
+
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms,
         selectedType: 'tent',
         selectedId: newTent.id,
@@ -470,37 +531,63 @@ export default function App() {
             time: prev.simTime,
             type: 'success',
             title: 'Tent Deployed',
-            message: `${newTent.name} added to ${prev.room.name}.`
+            message: `${newTent.name} added to ${updatedActiveRoom.name}.`
           }
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
-  // Add Item
+  // Add Item (Plant, Mushroom, Equipment, Person, or Pet)
   const handleAddItem = useCallback((newItem: Item, tentId?: string | null) => {
     setState(prev => {
-      let updatedRoom = { ...prev.room };
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+
+      // Identify which room contains the target tent, or default to the active room
+      let targetRoomId = activeRId;
       if (tentId) {
-        updatedRoom.tents = updatedRoom.tents.map(t => {
-          if (t.id === tentId) {
-            return {
-              ...t,
-              items: [...t.items, newItem]
-            };
-          }
-          return t;
-        });
-      } else {
-        updatedRoom.items = [...updatedRoom.items, newItem];
+        const foundRoom = currentRooms.find(r => r.tents.some(t => t.id === tentId));
+        if (foundRoom) {
+          targetRoomId = foundRoom.id;
+        }
       }
 
-      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = currentRooms.map(r => r.id === updatedRoom.id ? updatedRoom : r);
+      let destinationName = 'room';
 
-      return {
+      const updatedRooms = currentRooms.map(r => {
+        if (r.id !== targetRoomId) return r;
+
+        if (tentId) {
+          return {
+            ...r,
+            tents: r.tents.map(t => {
+              if (t.id === tentId) {
+                destinationName = t.name;
+                return {
+                  ...t,
+                  items: [...t.items, newItem]
+                };
+              }
+              return t;
+            })
+          };
+        } else {
+          destinationName = r.name;
+          return {
+            ...r,
+            items: [...r.items, newItem]
+          };
+        }
+      });
+
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+
+      const nextState: SimulationState = {
         ...prev,
-        room: updatedRoom,
+        room: updatedActiveRoom,
         rooms: updatedRooms,
         selectedType: 'item',
         selectedId: newItem.id,
@@ -511,11 +598,13 @@ export default function App() {
             id: `j-${Date.now()}`,
             time: prev.simTime,
             type: 'info',
-            title: `Item Added`,
-            message: `${newItem.name} introduced into ${tentId ? 'tent' : 'room'}.`
+            title: `Item Added: ${newItem.name}`,
+            message: `${newItem.name} introduced into ${destinationName}.`
           }
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
@@ -524,7 +613,7 @@ export default function App() {
     setState(prev => {
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
       const updatedRooms = [...currentRooms, newRoom];
-      return {
+      const nextState: SimulationState = {
         ...prev,
         rooms: updatedRooms,
         activeRoomId: newRoom.id,
@@ -543,6 +632,8 @@ export default function App() {
           }
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
     setIsAddRoomModalOpen(false);
   }, []);
@@ -557,7 +648,7 @@ export default function App() {
       const remainingRooms = currentRooms.filter(r => r.id !== roomId);
       const nextActiveRoom = prev.activeRoomId === roomId ? remainingRooms[0] : (currentRooms.find(r => r.id === prev.activeRoomId) || remainingRooms[0]);
 
-      return {
+      const nextState: SimulationState = {
         ...prev,
         rooms: remainingRooms,
         activeRoomId: nextActiveRoom.id,
@@ -576,6 +667,8 @@ export default function App() {
           }
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
@@ -585,7 +678,7 @@ export default function App() {
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
       const targetRoom = currentRooms.find(r => r.id === roomId);
       if (!targetRoom) return prev;
-      return {
+      const nextState: SimulationState = {
         ...prev,
         activeRoomId: roomId,
         room: targetRoom,
@@ -593,6 +686,8 @@ export default function App() {
         selectedId: roomId,
         selectedParentTentId: null
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
@@ -607,7 +702,7 @@ export default function App() {
         ...prev.outdoorLocation,
         customCo2Ppm: co2Ppm
       };
-      return {
+      const nextState: SimulationState = {
         ...prev,
         outside: updatedOutside,
         outdoorLocation: updatedLocation,
@@ -622,20 +717,48 @@ export default function App() {
           }
         ]
       };
+      broadcastSimulationState(nextState);
+      return nextState;
     });
   }, []);
 
   // Harvest Plant
   const handleHarvestPlant = useCallback((plant: PlantItem, tentId?: string) => {
+    const activeR = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
     const yieldG = Math.max(10, Math.round(plant.yieldPotentialGrams));
+    const simDate = new Date(state.simTime);
+    const dateStr = simDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const timeStr = simDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const quality = plant.health > 90 ? 'Legendary' : plant.health > 75 ? 'Excellent' : 'Good';
+    const originTent = tentId ? activeR.tents.find(t => t.id === tentId) : null;
+    const estimatedValue = Math.round(yieldG * (quality === 'Legendary' ? 12 : quality === 'Excellent' ? 9 : 6));
+
+    const potencyNote = plant.species === 'Hops' 
+      ? `${plant.alphaAcidsPct || 8.5}% Alpha Acids` 
+      : plant.species === 'Chili Pepper' 
+        ? `${(plant.scovilleHeatUnits || 45000).toLocaleString()} SHU` 
+        : `${plant.health > 85 ? '26%' : plant.health > 70 ? '22%' : '18%'} Cannabinoids`;
+
     const record: HarvestRecord = {
-      id: `harv-${Date.now()}`,
+      id: `harv-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       name: plant.name,
       species: plant.species,
+      strainName: plant.strainName,
       type: 'plant',
       yieldGrams: yieldG,
-      dateStr: new Date(state.simTime).toLocaleDateString(),
-      quality: plant.health > 90 ? 'Legendary' : plant.health > 75 ? 'Excellent' : 'Good'
+      dateStr,
+      timeStr,
+      timestamp: state.simTime,
+      quality,
+      health: plant.health,
+      containerType: plant.containerType || plant.systemType,
+      growingMedium: plant.growingMedium,
+      originRoomName: activeR.name,
+      originTentName: originTent ? originTent.name : 'Room Floor / Garden',
+      cureStatus: 'Fresh Cut',
+      estimatedValue,
+      potencyNote,
+      notes: plant.notes
     };
 
     const reseededPlant: PlantItem = {
@@ -652,33 +775,56 @@ export default function App() {
 
     handleUpdateItem(reseededPlant, tentId);
 
-    setState(prev => ({
-      ...prev,
-      harvests: [record, ...prev.harvests],
-      journal: [
-        ...prev.journal,
-        {
-          id: `j-${Date.now()}`,
-          time: prev.simTime,
-          type: 'success',
-          title: `Harvest Complete!`,
-          message: `Harvested ${yieldG}g of ${plant.name} (${record.quality} quality). Replanted new seedling!`
-        }
-      ]
-    }));
-  }, [state.simTime, handleUpdateItem]);
+    setState(prev => {
+      const nextState: SimulationState = {
+        ...prev,
+        harvests: [record, ...prev.harvests],
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'success',
+            title: `Harvest Complete!`,
+            message: `Harvested ${yieldG}g (${(yieldG / 28.3495).toFixed(1)} oz) of ${plant.name} (${record.quality} quality). Added to inventory & replanted new seedling!`
+          }
+        ]
+      };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, [state.simTime, state.room, state.rooms, state.activeRoomId, handleUpdateItem]);
 
   // Harvest Mushroom Flush
   const handleHarvestMushroom = useCallback((shroom: MushroomItem, tentId?: string) => {
+    const activeR = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
     const yieldG = Math.max(15, Math.round(shroom.yieldPotentialGrams));
+    const simDate = new Date(state.simTime);
+    const dateStr = simDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const timeStr = simDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const quality = shroom.health > 88 ? 'Legendary' : 'Excellent';
+    const originTent = tentId ? activeR.tents.find(t => t.id === tentId) : null;
+    const estimatedValue = Math.round(yieldG * (quality === 'Legendary' ? 12 : 9));
+
     const record: HarvestRecord = {
-      id: `harv-${Date.now()}`,
+      id: `harv-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       name: shroom.name,
       species: shroom.species,
+      strainName: shroom.strainName,
       type: 'mushroom',
       yieldGrams: yieldG,
-      dateStr: new Date(state.simTime).toLocaleDateString(),
-      quality: shroom.health > 88 ? 'Legendary' : 'Excellent'
+      dateStr,
+      timeStr,
+      timestamp: state.simTime,
+      quality,
+      health: shroom.health,
+      containerType: shroom.containerType,
+      originRoomName: activeR.name,
+      originTentName: originTent ? originTent.name : 'Room Floor / Garden',
+      cureStatus: 'Fresh Cut',
+      estimatedValue,
+      potencyNote: `${shroom.health > 85 ? 'High' : 'Optimal'} Beta-Glucans`,
+      notes: shroom.notes
     };
 
     const nextFlushShroom: MushroomItem = {
@@ -693,21 +839,25 @@ export default function App() {
 
     handleUpdateItem(nextFlushShroom, tentId);
 
-    setState(prev => ({
-      ...prev,
-      harvests: [record, ...prev.harvests],
-      journal: [
-        ...prev.journal,
-        {
-          id: `j-${Date.now()}`,
-          time: prev.simTime,
-          type: 'success',
-          title: `Mushroom Flush Harvested!`,
-          message: `Gathered ${yieldG}g of ${shroom.name} caps. Monotub hydrated for flush #${nextFlushShroom.flushCount}!`
-        }
-      ]
-    }));
-  }, [state.simTime, handleUpdateItem]);
+    setState(prev => {
+      const nextState: SimulationState = {
+        ...prev,
+        harvests: [record, ...prev.harvests],
+        journal: [
+          ...prev.journal,
+          {
+            id: `j-${Date.now()}`,
+            time: prev.simTime,
+            type: 'success',
+            title: `Mushroom Flush Harvested!`,
+            message: `Gathered ${yieldG}g of ${shroom.name} caps. Added to inventory & hydrated for flush #${nextFlushShroom.flushCount}!`
+          }
+        ]
+      };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, [state.simTime, state.room, state.rooms, state.activeRoomId, handleUpdateItem]);
 
   // Add custom or care journal entry
   const handleAddJournalEntry = useCallback((entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => {
@@ -744,6 +894,8 @@ export default function App() {
     });
   }, []);
 
+  const activeRoom = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
       {viewMode === 'game' ? (
@@ -764,6 +916,15 @@ export default function App() {
             window.location.hash = '';
             setViewMode('dashboard');
           }}
+          onUpdateRoom={handleUpdateRoom}
+          onUpdateTent={handleUpdateTent}
+          onUpdateItem={handleUpdateItem}
+          onDeleteTent={handleDeleteTent}
+          onDeleteItem={handleDeleteItem}
+          onDeleteRoom={handleDeleteRoom}
+          onHarvestPlant={handleHarvestPlant}
+          onHarvestMushroom={handleHarvestMushroom}
+          onLogJournalEntry={handleAddJournalEntry}
         />
       ) : (
         <>
@@ -800,7 +961,7 @@ export default function App() {
             <ClimateDashboard
               outside={state.outside}
               outdoorLocation={state.outdoorLocation}
-              room={state.room}
+              room={activeRoom}
               rooms={state.rooms || [state.room]}
               activeRoomId={state.activeRoomId || state.room.id}
               selectedId={state.selectedId}
@@ -853,7 +1014,7 @@ export default function App() {
             {/* Spatial Floorplan View */}
             {activeTab === 'floorplan' && (
               <InteractiveFloorplan
-                room={state.room}
+                room={activeRoom}
                 rooms={state.rooms || [state.room]}
                 activeRoomId={state.activeRoomId || state.room.id}
                 selectedId={state.selectedId}
@@ -870,7 +1031,7 @@ export default function App() {
 
             {/* Item & Room Inspector Panel */}
             <ItemInspector
-              room={state.room}
+              room={activeRoom}
               rooms={state.rooms || [state.room]}
               outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
               selectedType={state.selectedType}
@@ -911,7 +1072,7 @@ export default function App() {
 
       {/* Add Item / Tent Modal */}
       <AddItemModal
-        room={state.room}
+        room={activeRoom}
         targetTentId={addModalTentId}
         isOpen={isAddModalOpen}
         simTime={state.simTime}
@@ -926,6 +1087,7 @@ export default function App() {
         onClose={() => setIsAddRoomModalOpen(false)}
         onAddRoom={handleAddRoom}
         outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
+        outsideClimate={state.outside}
       />
 
       {/* Location / Zip Code Modal */}
@@ -944,6 +1106,26 @@ export default function App() {
         harvests={state.harvests}
         isOpen={isHarvestModalOpen}
         onClose={() => setIsHarvestModalOpen(false)}
+        onUpdateHarvestRecord={(updatedRecord) => {
+          setState(prev => {
+            const nextState: SimulationState = {
+              ...prev,
+              harvests: prev.harvests.map(h => h.id === updatedRecord.id ? updatedRecord : h)
+            };
+            broadcastSimulationState(nextState);
+            return nextState;
+          });
+        }}
+        onDeleteHarvestRecord={(recordId) => {
+          setState(prev => {
+            const nextState: SimulationState = {
+              ...prev,
+              harvests: prev.harvests.filter(h => h.id !== recordId)
+            };
+            broadcastSimulationState(nextState);
+            return nextState;
+          });
+        }}
       />
     </div>
   );

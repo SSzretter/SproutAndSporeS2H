@@ -1,5 +1,5 @@
 import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
-import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS } from './plantLifecycle';
+import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar } from './plantLifecycle';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -761,6 +761,9 @@ export function simulateEnvironmentTick(
       : 'balanced_auto';
     const tentPriority: ControllerPriority = tent.controllerPriority || defaultPriority;
 
+    const hasExhaustFanInstalled = tent.items.some(i => i.category === 'equipment' && i.type === 'exhaust_fan');
+    const baseFanSpeed = hasExhaustFanInstalled ? (tent.exhaustFanSpeed || 0) : 0;
+
     const arbitration = arbitrateEnclosureEquipment({
       items: tent.items,
       climate: { tempF: tTempF, rh: tRH, co2Ppm: tCo2, lightPPFD: tent.climate.lightPPFD },
@@ -769,7 +772,7 @@ export function simulateEnvironmentTick(
       hour,
       simTime: currentSimTime,
       isTent: true,
-      baseFanSpeed: tent.exhaustFanSpeed || 0,
+      baseFanSpeed,
       enclosureAreaSqFt: tentAreaSqFt
     });
 
@@ -1193,6 +1196,17 @@ function simulateCropItem(params: {
       else if (plant.stage === 'vegetative' && plant.vegetativeDaysExpected) expectedDays = plant.vegetativeDaysExpected;
       else if (plant.stage === 'flowering' && plant.floweringDaysExpected) expectedDays = plant.floweringDaysExpected;
       else if (plant.stage === 'ripening' && plant.ripeningDaysExpected) expectedDays = plant.ripeningDaysExpected;
+      else if (plant.species === 'Chili Pepper') {
+        const pepperCult = getPepperCultivar(plant.strainName || plant.name);
+        if (pepperCult) {
+          if (plant.stage === 'germination') expectedDays = pepperCult.germinationDaysExpected;
+          else if (plant.stage === 'seedling') expectedDays = pepperCult.seedlingDaysExpected;
+          else if (plant.stage === 'mature_seedling') expectedDays = pepperCult.matureSeedlingDaysExpected;
+          else if (plant.stage === 'vegetative') expectedDays = pepperCult.vegetativeDaysExpected;
+          else if (plant.stage === 'flowering') expectedDays = pepperCult.floweringDaysExpected;
+          else if (plant.stage === 'ripening') expectedDays = pepperCult.ripeningDaysExpected;
+        }
+      }
 
       const baseDailyPercent = 100 / Math.max(1, expectedDays);
       const progressDelta = baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * co2Multiplier;

@@ -46,7 +46,8 @@ import {
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
-import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS } from '../utils/plantLifecycle';
+import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS } from '../utils/plantLifecycle';
+import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 
 interface AddItemModalProps {
   room: Room;
@@ -67,14 +68,33 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   onAddTent,
   onAddItem,
 }) => {
-  const [activeTab, setActiveTab] = useState<'tent' | 'plant' | 'mushroom' | 'equipment' | 'person' | 'pet'>('tent');
+  const [activeTab, setActiveTab] = useState<'tent' | 'plant' | 'mushroom' | 'equipment' | 'person' | 'pet'>(
+    targetTentId ? 'plant' : 'tent'
+  );
   const [selectedDestinationTentId, setSelectedDestinationTentId] = useState<string>(
     targetTentId || 'room'
   );
 
+  React.useEffect(() => {
+    if (isOpen) {
+      if (targetTentId) {
+        setSelectedDestinationTentId(targetTentId);
+        setActiveTab(prev => prev === 'tent' ? 'plant' : prev);
+      } else {
+        if (selectedDestinationTentId !== 'room') {
+          const tentExists = room.tents && room.tents.some(t => t.id === selectedDestinationTentId);
+          if (!tentExists) {
+            setSelectedDestinationTentId(room.tents && room.tents.length > 0 ? room.tents[0].id : 'room');
+          }
+        }
+      }
+    }
+  }, [targetTentId, isOpen, room]);
+
   // Tent Catalog & Form State
   const [tentBrandFilter, setTentBrandFilter] = useState<'all' | 'AC Infinity' | 'Spider Farmer' | 'Custom'>('AC Infinity');
-  const [selectedCatalogTent, setSelectedCatalogTent] = useState<CatalogTentModel>(TENT_CATALOG[4]); // CLOUDLAB 844 default
+  const [selectedCatalogTent, setSelectedCatalogTent] = useState<CatalogTentModel>(TENT_CATALOG[7]); // CLOUDLAB 844 default
+  const [tentFriendlyName, setTentFriendlyName] = useState('Grow Tent #1');
   const [customTentName, setCustomTentName] = useState('Custom Grow Tent');
   const [customLength, setCustomLength] = useState(4);
   const [customWidth, setCustomWidth] = useState(4);
@@ -85,6 +105,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [plantName, setPlantName] = useState('Gorilla Glue #4');
   const [plantStrain, setPlantStrain] = useState('Sour Dubb x Chem Sister');
   const [selectedHopIdx, setSelectedHopIdx] = useState(0);
+  const [selectedPepperIdx, setSelectedPepperIdx] = useState(0);
   const [propagationType, setPropagationType] = useState<PropagationType>('seed');
   const [plantStage, setPlantStage] = useState<PlantStage>('germination');
   const [germinationDays, setGerminationDays] = useState(4);
@@ -129,9 +150,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     const newTentId = `tent-${Date.now()}`;
     const isCustom = tentBrandFilter === 'Custom';
 
-    const tentName = isCustom 
+    const tentName = tentFriendlyName.trim() || (isCustom 
       ? customTentName 
-      : `${selectedCatalogTent.brand} ${selectedCatalogTent.modelName}`;
+      : `${selectedCatalogTent.brand} ${selectedCatalogTent.modelName}`);
 
     const dimensions: Dimensions = isCustom
       ? { length: Number(customLength) || 4, width: Number(customWidth) || 4, height: Number(customHeight) || 6.5, unit: 'ft' }
@@ -146,15 +167,16 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       poleDiameter: isCustom ? '16mm Steel' : selectedCatalogTent.poleDiameter,
       ventPorts: isCustom ? 'Dual Cinch Ports' : selectedCatalogTent.ventPorts,
       dimensions,
+      position: getDefaultSpatialPosition('tent', room.dimensions, room.tents.length),
       climate: {
-        tempF: room.climate.tempF + 2.2,
-        tempC: room.climate.tempC + 1.2,
-        rh: room.climate.rh + 6,
+        tempF: room.climate.tempF,
+        tempC: room.climate.tempC,
+        rh: room.climate.rh,
         lightPPFD: 0,
-        vpdKpa: calculateVPD(room.climate.tempF + 2.2, room.climate.rh + 6),
-        co2Ppm: 1100
+        vpdKpa: calculateVPD(room.climate.tempF, room.climate.rh, 0),
+        co2Ppm: room.climate.co2Ppm || 420
       },
-      exhaustFanSpeed: 50,
+      exhaustFanSpeed: 0, // Defaults to 0! No running fan in an empty tent
       items: []
     };
 
@@ -257,16 +279,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
     const isHop = plantSpecies === 'Hops';
     const hopData = isHop ? HOP_CULTIVARS[selectedHopIdx] : null;
+    const isPepper = plantSpecies === 'Chili Pepper';
+    const pepperData = isPepper ? PEPPER_CULTIVARS[selectedPepperIdx] : null;
 
     const initialPh = (growingMedium === 'hydroton_clay_pebbles' || growingMedium === 'rockwool_cubes' || growingMedium === 'aeroponic_mist' || systemType === 'dwc' || systemType === 'ebb_and_flow' || systemType === 'aeroponics') ? 5.8 : 6.4;
     const initialEc = nutrientProgram === 'water_only_flush' ? 300 : nutrientProgram === 'salt_mineral_ab' ? 1100 : 850;
 
     const newPlant: PlantItem = {
       id: `plant-${Date.now()}`,
-      name: plantName || (isHop && hopData ? `${hopData.name} Bine` : `${plantSpecies} Pot`),
+      name: plantName || (isHop && hopData ? `${hopData.name} Bine` : isPepper && pepperData ? `${pepperData.name} Pepper` : `${plantSpecies} Pot`),
       category: 'plant',
       species: plantSpecies,
-      strainName: isHop && hopData ? `${hopData.variety} (${hopData.aromaProfile})` : (plantStrain || plantSpecies),
+      strainName: isHop && hopData 
+        ? `${hopData.variety} (${hopData.aromaProfile})` 
+        : isPepper && pepperData
+          ? `${pepperData.variety} (${pepperData.scovilleRating})`
+          : (plantStrain || plantSpecies),
       propagationType,
       stage: plantStage,
       stageProgress: plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15,
@@ -283,13 +311,26 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       stageRequirements: DEFAULT_STAGE_REQUIREMENTS,
       health: 98,
       soilMoisture: plantStage === 'germination' || plantStage === 'rooting' ? 82 : 72,
-      rootTempF: plantStage === 'germination' || plantStage === 'rooting' ? 74.0 : 68.0,
+      rootTempF: plantStage === 'germination' || plantStage === 'rooting' ? (isPepper ? 82.0 : 74.0) : 68.0,
       nutrientLevel: 'balanced',
       heightInches: initialHeight,
       canopyWidthInches: initialCanopy,
-      yieldPotentialGrams: isHop ? (hopData?.expectedYieldGrams || 400) : plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
+      yieldPotentialGrams: isHop ? (hopData?.expectedYieldGrams || 400) : isPepper ? (pepperData?.expectedYieldGrams || 350) : plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
       isHarvested: false,
-      dimensions: { length: 1.5, width: 1.5, height: isHop ? 6.0 : 2.5, unit: 'ft' },
+      dimensions: getDefaultItemDimensions({
+        category: 'plant',
+        species: plantSpecies,
+        stage: plantStage
+      }),
+      position: (() => {
+        const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+          ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+          : room.dimensions;
+        const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+          ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+          : room.items.length;
+        return getDefaultSpatialPosition('plant', targetDims, count);
+      })(),
       notes: `${propagationType === 'seed' ? 'Planted from seed for germination' : isHop ? 'Planted from dormant rhizome cutting' : 'Started from fresh vegetative cutting/clone'}.`,
       systemType,
       containerType,
@@ -302,12 +343,20 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       aerationOxygenPct: (systemType === 'dwc' || systemType === 'aeroponics' || containerType === 'fabric_pot') ? 92 : 76,
       reservoirTempF: (systemType === 'dwc' || systemType === 'ebb_and_flow') ? 68.0 : undefined,
       alphaAcidsPct: isHop && hopData ? parseFloat(hopData.alphaAcids) || 7.5 : undefined,
+      scovilleHeatUnits: isPepper && pepperData ? pepperData.scovilleHeatUnits : undefined,
     };
     onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
   };
 
   const handleCreateMushroom = () => {
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
     const newMushroom: MushroomItem = {
       id: `shroom-${Date.now()}`,
       name: mushroomName || `${mushroomSpecies} Culture`,
@@ -324,13 +373,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       yieldPotentialGrams: 280,
       isHarvested: false,
       containerType: mushroomContainer,
-      dimensions: { length: 1.2, width: 1.0, height: 0.9, unit: 'ft' }
+      dimensions: getDefaultItemDimensions({ category: 'mushroom', containerType: mushroomContainer }),
+      position: getDefaultSpatialPosition('mushroom', targetDims, count)
     };
     onAddItem(newMushroom, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
   };
 
   const handleCreateEquipment = () => {
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
     const newEq: EquipmentItem = {
       id: `eq-${Date.now()}`,
       name: eqName || `${eqType.replace('_', ' ')}`,
@@ -342,7 +399,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       targetRh: eqType === 'humidifier' ? 65 : eqType === 'dehumidifier' ? 50 : undefined,
       targetCo2Ppm: eqType === 'co2_regulator' ? 1200 : undefined,
       schedule: eqType === 'grow_light' ? { enabled: true, onHour: 6, offHour: 0 } : undefined,
-      dimensions: { length: 1.5, width: 1.5, height: 1.0, unit: 'ft' }
+      dimensions: getDefaultItemDimensions({ category: 'equipment', type: eqType }),
+      position: getDefaultSpatialPosition('equipment', targetDims, count, eqType)
     };
     onAddItem(newEq, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -356,6 +414,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       exercising: { co2: 50, watts: 210, moisture: 2.5, label: 'Heavy Exertion & Moving Pots' }
     };
     const spec = activitySpecs[personActivity];
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
     const newPerson: PersonItem = {
       id: `person-${Date.now()}`,
       name: personName.trim() || 'Cultivator',
@@ -364,7 +429,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       co2RateLitersPerHour: spec.co2,
       heatOutputWatts: spec.watts,
       moistureLitersPerDay: spec.moisture,
-      dimensions: { length: 2.0, width: 2.0, height: 5.8, unit: 'ft' },
+      dimensions: getDefaultItemDimensions({ category: 'person' }),
+      position: getDefaultSpatialPosition('person', targetDims, count),
       notes: `Biological occupant (${spec.label}) exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W metabolic heat.`
     };
     onAddItem(newPerson, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
@@ -379,6 +445,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       cat: { co2: 2.2, watts: 12, moisture: 0.18, label: 'Domestic Cat (8-15 lbs)' }
     };
     const spec = petSpecs[petType];
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
     const newPet: PetItem = {
       id: `pet-${Date.now()}`,
       name: petName.trim() || spec.label,
@@ -388,7 +461,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       co2RateLitersPerHour: spec.co2,
       heatOutputWatts: spec.watts,
       moistureLitersPerDay: spec.moisture,
-      dimensions: { length: 2.0, width: 1.5, height: 1.8, unit: 'ft' },
+      dimensions: getDefaultItemDimensions({ category: 'pet', petType }),
+      position: getDefaultSpatialPosition('pet', targetDims, count),
       notes: `Pet occupant exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W body warmth.`
     };
     onAddItem(newPet, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
@@ -423,18 +497,20 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         </div>
 
         {/* Tab Selection */}
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 my-4">
-          <button
-            onClick={() => setActiveTab('tent')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
-              activeTab === 'tent'
-                ? 'bg-sky-600 border-sky-500 text-white shadow-sm'
-                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Box className="w-3.5 h-3.5" />
-            <span>Tent</span>
-          </button>
+        <div className={`grid gap-2 my-4 ${targetTentId ? 'grid-cols-2 sm:grid-cols-5' : 'grid-cols-3 sm:grid-cols-6'}`}>
+          {!targetTentId && (
+            <button
+              onClick={() => setActiveTab('tent')}
+              className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                activeTab === 'tent'
+                  ? 'bg-sky-600 border-sky-500 text-white shadow-sm'
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>Tent</span>
+            </button>
+          )}
 
           <button
             onClick={() => setActiveTab('plant')}
@@ -597,10 +673,27 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   })}
                 </div>
 
+                {/* Custom Name for the Tent */}
+                <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-200 block">
+                    Tent Custom Name / Label (Displayed in Simulation &amp; 2D Game):
+                  </label>
+                  <input
+                    type="text"
+                    value={tentFriendlyName}
+                    onChange={e => setTentFriendlyName(e.target.value)}
+                    placeholder="e.g. Veg Tent #1, Propagation Nursery, Flower Tent 4x4"
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-zinc-400">
+                    Selected Model: <span className="font-mono text-zinc-300 font-semibold">{selectedCatalogTent.brand} {selectedCatalogTent.modelName} ({selectedCatalogTent.dimensionsInches})</span>
+                  </p>
+                </div>
+
                 {/* Selected Tent Highlight Bar */}
                 <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between text-xs">
                   <div>
-                    <span className="text-[10px] font-mono uppercase text-sky-400 block">Configured Spec</span>
+                    <span className="text-[10px] font-mono uppercase text-sky-400 block">Hardware Spec</span>
                     <strong className="text-zinc-200 font-bold">{selectedCatalogTent.brand} {selectedCatalogTent.modelName}</strong>
                     <span className="text-zinc-400 block text-[11px]">{selectedCatalogTent.recommendedUse}</span>
                   </div>
@@ -712,12 +805,25 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       } else if (s === 'Tomato') {
                         setPlantName('Cherokee Purple');
                         setPlantStrain('Heirloom Beefsteak');
+                        setGerminationDays(6);
+                        setVegDays(28);
+                        setFlowerDays(45);
                       } else if (s === 'Chili Pepper') {
-                        setPlantName('Carolina Reaper');
-                        setPlantStrain('Capsicum chinense');
+                        const p = PEPPER_CULTIVARS[selectedPepperIdx];
+                        setPlantName(`${p.name} Pepper`);
+                        setPlantStrain(p.variety);
+                        setGerminationDays(p.germinationDaysExpected);
+                        setSeedlingDays(p.seedlingDaysExpected);
+                        setMatureSeedlingDays(p.matureSeedlingDaysExpected);
+                        setVegDays(p.vegetativeDaysExpected);
+                        setFlowerDays(p.floweringDaysExpected);
+                        setRipenDays(p.ripeningDaysExpected);
                       } else {
                         setPlantName('Sweet Genovese Basil');
                         setPlantStrain('Ocimum basilicum');
+                        setGerminationDays(5);
+                        setVegDays(21);
+                        setFlowerDays(30);
                       }
                     }}
                     className={`py-2 px-3 rounded-xl text-xs font-medium border text-left flex items-center justify-between ${
@@ -726,7 +832,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
                     }`}
                   >
-                    <span>{s === 'Hops' ? '🍺 Hops' : s}</span>
+                    <span>{s === 'Hops' ? '🍺 Hops' : s === 'Chili Pepper' ? '🌶️ Chili Pepper' : s}</span>
                     {plantSpecies === s && <Check className="w-3.5 h-3.5 text-emerald-400" />}
                   </button>
                 ))}
@@ -764,6 +870,52 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       </div>
                       <div className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{hop.aromaProfile}</div>
                       <div className="text-[9px] text-zinc-500 mt-0.5 capitalize">{hop.growthVigor} vigor · {hop.floweringDays}d bloom</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {plantSpecies === 'Chili Pepper' && (
+              <div className="p-3 bg-red-950/20 border border-red-800/60 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-red-300 flex items-center gap-1.5">
+                    <span>🌶️ Hot Pepper &amp; Chili Cultivars (Capsicum)</span>
+                  </label>
+                  <span className="text-[10px] text-red-400/80 font-mono">Heat Mat 80-86°F Recommended</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {PEPPER_CULTIVARS.map((pepper, idx) => (
+                    <button
+                      key={pepper.name}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPepperIdx(idx);
+                        setPlantName(`${pepper.name} Pepper`);
+                        setPlantStrain(pepper.variety);
+                        setGerminationDays(pepper.germinationDaysExpected);
+                        setSeedlingDays(pepper.seedlingDaysExpected);
+                        setMatureSeedlingDays(pepper.matureSeedlingDaysExpected);
+                        setVegDays(pepper.vegetativeDaysExpected);
+                        setFlowerDays(pepper.floweringDaysExpected);
+                        setRipenDays(pepper.ripeningDaysExpected);
+                      }}
+                      className={`p-2.5 rounded-lg border text-left text-xs transition-all ${
+                        selectedPepperIdx === idx
+                          ? 'bg-red-950/60 border-red-500 text-red-100 ring-1 ring-red-500/50 shadow-sm'
+                          : 'bg-zinc-950/80 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold text-zinc-100">
+                        <span>{pepper.name}</span>
+                        <span className={`text-[9px] font-mono px-1 py-0.2 rounded border ${pepper.heatBadgeColor}`}>
+                          {pepper.scovilleRating.split(' ')[0]} SHU
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{pepper.description}</div>
+                      <div className="text-[9px] text-zinc-500 mt-0.5 font-mono">
+                        {pepper.germinationDaysExpected}d germ @ {pepper.optimalGerminationTempF}°F · {pepper.floweringDaysExpected}d bloom
+                      </div>
                     </button>
                   ))}
                 </div>

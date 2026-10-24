@@ -255,11 +255,32 @@ export function evaluatePlantStageSuitability(
 
   // Root Zone Temperature
   let rootTempStatus: 'ideal' | 'chilled' | 'hot' = 'ideal';
-  if (rootTempF < 62) {
+  
+  if (plant.species === 'Chili Pepper' && plant.stage === 'germination') {
+    // Hot peppers (Capsicum annuum, chinense, frutescens) require high bottom heat to break dormancy!
+    if (rootTempF < 64) {
+      rootTempStatus = 'chilled';
+      scoreMultiplier *= 0.15;
+      details.push(`Substrate critically cold (${rootTempF.toFixed(1)}°F < 75°F). Pepper seed germination stalled; high damping-off risk.`);
+    } else if (rootTempF < 72) {
+      rootTempStatus = 'chilled';
+      scoreMultiplier *= 0.45;
+      details.push(`Substrate cool (${rootTempF.toFixed(1)}°F). Pepper germination sluggish; heat mat recommended for 80-85°F.`);
+    } else if (rootTempF >= 78 && rootTempF <= 88) {
+      scoreMultiplier *= 1.45;
+      details.push(`Substrate heat optimal (${rootTempF.toFixed(1)}°F). Vigorous seed coat imbibition & rapid radicle emergence!`);
+    } else if (rootTempF > 92) {
+      rootTempStatus = 'hot';
+      scoreMultiplier *= 0.5;
+      details.push(`Substrate excessive heat (${rootTempF.toFixed(1)}°F > 92°F). Thermal seed dormancy triggered.`);
+    } else {
+      details.push(`Substrate temp acceptable (${rootTempF.toFixed(1)}°F).`);
+    }
+  } else if (rootTempF < 62) {
     rootTempStatus = 'chilled';
     scoreMultiplier *= 0.7;
     details.push(`Root zone cold (${rootTempF.toFixed(1)}°F). Phosphorus & nutrient uptake stalled.`);
-  } else if (rootTempF > 78) {
+  } else if (rootTempF > 78 && plant.species !== 'Chili Pepper') {
     rootTempStatus = 'hot';
     scoreMultiplier *= 0.8;
     details.push(`Root zone warm (${rootTempF.toFixed(1)}°F). Watch for pythium/root rot.`);
@@ -463,6 +484,221 @@ export const HOP_CULTIVARS: HopCultivarProfile[] = [
     description: 'Prized for its distinct high-myrcene sweet orange oil signature that gives craft ales a sunny, citrusy character.'
   }
 ];
+
+export interface PepperCultivarProfile {
+  name: string;
+  variety: string;
+  scientificName: string;
+  scovilleHeatUnits: number;
+  scovilleRating: string;
+  heatLevel: 'sweet' | 'mild' | 'medium' | 'hot' | 'superhot';
+  heatBadgeColor: string;
+  germinationDaysExpected: number;
+  seedlingDaysExpected: number;
+  matureSeedlingDaysExpected: number;
+  vegetativeDaysExpected: number;
+  floweringDaysExpected: number;
+  ripeningDaysExpected: number;
+  optimalGerminationTempF: number;
+  minGerminationTempF: number;
+  description: string;
+  origin: string;
+  expectedYieldGrams: number;
+}
+
+export const PEPPER_CULTIVARS: PepperCultivarProfile[] = [
+  {
+    name: 'Jalapeño',
+    variety: 'Early Jalapeño (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 5000,
+    scovilleRating: '2,500 - 8,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-emerald-950 text-emerald-300 border-emerald-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 26,
+    floweringDaysExpected: 42,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Thick-walled, crisp green chili with classic zesty vegetable warmth. Excellent for fresh salsa, pickling, and poppers.',
+    origin: 'Xalapa, Veracruz, Mexico',
+    expectedYieldGrams: 420
+  },
+  {
+    name: 'Habanero',
+    variety: 'Orange Habanero (Capsicum chinense)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 250000,
+    scovilleRating: '150,000 - 325,000 SHU',
+    heatLevel: 'hot',
+    heatBadgeColor: 'bg-orange-950 text-orange-300 border-orange-700',
+    germinationDaysExpected: 16,
+    seedlingDaysExpected: 10,
+    matureSeedlingDaysExpected: 12,
+    vegetativeDaysExpected: 32,
+    floweringDaysExpected: 52,
+    ripeningDaysExpected: 16,
+    optimalGerminationTempF: 84,
+    minGerminationTempF: 74,
+    description: 'Lantern-shaped orange pods bursting with tropical floral apricot fragrance and a searing, lingering heat wave. Requires warm seedbeds to germinate.',
+    origin: 'Amazon Basin / Yucatán, Mexico',
+    expectedYieldGrams: 340
+  },
+  {
+    name: 'Ghost Pepper (Bhut Jolokia)',
+    variety: 'Bhut Jolokia (Capsicum chinense)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 1000000,
+    scovilleRating: '855,000 - 1,041,427 SHU',
+    heatLevel: 'superhot',
+    heatBadgeColor: 'bg-rose-950 text-rose-300 border-rose-700',
+    germinationDaysExpected: 22,
+    seedlingDaysExpected: 12,
+    matureSeedlingDaysExpected: 14,
+    vegetativeDaysExpected: 35,
+    floweringDaysExpected: 60,
+    ripeningDaysExpected: 20,
+    optimalGerminationTempF: 85,
+    minGerminationTempF: 76,
+    description: 'Legendary Indian superhot with rough, dented scarlet skin. Notoriously slow germination (3-4 weeks) that demands consistent 82-86°F heat mat warmth.',
+    origin: 'Assam, Northeast India',
+    expectedYieldGrams: 300
+  },
+  {
+    name: 'Carolina Reaper',
+    variety: 'Carolina Reaper (HP22B)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 1641000,
+    scovilleRating: '1,500,000 - 2,200,000 SHU',
+    heatLevel: 'superhot',
+    heatBadgeColor: 'bg-red-950 text-red-300 border-red-700',
+    germinationDaysExpected: 26,
+    seedlingDaysExpected: 14,
+    matureSeedlingDaysExpected: 14,
+    vegetativeDaysExpected: 38,
+    floweringDaysExpected: 65,
+    ripeningDaysExpected: 22,
+    optimalGerminationTempF: 86,
+    minGerminationTempF: 78,
+    description: 'Guinness World Record fiery superhot featuring bumpy crimson skin and distinctive scorpion tail. Demands dedicated bottom heat and patience during germination.',
+    origin: 'Fort Mill, South Carolina',
+    expectedYieldGrams: 280
+  },
+  {
+    name: 'Cayenne Pepper',
+    variety: 'Long Slim Red Cayenne (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 40000,
+    scovilleRating: '30,000 - 50,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-amber-950 text-amber-300 border-amber-700',
+    germinationDaysExpected: 9,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 26,
+    floweringDaysExpected: 44,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Slender, twisting 6-inch red chilis with vibrant pungent heat. Fast germinator, heavy yields, perfect for crushing into chili flakes or hot sauces.',
+    origin: 'French Guiana / Cayenne',
+    expectedYieldGrams: 380
+  },
+  {
+    name: 'Serrano Pepper',
+    variety: 'Serrano del Sol (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 18000,
+    scovilleRating: '10,000 - 23,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-emerald-950 text-emerald-300 border-emerald-700',
+    germinationDaysExpected: 9,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 28,
+    floweringDaysExpected: 46,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Crisp cylindrical pepper with noticeably brighter, punchier kick than Jalapeño. Prolific branching plant producing up to 50 pods.',
+    origin: 'Puebla & Hidalgo, Mexico',
+    expectedYieldGrams: 400
+  },
+  {
+    name: 'Poblano / Ancho',
+    variety: 'Poblano (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 1500,
+    scovilleRating: '1,000 - 2,000 SHU',
+    heatLevel: 'mild',
+    heatBadgeColor: 'bg-teal-950 text-teal-300 border-teal-700',
+    germinationDaysExpected: 10,
+    seedlingDaysExpected: 9,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 28,
+    floweringDaysExpected: 48,
+    ripeningDaysExpected: 15,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Large, heart-shaped glossy dark green pod with rich, mild earthy heat. When dried called Ancho. The quintessential pepper for chiles rellenos.',
+    origin: 'Puebla, Mexico',
+    expectedYieldGrams: 520
+  },
+  {
+    name: 'California Wonder Bell Pepper',
+    variety: 'California Wonder (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 0,
+    scovilleRating: '0 SHU (Sweet)',
+    heatLevel: 'sweet',
+    heatBadgeColor: 'bg-blue-950 text-blue-300 border-blue-700',
+    germinationDaysExpected: 7,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 40,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 78,
+    minGerminationTempF: 68,
+    description: 'Classic blocky 4-lobed sweet bell pepper with thick, sweet juicy walls. Quick reliable germination and high vitamin C content.',
+    origin: 'California, USA',
+    expectedYieldGrams: 600
+  },
+  {
+    name: 'Thai Bird\'s Eye Chili',
+    variety: 'Thai Dragon (Capsicum frutescens)',
+    scientificName: 'Capsicum frutescens',
+    scovilleHeatUnits: 75000,
+    scovilleRating: '50,000 - 100,000 SHU',
+    heatLevel: 'hot',
+    heatBadgeColor: 'bg-red-950 text-red-300 border-red-700',
+    germinationDaysExpected: 12,
+    seedlingDaysExpected: 9,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 28,
+    floweringDaysExpected: 48,
+    ripeningDaysExpected: 15,
+    optimalGerminationTempF: 82,
+    minGerminationTempF: 72,
+    description: 'Prolific bushy plant loaded with clusters of tiny upright-pointing chilis packing immediate, sharp fire. Fundamental to authentic Southeast Asian cuisine.',
+    origin: 'Thailand & Southeast Asia',
+    expectedYieldGrams: 310
+  }
+];
+
+export function getPepperCultivar(nameOrVariety?: string): PepperCultivarProfile | undefined {
+  if (!nameOrVariety) return undefined;
+  const lower = nameOrVariety.toLowerCase();
+  return PEPPER_CULTIVARS.find(p => 
+    lower.includes(p.name.toLowerCase()) || 
+    p.name.toLowerCase().includes(lower) || 
+    lower.includes(p.variety.toLowerCase()) ||
+    p.variety.toLowerCase().includes(lower)
+  );
+}
 
 /**
  * Returns the next lifecycle stage when transitioning

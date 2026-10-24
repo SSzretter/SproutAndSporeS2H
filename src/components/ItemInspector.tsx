@@ -34,7 +34,9 @@ import {
   Timer,
   SlidersHorizontal,
   Layers,
-  Power
+  Power,
+  Move,
+  MapPin
 } from 'lucide-react';
 import { 
   Room, 
@@ -56,7 +58,7 @@ import {
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
-import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime } from '../utils/plantLifecycle';
+import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 
 interface ItemInspectorProps {
   room: Room;
@@ -168,6 +170,32 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
         [key]: parseFloat(value.toFixed(1))
       }
     });
+  };
+
+  // Position change helper for Tent
+  const handleTentPositionChange = (axis: 'x' | 'y' | 'z', value: number) => {
+    if (!currentTent || isNaN(value)) return;
+    const currentPos = currentTent.position || { x: 2.5, y: 2.0, z: 0 };
+    onUpdateTent({
+      ...currentTent,
+      position: {
+        ...currentPos,
+        [axis]: Math.max(0, parseFloat(value.toFixed(1)))
+      }
+    });
+  };
+
+  // Position change helper for Item
+  const handleItemPositionChange = (axis: 'x' | 'y' | 'z', value: number) => {
+    if (!currentItem || isNaN(value)) return;
+    const currentPos = currentItem.position || { x: 1.0, y: 1.0, z: 0 };
+    onUpdateItem({
+      ...currentItem,
+      position: {
+        ...currentPos,
+        [axis]: Math.max(0, parseFloat(value.toFixed(1)))
+      }
+    }, selectedParentTentId);
   };
 
   // 1. RENDER INSPECTOR WHEN ROOM IS SELECTED
@@ -337,94 +365,209 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
               </div>
             </div>
 
-            {/* 2005 COLONIAL HOUSE ENVELOPE & HVAC CONTROLS */}
-            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
-                  <Building className="w-4 h-4 text-sky-400" />
-                  Building Envelope &amp; 2005 Colonial House Physics
-                </span>
-                <span className="text-[10px] font-mono text-sky-300 bg-sky-950/80 border border-sky-850 px-2 py-0.5 rounded">
-                  IECC 2003/2006 Code
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                {/* Construction Spec details */}
-                <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
-                  <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Exterior Wall Insulation:</span>
-                    <span className="font-mono text-zinc-200 font-semibold">R-19 (U-0.053)</span>
-                  </div>
-                  <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Outdoor Air Infiltration:</span>
-                    <span className="font-mono text-zinc-200 font-semibold">0.35 ACH (Fresh Air)</span>
-                  </div>
-                  <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Foundation Coupling:</span>
-                    <select
-                      value={room.foundationType || 'conditioned_basement'}
-                      onChange={e => onUpdateRoom({ ...room, foundationType: e.target.value as any })}
-                      className="bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-[11px] text-zinc-200"
-                    >
-                      <option value="conditioned_basement">Basement Suite (R-10 Concrete)</option>
-                      <option value="slab_on_grade">1st Floor Living (Slab on Grade)</option>
-                      <option value="second_floor">2nd Floor Bedroom Space</option>
-                      <option value="attic">Attic / Bonus Room (Unconditioned)</option>
-                    </select>
-                  </div>
+            {/* PHYSICAL ENVIRONMENT SPECIFICATIONS (OUTDOOR GARDEN vs GREENHOUSE vs INDOOR ENVELOPE) */}
+            {room.environmentType === 'outdoor_garden' ? (
+              <div className="bg-emerald-950/20 border border-emerald-800/50 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-200 flex items-center gap-1.5">
+                    <Sun className="w-4 h-4 text-amber-400" />
+                    Outdoor Garden &amp; Open Atmosphere Physics
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950/80 border border-emerald-800 px-2 py-0.5 rounded">
+                    Open Sky · No Building Envelope
+                  </span>
                 </div>
 
-                {/* Central HVAC Status */}
-                <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
-                  <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Central HVAC Mode:</span>
-                    <select
-                      value={room.hvacMode || 'central_ac_active'}
-                      onChange={e => onUpdateRoom({ ...room, hvacMode: e.target.value as any })}
-                      className="bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-[11px] text-zinc-200"
-                    >
-                      <option value="central_ac_active">Active Central A/C (72°F)</option>
-                      <option value="heating_active">Active Central Heat (68°F)</option>
-                      <option value="passive_drift">Passive Envelope Drift (HVAC Off)</option>
-                    </select>
-                  </div>
-                  <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                    <span>Outdoor Air Infiltration CO₂:</span>
-                    <div className="flex items-center gap-1.5 font-mono text-emerald-400 font-bold">
-                      <span>{outdoorCo2Ppm} PPM</span>
-                      {onOpenLocationModal && (
-                        <button
-                          type="button"
-                          onClick={onOpenLocationModal}
-                          className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-sans font-normal border border-zinc-700 transition-colors"
-                          title="Configure Outdoor Atmospheric Baseline in Weather Settings"
-                        >
-                          Change
-                        </button>
-                      )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {/* Outdoor Microclimate & Terroir details */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Solar Exposure:</span>
+                      <span className="font-mono text-amber-300 font-semibold">100% Daylight (0–1600+ PPFD)</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Thermal Envelope:</span>
+                      <span className="font-mono text-zinc-300 font-semibold">None (Direct Ambient Drift)</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Natural Precipitation:</span>
+                      <span className="font-mono text-sky-300 font-semibold">Natural Rainfall Hydration</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Garden Configuration:</span>
+                      <span className="font-mono text-emerald-400 capitalize">
+                        {room.gardenConfig ? room.gardenConfig.replace(/_/g, ' ') : 'Hop Yard Trellis'}
+                      </span>
                     </div>
                   </div>
-                  <div className="text-[10px] text-zinc-400 bg-zinc-950/60 p-2 rounded border border-zinc-850">
-                    {(() => {
-                      const people = room.items.filter(i => i.category === 'person');
-                      const pets = room.items.filter(i => i.category === 'pet');
-                      if (people.length === 0 && pets.length === 0) {
-                        return 'Unoccupied: No residents or pets assumed. Infiltration maintains fresh outside air equilibrium (~420 PPM).';
-                      }
-                      return `Active Occupancy: ${people.length} People, ${pets.length} Pets exhaling biological CO₂ and radiating body warmth into the lung room.`;
-                    })()}
+
+                  {/* Atmospheric Circulation & Ambient CO2 */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Air Circulation:</span>
+                      <span className="font-mono text-zinc-200 font-semibold">Unrestricted Ambient Breeze</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Ambient Outdoor CO₂:</span>
+                      <div className="flex items-center gap-1.5 font-mono text-emerald-400 font-bold">
+                        <span>{outdoorCo2Ppm} PPM</span>
+                        {onOpenLocationModal && (
+                          <button
+                            type="button"
+                            onClick={onOpenLocationModal}
+                            className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-sans font-normal border border-zinc-700 transition-colors"
+                            title="Configure Outdoor Atmospheric Baseline in Weather Settings"
+                          >
+                            Change
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-emerald-300/80 bg-zinc-950/60 p-2 rounded border border-zinc-850">
+                      Open-air garden: Crops transpire freely under outdoor solar PPFD, natural rain hydrates containers and soil, and temperatures mirror local ambient weather. No residential drywall, R-value, or central HVAC applied.
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            ) : room.environmentType === 'greenhouse' ? (
+              <div className="bg-teal-950/20 border border-teal-800/50 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-teal-200 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-teal-400" />
+                    Solar Greenhouse &amp; Glazing Microclimate
+                  </span>
+                  <span className="text-[10px] font-mono text-teal-300 bg-teal-950/80 border border-teal-800 px-2 py-0.5 rounded">
+                    Polycarbonate Glazing · Solar Gain
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {/* Greenhouse Glazing Spec */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Glazing Material:</span>
+                      <span className="font-mono text-teal-300 font-semibold">Twin-Wall Polycarbonate (R-3)</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Solar Transmittance:</span>
+                      <span className="font-mono text-zinc-200 font-semibold">82% Sunlight PPFD</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Passive Solar Heat Gain:</span>
+                      <span className="font-mono text-amber-300 font-semibold">+1.5°F to +5.5°F Daylight Boost</span>
+                    </div>
+                  </div>
+
+                  {/* Greenhouse Ventilation */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Passive Ridge Louvers:</span>
+                      <span className="font-mono text-zinc-200 font-semibold">2.0 ACH Natural Exchange</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Outdoor CO₂ Baseline:</span>
+                      <span className="font-mono text-emerald-400 font-bold">{outdoorCo2Ppm} PPM</span>
+                    </div>
+                    <div className="text-[10px] text-teal-300/80 bg-zinc-950/60 p-2 rounded border border-zinc-850">
+                      High-tunnel greenhouse: Shields crops from severe wind and excessive rain while harvesting natural solar photons and thermal gain.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* INDOOR ROOM: RESIDENTIAL BUILDING ENVELOPE & HVAC */
+              <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+                    <Building className="w-4 h-4 text-sky-400" />
+                    Building Envelope &amp; {room.constructionStandard === 'modern_tight' ? 'Modern High-Performance' : room.constructionStandard === 'older_drafty' ? 'Older Home' : '2005 Colonial House'} Physics
+                  </span>
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950/80 border border-sky-850 px-2 py-0.5 rounded">
+                    IECC 2003/2006 Code
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {/* Construction Spec details */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Exterior Wall Insulation:</span>
+                      <span className="font-mono text-zinc-200 font-semibold">R-{room.wallRValue || 19} (U-{(1 / Math.max(1, room.wallRValue || 19)).toFixed(3)})</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Outdoor Air Infiltration:</span>
+                      <span className="font-mono text-zinc-200 font-semibold">{room.airChangesPerHour || 0.35} ACH (Fresh Air)</span>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Foundation Coupling:</span>
+                      <select
+                        value={room.foundationType || 'conditioned_basement'}
+                        onChange={e => onUpdateRoom({ ...room, foundationType: e.target.value as any })}
+                        className="bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-[11px] text-zinc-200"
+                      >
+                        <option value="conditioned_basement">Basement Suite (R-10 Concrete)</option>
+                        <option value="slab_on_grade">1st Floor Living (Slab on Grade)</option>
+                        <option value="second_floor">2nd Floor Bedroom Space</option>
+                        <option value="attic">Attic / Bonus Room (Unconditioned)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Central HVAC Status */}
+                  <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Central HVAC Mode:</span>
+                      <select
+                        value={room.hvacMode || 'central_ac_active'}
+                        onChange={e => onUpdateRoom({ ...room, hvacMode: e.target.value as any })}
+                        className="bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-[11px] text-zinc-200"
+                      >
+                        <option value="central_ac_active">Active Central A/C (72°F)</option>
+                        <option value="heating_active">Active Central Heat (68°F)</option>
+                        <option value="passive_drift">Passive Envelope Drift (HVAC Off)</option>
+                      </select>
+                    </div>
+                    <div className="flex justify-between items-center text-zinc-400 text-[11px]">
+                      <span>Outdoor Air Infiltration CO₂:</span>
+                      <div className="flex items-center gap-1.5 font-mono text-emerald-400 font-bold">
+                        <span>{outdoorCo2Ppm} PPM</span>
+                        {onOpenLocationModal && (
+                          <button
+                            type="button"
+                            onClick={onOpenLocationModal}
+                            className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-sans font-normal border border-zinc-700 transition-colors"
+                            title="Configure Outdoor Atmospheric Baseline in Weather Settings"
+                          >
+                            Change
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-zinc-400 bg-zinc-950/60 p-2 rounded border border-zinc-850">
+                      {(() => {
+                        const people = room.items.filter(i => i.category === 'person');
+                        const pets = room.items.filter(i => i.category === 'pet');
+                        if (people.length === 0 && pets.length === 0) {
+                          return 'Unoccupied: No residents or pets assumed. Infiltration maintains fresh outside air equilibrium (~420 PPM).';
+                        }
+                        return `Active Occupancy: ${people.length} People, ${pets.length} Pets exhaling biological CO₂ and radiating body warmth into the lung room.`;
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Room Live Climate Panel */}
           <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 flex flex-col justify-between">
             <div>
               <span className="text-[11px] font-mono uppercase text-zinc-400 block mb-2">
-                Room Atmosphere Telemetry
+                {room.environmentType === 'outdoor_garden' 
+                  ? 'Garden Atmosphere Telemetry (Outdoor)' 
+                  : room.environmentType === 'greenhouse' 
+                    ? 'Greenhouse Atmosphere Telemetry' 
+                    : 'Indoor Envelope Telemetry'}
               </span>
               <div className="space-y-1.5 text-xs">
                 <div className="flex justify-between py-1 border-b border-zinc-850">
@@ -830,7 +973,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                       if (selected && currentTent) {
                         onUpdateTent({
                           ...currentTent,
-                          name: `${selected.brand} ${selected.modelName}`,
+                          name: currentTent.name, // Preserves the user-defined custom tent name
                           brand: selected.brand,
                           modelName: selected.modelName,
                           mylarRating: selected.mylarRating,
@@ -851,6 +994,11 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     </optgroup>
                     <optgroup label="Spider Farmer Series">
                       {TENT_CATALOG.filter(t => t.brand === 'Spider Farmer').map(t => (
+                        <option key={t.id} value={t.id}>{t.modelName} ({t.shortCode})</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Gorilla Grow Tent Series">
+                      {TENT_CATALOG.filter(t => t.brand === 'Gorilla Grow').map(t => (
                         <option key={t.id} value={t.id}>{t.modelName} ({t.shortCode})</option>
                       ))}
                     </optgroup>
@@ -930,44 +1078,169 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
               </div>
             </div>
 
-            {/* Exhaust Fan Master Speed & Lung Air Exchange with Live Controller Arbitration */}
-            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-2">
-                  <Wind className="w-4 h-4 text-cyan-400" />
-                  <div>
-                    <span className="text-xs font-semibold text-zinc-200">Exhaust Air Exchange with Host Room</span>
-                    <p className="text-[10px] text-zinc-400">Pulls conditioned lung room air in through mesh bottom intakes</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
+            {/* Editable 3D Position in Host Room: X, Y, Z */}
+            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                  <Move className="w-3.5 h-3.5 text-sky-400" />
+                  3D Spatial Position in {room.name} (X, Y, Z)
+                </span>
+                <span className="font-mono text-sky-400 text-xs">
+                  Room: {room.dimensions.length}′ × {room.dimensions.width}′
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    X: West→East (ft)
+                  </label>
                   <input
-                    type="range"
+                    type="number"
+                    step="0.5"
                     min="0"
-                    max="100"
-                    value={currentTent.exhaustFanSpeed}
-                    onChange={e => {
-                      if (currentTent) {
-                        onUpdateTent({
-                          ...currentTent,
-                          exhaustFanSpeed: parseInt(e.target.value)
-                        });
-                      }
-                    }}
-                    className="w-28 accent-emerald-500 cursor-pointer"
+                    max={Math.max(0, room.dimensions.length - currentTent.dimensions.length)}
+                    value={currentTent.position?.x ?? 2.5}
+                    onChange={e => handleTentPositionChange('x', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                   />
-                  <div className="text-right">
-                    <span className="font-mono text-xs font-bold text-emerald-400 block">
-                      {currentTent.exhaustFanSpeed}%
-                    </span>
-                    {currentTent.effectiveFanSpeed !== undefined && currentTent.effectiveFanSpeed !== currentTent.exhaustFanSpeed && (
-                      <span className="text-[9px] font-mono text-cyan-300 block">
-                        Live: {currentTent.effectiveFanSpeed}%
-                      </span>
-                    )}
-                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    Y: North→South (ft)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max={Math.max(0, room.dimensions.width - currentTent.dimensions.width)}
+                    value={currentTent.position?.y ?? 2.0}
+                    onChange={e => handleTentPositionChange('y', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    Z: Elevation (ft)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max={Math.max(0, room.dimensions.height - currentTent.dimensions.height)}
+                    value={currentTent.position?.z ?? 0}
+                    onChange={e => handleTentPositionChange('z', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                  />
                 </div>
               </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-[10px] text-zinc-400">Presets:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleTentPositionChange('x', 2.5);
+                    handleTentPositionChange('y', 2.0);
+                    handleTentPositionChange('z', 0);
+                  }}
+                  className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                >
+                  Wall Clearance
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cx = Math.max(0, parseFloat(((room.dimensions.length - currentTent.dimensions.length) / 2).toFixed(1)));
+                    const cy = Math.max(0, parseFloat(((room.dimensions.width - currentTent.dimensions.width) / 2).toFixed(1)));
+                    handleTentPositionChange('x', cx);
+                    handleTentPositionChange('y', cy);
+                    handleTentPositionChange('z', 0);
+                  }}
+                  className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                >
+                  Center Enclosure
+                </button>
+              </div>
+            </div>
+
+            {/* Exhaust Fan Master Speed & Lung Air Exchange with Live Controller Arbitration */}
+            {(() => {
+              const installedExhaustFan = currentTent.items.find(
+                i => i.category === 'equipment' && i.type === 'exhaust_fan'
+              ) as EquipmentItem | undefined;
+
+              return (
+                <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
+                  {installedExhaustFan ? (
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-2">
+                        <Wind className="w-4 h-4 text-cyan-400" />
+                        <div>
+                          <span className="text-xs font-semibold text-zinc-200">
+                            Exhaust Fan: {installedExhaustFan.name}
+                          </span>
+                          <p className="text-[10px] text-zinc-400">Pulls conditioned lung room air through intake ports</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={currentTent.exhaustFanSpeed}
+                          onChange={e => {
+                            const newSpeed = parseInt(e.target.value);
+                            if (currentTent) {
+                              const updatedItems = currentTent.items.map(it => {
+                                if (it.id === installedExhaustFan.id) {
+                                  return { ...it, setting: newSpeed, powerOn: newSpeed > 0 };
+                                }
+                                return it;
+                              });
+                              onUpdateTent({
+                                ...currentTent,
+                                exhaustFanSpeed: newSpeed,
+                                items: updatedItems
+                              });
+                            }
+                          }}
+                          className="w-28 accent-emerald-500 cursor-pointer"
+                        />
+                        <div className="text-right">
+                          <span className="font-mono text-xs font-bold text-emerald-400 block">
+                            {currentTent.exhaustFanSpeed}%
+                          </span>
+                          {currentTent.effectiveFanSpeed !== undefined && currentTent.effectiveFanSpeed !== currentTent.exhaustFanSpeed && (
+                            <span className="text-[9px] font-mono text-cyan-300 block">
+                              Live: {currentTent.effectiveFanSpeed}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between py-1">
+                      <div className="flex items-center gap-2">
+                        <Wind className="w-4 h-4 text-zinc-500" />
+                        <div>
+                          <span className="text-xs font-semibold text-zinc-300">
+                            Passive Airflow (No Exhaust Fan Installed)
+                          </span>
+                          <p className="text-[10px] text-zinc-500">
+                            Air exchange is limited to passive mesh port infiltration (~0.05 ACH). Add an inline fan to force air exchange.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => onOpenAddItem(currentTent.id)}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-950 hover:bg-emerald-900 border border-emerald-750 text-emerald-300 text-xs font-medium flex items-center gap-1 transition-colors shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Fan</span>
+                      </button>
+                    </div>
+                  )}
 
               {/* Central Controller Coordination & Conflict Priority */}
               <div className="pt-2 border-t border-zinc-850 space-y-2">
@@ -1016,6 +1289,8 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 )}
               </div>
             </div>
+            );
+          })()}
           </div>
 
           {/* Tent Microclimate Panel */}
@@ -1653,6 +1928,113 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Editable 3D Position in Enclosure: X, Y, Z */}
+            {(() => {
+              const containerName = currentTent ? currentTent.name : room.name;
+              const containerDims = currentTent ? currentTent.dimensions : room.dimensions;
+              const curPos = currentItem.position || { x: 1.0, y: 1.0, z: 0 };
+
+              return (
+                <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                      <Move className="w-3.5 h-3.5 text-sky-400" />
+                      3D Spatial Position in {containerName} (X, Y, Z)
+                    </span>
+                    <span className="font-mono text-sky-400 text-xs">
+                      Enclosure: {containerDims.length}′ × {containerDims.width}′ × {containerDims.height}′
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        X Offset (ft)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max={containerDims.length}
+                        value={curPos.x}
+                        onChange={e => handleItemPositionChange('x', parseFloat(e.target.value))}
+                        className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        Y Depth (ft)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max={containerDims.width}
+                        value={curPos.y}
+                        onChange={e => handleItemPositionChange('y', parseFloat(e.target.value))}
+                        className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        Z Elevation (ft)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max={containerDims.height}
+                        value={curPos.z}
+                        onChange={e => handleItemPositionChange('z', parseFloat(e.target.value))}
+                        className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[10px] text-zinc-400">Position Presets:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleItemPositionChange('z', 0);
+                      }}
+                      className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                    >
+                      Floor (Z=0)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleItemPositionChange('z', Math.max(0, parseFloat((containerDims.height - 1.2).toFixed(1))));
+                      }}
+                      className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                    >
+                      Ceiling / Hanging (Z={Math.max(0, parseFloat((containerDims.height - 1.2).toFixed(1)))}′)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleItemPositionChange('z', 2.5);
+                      }}
+                      className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                    >
+                      Bench / Shelf (Z=2.5′)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleItemPositionChange('x', parseFloat((containerDims.length / 2).toFixed(1)));
+                        handleItemPositionChange('y', parseFloat((containerDims.width / 2).toFixed(1)));
+                      }}
+                      className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
+                    >
+                      Center Alignment
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Notes Field */}
             <div>
@@ -2514,6 +2896,84 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* 6. Hot Pepper & Chili Cultivar Botany, Capsaicin Pungency & Germination Dynamics */}
+              {plant.species === 'Chili Pepper' && (() => {
+                const pepperCult = getPepperCultivar(plant.strainName || plant.name);
+                const shu = plant.scovilleHeatUnits || (pepperCult?.scovilleHeatUnits) || 50000;
+                const isSuperhot = shu >= 800000;
+                const isHot = shu >= 50000 && shu < 800000;
+                const isMedium = shu >= 2500 && shu < 50000;
+
+                const heatLabel = isSuperhot ? 'Superhot (Extreme Fire)' : isHot ? 'Hot (Fiery)' : isMedium ? 'Medium (Pungent Warmth)' : 'Sweet / Mild';
+                const heatBadgeStyle = isSuperhot ? 'bg-red-950 text-red-300 border-red-700' : isHot ? 'bg-orange-950 text-orange-300 border-orange-700' : isMedium ? 'bg-amber-950 text-amber-300 border-amber-700' : 'bg-blue-950 text-blue-300 border-blue-700';
+
+                return (
+                  <div className="bg-gradient-to-r from-red-950/30 to-zinc-950 border border-red-800/70 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between border-b border-red-900/40 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl">🌶️</span>
+                        <div>
+                          <h4 className="text-sm font-bold text-red-200">
+                            {pepperCult?.name || 'Chili Pepper'} · Capsicum Pungency &amp; Phenology
+                          </h4>
+                          <p className="text-[11px] text-red-400/80">
+                            {pepperCult?.scientificName || 'Capsicum chinense / annuum'} · {pepperCult?.origin || 'Americas'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${heatBadgeStyle}`}>
+                          🔥 {shu.toLocaleString()} SHU · {heatLabel}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                      {/* Germination Root Warmth Assessment */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                        <div className="text-zinc-400 text-[10px] uppercase font-mono">
+                          {plant.stage === 'germination' ? 'Germination Substrate Warmth' : 'Root Zone Warmth'}
+                        </div>
+                        <div className={`font-bold mt-0.5 ${plant.rootTempF >= 78 && plant.rootTempF <= 88 ? 'text-emerald-300' : plant.rootTempF < 70 ? 'text-amber-400' : 'text-zinc-200'}`}>
+                          {plant.rootTempF.toFixed(1)}°F {plant.rootTempF >= 78 && plant.rootTempF <= 88 ? '• Optimal (80-86°F)' : plant.rootTempF < 70 ? '• Too Cold (<75°F)' : ''}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-1">
+                          {plant.stage === 'germination' 
+                            ? (plant.rootTempF >= 78 ? 'Rapid seed coat cracking & embryo emergence!' : 'Bottom seedling heat mat strongly recommended to break seed dormancy.')
+                            : 'Warm root zone stimulates active nutrient uptake and fruit setting.'}
+                        </div>
+                      </div>
+
+                      {/* Seedling & Fruiting Phenology */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                        <div className="text-zinc-400 text-[10px] uppercase font-mono">Capsaicinoid Synthesis</div>
+                        <div className="font-bold text-amber-300 mt-0.5">
+                          {['flowering', 'ripening', 'ready'].includes(plant.stage) 
+                            ? '🌶️ Pod Placenta Capsaicin Active' 
+                            : '🌱 Pre-Flower Branching Node Setup'}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-1">
+                          {plant.stage === 'ripening' 
+                            ? 'High daylight PPFD and warm temps maximizing Scoville pungency.'
+                            : 'Maintain stable day (75-84°F) and night (>65°F) to prevent blossom drop.'}
+                        </div>
+                      </div>
+
+                      {/* Cultivar Milestone Expected Days */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                        <div className="text-zinc-400 text-[10px] uppercase font-mono">Expected Stage Duration</div>
+                        <div className="font-bold text-zinc-200 mt-0.5">
+                          {plant.stage === 'germination' ? `${pepperCult?.germinationDaysExpected || 14} days to sprout` : plant.stage === 'vegetative' ? `${pepperCult?.vegetativeDaysExpected || 30} days veg` : plant.stage === 'flowering' ? `${pepperCult?.floweringDaysExpected || 50} days bloom` : `${pepperCult?.ripeningDaysExpected || 15} days ripening`}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-1">
+                          Total crop cycle: ~{(pepperCult?.germinationDaysExpected || 14) + (pepperCult?.seedlingDaysExpected || 8) + (pepperCult?.matureSeedlingDaysExpected || 10) + (pepperCult?.vegetativeDaysExpected || 30) + (pepperCult?.floweringDaysExpected || 50) + (pepperCult?.ripeningDaysExpected || 15)} days to harvest
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}
