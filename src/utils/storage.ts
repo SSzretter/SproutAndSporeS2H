@@ -1,6 +1,6 @@
 import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, OutdoorLocation, Position3D, Item } from '../types/sim';
 import { simulateOutsideConditions, calculateVPD } from './physics';
-import { getDefaultSpatialPosition, getDefaultItemDimensions } from './spatial';
+import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry } from './spatial';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -663,6 +663,13 @@ export function loadSimulation(): SimulationState {
         position: i.position || getDefaultSpatialPosition(i.category, rm.dimensions, iIdx, (i as any).type)
       })),
       tents: rm.tents.map((t, tIdx) => migrateTent(t, tIdx, rm.dimensions))
+    }));
+
+    // Backfill crop container sizes and growth-based dimensions (plants saved before pots had physical size)
+    state.rooms = state.rooms.map(rm => ({
+      ...rm,
+      items: rm.items.map(syncItemGeometry),
+      tents: rm.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
     }));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 

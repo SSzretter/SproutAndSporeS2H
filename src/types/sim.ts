@@ -9,6 +9,11 @@ export interface Dimensions {
   unit: 'ft' | 'in' | 'cm';
 }
 
+/**
+ * Item/tent placement inside its host container (room, tent, or outdoor garden).
+ * For items, (x, y) is the CENTER of the item's footprint and z is the elevation of its base.
+ * For tents, (x, y) is the tent's back-left corner within the room.
+ */
 export interface Position3D {
   x: number; // in feet from left/west container boundary (0 <= x <= length)
   y: number; // in feet from back/north container boundary (0 <= y <= width)
@@ -157,6 +162,7 @@ export interface PlantItem {
   systemType?: CultivationSystemType;
   containerType?: ContainerType;
   containerVolumeGallons?: number; // 1, 3, 5, 7, 10, 15, 25, 50, 100
+  containerDimensions?: Dimensions; // Physical pot / bed / bucket size (ft), derived from containerType + volume
   growingMedium?: GrowingMedium;
   nutrientProgram?: NutrientProgram;
 
@@ -177,7 +183,7 @@ export interface PlantItem {
   canopyWidthInches: number;
   yieldPotentialGrams: number;
   isHarvested: boolean;
-  dimensions: Dimensions;
+  dimensions: Dimensions; // Overall envelope: max(pot, canopy) footprint × (pot height + plant height). Recomputed as the plant grows.
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
   lastWateredTime?: number;
@@ -206,7 +212,8 @@ export interface MushroomItem {
   yieldPotentialGrams: number;
   isHarvested: boolean;
   containerType: MushroomContainer;
-  dimensions: Dimensions;
+  containerDimensions?: Dimensions; // Physical monotub / bag / block size (ft)
+  dimensions: Dimensions; // Overall envelope: container footprint × (container height + fruit body height)
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
   lastMistedTime?: number;

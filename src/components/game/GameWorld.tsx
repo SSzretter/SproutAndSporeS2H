@@ -11,7 +11,8 @@ import {
   JournalEntry,
   JournalCategory
 } from '../../types/sim';
-import { drawPlant, drawMushroom } from './PlantSprites';
+import { drawPlantToScale, drawMushroomToScale } from './PlantSprites';
+import { drawSpriteToScale, drawSpriteFitted, drawItemFootprint, drawItemLabel, getItemScreenBox, isPointInItemBox, isOverheadItem, feetToPx, feetToVerticalPx } from './scaleRender';
 import { soundEffects } from './AudioEffects';
 import { PlantVisualizerModal } from './PlantVisualizerModal';
 import { TentInspectorModal } from './TentInspectorModal';
@@ -494,91 +495,18 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     };
   }, [currentRoom, inGameInspectorTarget, inspectedCrop, isInventoryOpen]);
 
-// Helper to calculate clean coordinates for crops inside a tent so they never overflow
-function getTentCropCoordinates(
-  tentBaseX: number,
-  tentBaseY: number,
-  cropIndex: number,
-  totalCrops: number
-): { x: number; y: number } {
-  // Tent inner dimensions: 230 width x 180 height (centered at tentBaseX, tentBaseY)
-  // Interior canopy floor is between tentBaseY - 15 and tentBaseY + 45
-  if (totalCrops <= 3) {
-    const spacing = 65;
-    const startX = tentBaseX - ((totalCrops - 1) * spacing) / 2;
-    return {
-      x: startX + cropIndex * spacing,
-      y: tentBaseY + 22
-    };
-  } else {
-    const col = cropIndex % 3;
-    const row = Math.floor(cropIndex / 3);
-    return {
-      x: tentBaseX - 60 + col * 60,
-      y: tentBaseY - 5 + row * 45
-    };
-  }
-}
-
-// Helper to calculate coordinates for crops placed on the room floor / outdoor garden
-function getRoomCropCoordinates(
-  room: Room,
-  cropIndex: number,
-  totalCrops: number,
-  canvasWidth: number = 1000
-): { x: number; y: number } {
-  if (room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse') {
-    const colsPerRow = Math.min(6, Math.max(3, Math.ceil(totalCrops / 2)));
-    const col = cropIndex % colsPerRow;
-    const row = Math.floor(cropIndex / colsPerRow);
-    return {
-      x: CANVAS_FLOOR_ORIGIN_X + (2 + col * 3) * CANVAS_GRID_SIZE,
-      y: CANVAS_FLOOR_ORIGIN_Y + (3 + row * 4) * CANVAS_GRID_SIZE
-    };
-  }
-  return {
-    x: CANVAS_FLOOR_ORIGIN_X + (16 + (cropIndex % 3) * 2) * CANVAS_GRID_SIZE,
-    y: CANVAS_FLOOR_ORIGIN_Y + (8 + Math.floor(cropIndex / 3) * 2) * CANVAS_GRID_SIZE
-  };
-}
-
   // Proximity action: find nearest interactable crop or tent
   const triggerProximityAction = () => {
     const p = playerRef.current;
 
-    // Check all crops inside tents or room
+    // Nearest crop (inside tents or on the room floor) by distance to its footprint edge
     let closestCrop: { item: PlantItem | MushroomItem; tentId?: string; dist: number; wx: number; wy: number } | null = null;
-    
-    for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
-      const tent = currentRoom.tents[tIdx];
-      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
-      const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-      for (let cIdx = 0; cIdx < crops.length; cIdx++) {
-        const item = crops[cIdx];
-        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, cIdx, crops.length);
-        const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
-        if (dist < 90 && (!closestCrop || dist < closestCrop.dist)) {
-          closestCrop = { item: item as PlantItem | MushroomItem, tentId: tent.id, dist, wx: pos.x, wy: pos.y };
-        }
-      }
-    }
-
-    // Check room items
-    const roomCrops = currentRoom.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-    for (let cIdx = 0; cIdx < roomCrops.length; cIdx++) {
-      const item = roomCrops[cIdx];
-      let pos: { x: number; y: number };
-      if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
-        pos = {
-          x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
-          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
-        };
-      } else {
-        pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
-      }
-      const dist = Math.hypot(p.x - pos.x, p.y - pos.y);
-      if (dist < 90 && (!closestCrop || dist < closestCrop.dist)) {
-        closestCrop = { item: item as PlantItem | MushroomItem, dist, wx: pos.x, wy: pos.y };
+    for (const placed of getPlacedRoomItems(currentRoom)) {
+      if (placed.item.category !== 'plant' && placed.item.category !== 'mushroom') continue;
+      const reachPx = 90 + feetToPx(Math.max(placed.item.dimensions.length, placed.item.dimensions.width)) / 2;
+      const dist = Math.hypot(p.x - placed.x, p.y - placed.y);
+      if (dist < reachPx && (!closestCrop || dist < closestCrop.dist)) {
+        closestCrop = { item: placed.item as PlantItem | MushroomItem, tentId: placed.tentId, dist, wx: placed.x, wy: placed.y };
       }
     }
 
@@ -1073,79 +1001,25 @@ function getRoomCropCoordinates(
     return doors;
   };
 
-  // Helper to find any item (crop, equipment, occupant) under cursor
+  // Helper to find any item (crop, equipment, occupant) under cursor.
+  // Uses each item's true-scale screen box; front-most (last drawn) wins.
   const findItemAtPosition = (x: number, y: number) => {
-    for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
-      const tent = currentRoom.tents[tIdx];
-      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
-
-      // 1. Crops in tent
-      const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-      for (let cIdx = 0; cIdx < crops.length; cIdx++) {
-        const item = crops[cIdx];
-        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, cIdx, crops.length);
-        if (Math.hypot(x - pos.x, y - pos.y) < 28) {
-          return { item: item as PlantItem | MushroomItem, type: 'crop' as const, tentId: tent.id, x: pos.x, y: pos.y };
-        }
+    // Floor-level items take priority so crops under a ceiling light stay clickable
+    const placedItems = getPlacedRoomItems(currentRoom);
+    const hitOrder = [
+      ...placedItems.filter(p => !p.overhead).reverse(),
+      ...placedItems.filter(p => p.overhead).reverse()
+    ];
+    for (const { item, tentId, x: px, y: py, overhead } of hitOrder) {
+      if (!isPointInItemBox(getItemScreenBox(item, px, py, overhead), x, y)) continue;
+      if (item.category === 'plant' || item.category === 'mushroom') {
+        return { item: item as PlantItem | MushroomItem, type: 'crop' as const, tentId, x: px, y: py };
       }
-
-      // 2. Equipment in tent
-      const equipment = tent.items.filter(it => it.category === 'equipment') as EquipmentItem[];
-      for (let eqIdx = 0; eqIdx < equipment.length; eqIdx++) {
-        const eq = equipment[eqIdx];
-        const pos = getSafeTentItemCanvasPosition(eq, tent, tentPos.x, tentPos.y, eqIdx, equipment.length);
-        if (Math.hypot(x - pos.x, y - pos.y) < 22) {
-          return { item: eq, type: 'equipment' as const, tentId: tent.id, x: pos.x, y: pos.y };
-        }
+      if (item.category === 'equipment') {
+        return { item: item as EquipmentItem, type: 'equipment' as const, tentId, x: px, y: py };
       }
-
-      // 3. Occupants in tent
-      const occupants = tent.items.filter(it => it.category === 'person' || it.category === 'pet');
-      for (let oIdx = 0; oIdx < occupants.length; oIdx++) {
-        const occ = occupants[oIdx];
-        const pos = getSafeTentItemCanvasPosition(occ, tent, tentPos.x, tentPos.y, oIdx, occupants.length);
-        if (Math.hypot(x - pos.x, y - pos.y) < 22) {
-          return { item: occ, type: 'occupant' as const, tentId: tent.id, x: pos.x, y: pos.y };
-        }
-      }
+      return { item, type: 'occupant' as const, tentId, x: px, y: py };
     }
-
-    // Room crops
-    const roomCrops = currentRoom.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-    for (let cIdx = 0; cIdx < roomCrops.length; cIdx++) {
-      const item = roomCrops[cIdx];
-      let pos: { x: number; y: number };
-      if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
-        pos = {
-          x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
-          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
-        };
-      } else {
-        pos = getRoomCropCoordinates(currentRoom, cIdx, roomCrops.length);
-      }
-      if (Math.hypot(x - pos.x, y - pos.y) < 32) {
-        return { item: item as PlantItem | MushroomItem, type: 'crop' as const, x: pos.x, y: pos.y };
-      }
-    }
-
-    // Room equipment
-    const roomEquipment = currentRoom.items.filter(it => it.category === 'equipment') as EquipmentItem[];
-    for (let eqIdx = 0; eqIdx < roomEquipment.length; eqIdx++) {
-      const eq = roomEquipment[eqIdx];
-      let pos: { x: number; y: number };
-      if (eq.position && typeof eq.position.x === 'number' && typeof eq.position.y === 'number') {
-        pos = {
-          x: Math.round(CANVAS_FLOOR_ORIGIN_X + eq.position.x * CANVAS_GRID_SIZE),
-          y: Math.round(CANVAS_FLOOR_ORIGIN_Y + eq.position.y * CANVAS_GRID_SIZE)
-        };
-      } else {
-        pos = { x: CANVAS_FLOOR_ORIGIN_X + (eqIdx + 1) * 3 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 };
-      }
-      if (Math.hypot(x - pos.x, y - pos.y) < 24) {
-        return { item: eq, type: 'equipment' as const, x: pos.x, y: pos.y };
-      }
-    }
-
     return null;
   };
 
@@ -1192,122 +1066,15 @@ function getRoomCropCoordinates(
       // 2. Draw Doorways / Travel Portals
       drawDoorways(ctx, getRoomDoorways(), time);
 
-      // 3. Draw Facility Tents & Contents
+      // 3. Draw Facility Tents
       room.tents.forEach((tent, tIdx) => {
         const tentPos = getSafeTentCanvasPosition(tent, room, tIdx, canvas.width, canvas.height);
-        const tx = tentPos.x;
-        const ty = tentPos.y;
-        const isTentHovered = hovered?.id === tent.id;
-        drawTentStructure(ctx, tent, tx, ty, tentPos.width, tentPos.height, isTentHovered, time);
-
-        // A. Always draw crops (plants & mushrooms) inside tent
-        const crops = tent.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-        crops.forEach((item, cIdx) => {
-          const pos = getSafeTentItemCanvasPosition(item, tent, tx, ty, cIdx, crops.length);
-          const isCropHovered = hovered?.id === item.id;
-
-          if (item.category === 'plant') {
-            drawPlant(item as PlantItem, {
-              ctx,
-              x: pos.x,
-              y: pos.y,
-              scale: 0.85,
-              time,
-              highlighted: isCropHovered
-            });
-          } else if (item.category === 'mushroom') {
-            drawMushroom(item as MushroomItem, {
-              ctx,
-              x: pos.x,
-              y: pos.y,
-              scale: 0.85,
-              time,
-              highlighted: isCropHovered
-            });
-          }
-        });
-
-        // B. Draw equipment inside tent (Humidifiers, Fans, Lights, Heaters, CO2)
-        const equipment = tent.items.filter(it => it.category === 'equipment') as EquipmentItem[];
-        equipment.forEach((eq, eqIdx) => {
-          const pos = getSafeTentItemCanvasPosition(eq, tent, tx, ty, eqIdx, equipment.length);
-          const isEqHovered = hovered?.id === eq.id;
-          drawEquipmentSprite(ctx, eq, pos.x, pos.y, isEqHovered, time);
-        });
-
-        // C. Draw occupants inside tent (Person, Pet)
-        const occupants = tent.items.filter(it => it.category === 'person' || it.category === 'pet');
-        occupants.forEach((occ, oIdx) => {
-          const pos = getSafeTentItemCanvasPosition(occ, tent, tx, ty, oIdx, occupants.length);
-          const isOccHovered = hovered?.id === occ.id;
-          drawOccupantSprite(ctx, occ, pos.x, pos.y, isOccHovered);
-        });
+        drawTentStructure(ctx, tent, tentPos.x, tentPos.y, tentPos.width, tentPos.height, hovered?.id === tent.id, time);
       });
 
-      // 4. Draw Free-standing Room Items (Outdoor Garden Beds, Trellises & freestanding plants)
-      const roomCrops = room.items.filter(it => it.category === 'plant' || it.category === 'mushroom');
-      roomCrops.forEach((item, cIdx) => {
-        let cropX: number;
-        let cropY: number;
-        if (item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number') {
-          cropX = Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE);
-          cropY = Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE);
-        } else {
-          const pos = getRoomCropCoordinates(room, cIdx, roomCrops.length, canvas.width);
-          cropX = pos.x;
-          cropY = pos.y;
-        }
-        const isHoveredItem = hovered?.id === item.id;
-
-        if (item.category === 'plant') {
-          drawPlant(item as PlantItem, {
-            ctx,
-            x: cropX,
-            y: cropY,
-            scale: 0.9,
-            time,
-            highlighted: isHoveredItem
-          });
-        } else if (item.category === 'mushroom') {
-          drawMushroom(item as MushroomItem, {
-            ctx,
-            x: cropX,
-            y: cropY,
-            scale: 0.9,
-            time,
-            highlighted: isHoveredItem
-          });
-        }
-      });
-
-      // Free-standing equipment in room
-      const roomEquipment = room.items.filter(it => it.category === 'equipment') as EquipmentItem[];
-      roomEquipment.forEach((eq, eqIdx) => {
-        let eqX: number;
-        let eqY: number;
-        if (eq.position && typeof eq.position.x === 'number' && typeof eq.position.y === 'number') {
-          eqX = Math.round(CANVAS_FLOOR_ORIGIN_X + eq.position.x * CANVAS_GRID_SIZE);
-          eqY = Math.round(CANVAS_FLOOR_ORIGIN_Y + eq.position.y * CANVAS_GRID_SIZE);
-        } else {
-          eqX = CANVAS_FLOOR_ORIGIN_X + (eqIdx + 1) * 3 * CANVAS_GRID_SIZE;
-          eqY = CANVAS_MAX_FLOOR_Y - 40;
-        }
-        drawEquipmentSprite(ctx, eq, eqX, eqY, hovered?.id === eq.id, time);
-      });
-
-      // Free-standing occupants in room
-      const roomOccupants = room.items.filter(it => it.category === 'person' || it.category === 'pet');
-      roomOccupants.forEach((occ, oIdx) => {
-        let occX: number;
-        let occY: number;
-        if (occ.position && typeof occ.position.x === 'number' && typeof occ.position.y === 'number') {
-          occX = Math.round(CANVAS_FLOOR_ORIGIN_X + occ.position.x * CANVAS_GRID_SIZE);
-          occY = Math.round(CANVAS_FLOOR_ORIGIN_Y + occ.position.y * CANVAS_GRID_SIZE);
-        } else {
-          occX = CANVAS_FLOOR_ORIGIN_X + (oIdx + 1) * 4 * CANVAS_GRID_SIZE;
-          occY = CANVAS_MAX_FLOOR_Y - 40;
-        }
-        drawOccupantSprite(ctx, occ, occX, occY, hovered?.id === occ.id);
+      // 4. Draw every item (in tents and on the room floor) at true scale, back-to-front
+      getPlacedRoomItems(room).forEach(placed => {
+        drawPlacedItem(ctx, placed, hovered?.id === placed.item.id, time);
       });
 
       // 5. Draw Player Avatar
@@ -2178,13 +1945,188 @@ function drawTentStructure(
   ctx.restore();
 }
 
+// Helper to calculate coordinates for crops placed on the room floor / outdoor garden
+function getRoomCropCoordinates(
+  room: Room,
+  cropIndex: number,
+  totalCrops: number,
+  canvasWidth: number = 1000
+): { x: number; y: number } {
+  if (room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse') {
+    const colsPerRow = Math.min(6, Math.max(3, Math.ceil(totalCrops / 2)));
+    const col = cropIndex % colsPerRow;
+    const row = Math.floor(cropIndex / colsPerRow);
+    return {
+      x: CANVAS_FLOOR_ORIGIN_X + (2 + col * 3) * CANVAS_GRID_SIZE,
+      y: CANVAS_FLOOR_ORIGIN_Y + (3 + row * 4) * CANVAS_GRID_SIZE
+    };
+  }
+  return {
+    x: CANVAS_FLOOR_ORIGIN_X + (16 + (cropIndex % 3) * 2) * CANVAS_GRID_SIZE,
+    y: CANVAS_FLOOR_ORIGIN_Y + (8 + Math.floor(cropIndex / 3) * 2) * CANVAS_GRID_SIZE
+  };
+}
+
+interface PlacedItem {
+  item: Item;
+  tentId?: string;
+  x: number; // screen px of the footprint center on the floor
+  y: number;
+  overhead: boolean; // ceiling-mounted: drawn top-down in the overhead layer
+}
+
+// Screen placement of every item in a room (tent contents + room floor) in draw order:
+// floor-level items back-to-front, then the overhead (ceiling-mounted) layer.
+function getPlacedRoomItems(room: Room): PlacedItem[] {
+  const placed: PlacedItem[] = [];
+  const isCrop = (it: Item) => it.category === 'plant' || it.category === 'mushroom';
+  const isOccupant = (it: Item) => it.category === 'person' || it.category === 'pet';
+
+  room.tents.forEach((tent, tIdx) => {
+    const tentPos = getSafeTentCanvasPosition(tent, room, tIdx, 1000, 650);
+    [tent.items.filter(isCrop), tent.items.filter(it => it.category === 'equipment'), tent.items.filter(isOccupant)].forEach(group => {
+      group.forEach((item, idx) => {
+        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, idx, group.length);
+        placed.push({ item, tentId: tent.id, x: pos.x, y: pos.y, overhead: isOverheadItem(item, tent.dimensions.height) });
+      });
+    });
+  });
+
+  const fromPosition = (item: Item) => item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number'
+    ? {
+        x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
+        y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
+      }
+    : null;
+
+  const overheadInRoom = (item: Item) => isOverheadItem(item, room.dimensions.height);
+  const roomCrops = room.items.filter(isCrop);
+  roomCrops.forEach((item, idx) => {
+    placed.push({ item, overhead: overheadInRoom(item), ...(fromPosition(item) || getRoomCropCoordinates(room, idx, roomCrops.length)) });
+  });
+  room.items.filter(it => it.category === 'equipment').forEach((item, idx) => {
+    placed.push({ item, overhead: overheadInRoom(item), ...(fromPosition(item) || { x: CANVAS_FLOOR_ORIGIN_X + (idx + 1) * 3 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 }) });
+  });
+  room.items.filter(isOccupant).forEach((item, idx) => {
+    placed.push({ item, overhead: false, ...(fromPosition(item) || { x: CANVAS_FLOOR_ORIGIN_X + (idx + 1) * 4 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 }) });
+  });
+
+  return placed.sort((a, b) => (a.overhead === b.overhead ? a.y - b.y : a.overhead ? 1 : -1));
+}
+
+// Draws one item at true scale: floor footprint (L x W), then the upright sprite (L x H) lifted by its z elevation.
+function drawPlacedItem(ctx: CanvasRenderingContext2D, placed: PlacedItem, isHovered: boolean, time: number) {
+  const { item, x, y } = placed;
+  if (placed.overhead) {
+    drawOverheadItem(ctx, placed, isHovered, time);
+    return;
+  }
+  const box = getItemScreenBox(item, x, y);
+
+  drawItemFootprint(ctx, item, x, y, isHovered);
+
+  // Hanging / mounted items: dashed drop line from the footprint up to the item's base
+  if (box.baseY < y - 4) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(161, 161, 170, 0.35)';
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, box.baseY);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (item.category === 'plant') {
+    drawPlantToScale(item, { ctx, x, y: box.baseY, time, highlighted: isHovered });
+    return;
+  }
+  if (item.category === 'mushroom') {
+    drawMushroomToScale(item, { ctx, x, y: box.baseY, time, highlighted: isHovered });
+    return;
+  }
+
+  const widthPx = feetToPx(item.dimensions.length);
+  const heightPx = feetToVerticalPx(item.dimensions.height);
+  if (item.category === 'equipment') {
+    drawSpriteToScale(ctx, {
+      key: `equipment|${item.type}`,
+      draw: c => drawEquipmentSprite(c, item, 0, 0, isHovered, time, false),
+      measure: c => drawEquipmentSprite(c, { ...item, powerOn: false }, 0, 0, false, 0, false),
+      anchorX: x,
+      anchorY: box.baseY,
+      widthPx,
+      heightPx
+    });
+    drawItemLabel(ctx, item.name.length > 12 ? item.name.substring(0, 10) + '..' : item.name, x, box.bottom + 2, isHovered);
+    return;
+  }
+
+  drawSpriteToScale(ctx, {
+    key: `occupant|${item.category}`,
+    draw: c => drawOccupantSprite(c, item, 0, 0, isHovered, false),
+    anchorX: x,
+    anchorY: box.baseY,
+    widthPx,
+    heightPx
+  });
+  drawItemLabel(ctx, item.name.length > 10 ? item.name.substring(0, 8) + '..' : item.name, x, box.bottom + 2, isHovered);
+}
+
+// Ceiling-mounted item seen from above: dashed to-scale footprint, light pool if lit, fitted sprite and height tag.
+function drawOverheadItem(ctx: CanvasRenderingContext2D, placed: PlacedItem, isHovered: boolean, time: number) {
+  const { item, x, y } = placed;
+  const l = feetToPx(item.dimensions.length);
+  const w = feetToPx(item.dimensions.width);
+
+  if (item.category === 'equipment' && item.type === 'grow_light' && item.powerOn) {
+    const radius = Math.max(l, w) * 0.75;
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    glow.addColorStop(0, 'rgba(254, 240, 138, 0.16)');
+    glow.addColorStop(1, 'rgba(254, 240, 138, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+
+  ctx.save();
+  ctx.strokeStyle = isHovered ? 'rgba(56, 189, 248, 0.95)' : 'rgba(186, 230, 253, 0.45)';
+  ctx.lineWidth = isHovered ? 1.5 : 1;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(x - l / 2, y - w / 2, l, w);
+  ctx.restore();
+
+  // Translucent so the canopy below stays visible
+  ctx.save();
+  ctx.globalAlpha = isHovered ? 0.75 : 0.4;
+  if (item.category === 'equipment') {
+    drawSpriteFitted(ctx, {
+      key: `overhead-equipment|${item.type}`,
+      draw: c => drawEquipmentSprite(c, { ...item, powerOn: item.type === 'grow_light' ? false : item.powerOn }, 0, 0, isHovered, time, false),
+      measure: c => drawEquipmentSprite(c, { ...item, powerOn: false }, 0, 0, false, 0, false),
+      cx: x,
+      cy: y,
+      widthPx: l,
+      heightPx: w
+    });
+  } else if (item.category === 'plant') {
+    drawPlantToScale(item, { ctx, x, y: y + w / 2, time, highlighted: isHovered });
+  } else if (item.category === 'mushroom') {
+    drawMushroomToScale(item, { ctx, x, y: y + w / 2, time, highlighted: isHovered });
+  }
+  ctx.restore();
+
+  const name = item.name.length > 12 ? item.name.substring(0, 10) + '..' : item.name;
+  drawItemLabel(ctx, `${name} ▲${(item.position?.z || 0).toFixed(1)}′`, x, y + w / 2 + 2, isHovered);
+}
+
 function drawEquipmentSprite(
   ctx: CanvasRenderingContext2D,
   eq: EquipmentItem,
   x: number,
   y: number,
   isHovered: boolean,
-  time: number
+  time: number,
+  showLabel: boolean = true
 ) {
   ctx.save();
   ctx.translate(x, y);
@@ -2365,10 +2307,12 @@ function drawEquipmentSprite(
   }
 
   // Mini label beneath device
-  ctx.fillStyle = isHovered ? '#e2e8f0' : '#a1a1aa';
-  ctx.font = 'bold 7.5px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(eq.name.length > 12 ? eq.name.substring(0, 10) + '..' : eq.name, 0, 18);
+  if (showLabel) {
+    ctx.fillStyle = isHovered ? '#e2e8f0' : '#a1a1aa';
+    ctx.font = 'bold 7.5px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(eq.name.length > 12 ? eq.name.substring(0, 10) + '..' : eq.name, 0, 18);
+  }
 
   ctx.restore();
 }
@@ -2378,7 +2322,8 @@ function drawOccupantSprite(
   occ: Item,
   x: number,
   y: number,
-  isHovered: boolean
+  isHovered: boolean,
+  showLabel: boolean = true
 ) {
   ctx.save();
   ctx.translate(x, y);
@@ -2404,10 +2349,12 @@ function drawOccupantSprite(
     ctx.fill();
   }
 
-  ctx.fillStyle = isHovered ? '#e2e8f0' : '#d4d4d8';
-  ctx.font = 'bold 7.5px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(occ.name.length > 10 ? occ.name.substring(0, 8) + '..' : occ.name, 0, 10);
+  if (showLabel) {
+    ctx.fillStyle = isHovered ? '#e2e8f0' : '#d4d4d8';
+    ctx.font = 'bold 7.5px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(occ.name.length > 10 ? occ.name.substring(0, 8) + '..' : occ.name, 0, 10);
+  }
 
   ctx.restore();
 }

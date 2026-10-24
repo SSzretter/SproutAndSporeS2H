@@ -15,6 +15,7 @@ import {
 } from './types/sim';
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
+import { syncItemGeometry } from './utils/spatial';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
 import { HeaderClock } from './components/HeaderClock';
 import { ClimateDashboard } from './components/ClimateDashboard';
@@ -368,7 +369,8 @@ export default function App() {
   }, []);
 
   // Update Item (Plant, Mushroom, or Equipment)
-  const handleUpdateItem = useCallback((updatedItem: Item, parentTentId?: string | null) => {
+  const handleUpdateItem = useCallback((editedItem: Item, parentTentId?: string | null) => {
+    const updatedItem = syncItemGeometry(editedItem);
     setState(prev => {
       const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
@@ -541,7 +543,8 @@ export default function App() {
   }, []);
 
   // Add Item (Plant, Mushroom, Equipment, Person, or Pet)
-  const handleAddItem = useCallback((newItem: Item, tentId?: string | null) => {
+  const handleAddItem = useCallback((addedItem: Item, tentId?: string | null) => {
+    const newItem = syncItemGeometry(addedItem);
     setState(prev => {
       const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
@@ -609,7 +612,12 @@ export default function App() {
   }, []);
 
   // Add Room
-  const handleAddRoom = useCallback((newRoom: Room) => {
+  const handleAddRoom = useCallback((addedRoom: Room) => {
+    const newRoom: Room = {
+      ...addedRoom,
+      items: addedRoom.items.map(syncItemGeometry),
+      tents: addedRoom.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
+    };
     setState(prev => {
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
       const updatedRooms = [...currentRooms, newRoom];

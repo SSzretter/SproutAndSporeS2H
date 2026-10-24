@@ -93,6 +93,137 @@ export function getDefaultItemDimensions(params: {
   return { length: 1.5, width: 1.5, height: 1.5, unit: 'ft' };
 }
 
+const CUBIC_FT_PER_GALLON = 0.1337;
+const roundFt = (v: number) => Math.round(v * 100) / 100;
+
+/**
+ * Default root-zone volume when a plant has no explicit containerVolumeGallons.
+ */
+export function getDefaultContainerVolumeGallons(containerType?: string): number {
+  if (containerType === 'raised_bed_cedar') return 50;
+  if (containerType === 'in_ground_earth') return 100;
+  return 5;
+}
+
+/**
+ * Physical size (L × W × H in feet) of a plant's pot / bed / bucket, derived from its
+ * type and root-zone volume. Round pots are modeled as cylinders (L = W = diameter);
+ * beds, trays and chambers as boxes.
+ */
+export function getPlantContainerDimensions(containerType?: string, volumeGallons?: number): Dimensions {
+  const gallons = Math.max(0.25, volumeGallons || getDefaultContainerVolumeGallons(containerType));
+  const cuFt = gallons * CUBIC_FT_PER_GALLON;
+
+  // Box-shaped containers: fixed depth, square footprint sized to hold the volume
+  const box = (depthFt: number, visibleHeightFt: number = depthFt): Dimensions => {
+    const side = Math.sqrt(cuFt / depthFt);
+    return { length: roundFt(side), width: roundFt(side), height: roundFt(visibleHeightFt), unit: 'ft' };
+  };
+  // Cylinders: diameter = ratio × height
+  const cylinder = (diameterToHeight: number): Dimensions => {
+    const h = Math.cbrt(cuFt / (Math.PI * Math.pow(diameterToHeight / 2, 2)));
+    const d = h * diameterToHeight;
+    return { length: roundFt(d), width: roundFt(d), height: roundFt(h), unit: 'ft' };
+  };
+
+  switch (containerType) {
+    case 'raised_bed_cedar':
+      return box(1.0);
+    case 'in_ground_earth':
+      return box(1.0, 0.2); // Root zone dug 1ft deep; only a low soil mound shows above grade
+    case 'flood_drain_tray':
+      return box(0.5);
+    case 'aeroponic_chamber':
+      return box(1.2);
+    case 'dwc_reservoir_bucket':
+      return cylinder(0.85); // 5gal bucket ≈ 12" Ø × 14" tall
+    case 'terracotta_pot':
+    case 'plastic_nursery_pot':
+      return cylinder(1.1);
+    case 'fabric_pot':
+    default:
+      return cylinder(1.2); // 5gal fabric pot ≈ 12" Ø × 10" tall
+  }
+}
+
+/**
+ * Physical size of a mushroom fruiting container (monotub / grow bag / block).
+ */
+export function getMushroomContainerDimensions(containerType?: string): Dimensions {
+  return getDefaultItemDimensions({ category: 'mushroom', containerType });
+}
+
+/**
+ * Overall envelope of a plant: the larger of pot and canopy for the footprint,
+ * and pot height + plant height (measured from the soil surface) for the height.
+ */
+export function computePlantDimensions(plant: PlantItem): Dimensions {
+  const pot = plant.containerDimensions || getPlantContainerDimensions(plant.containerType, plant.containerVolumeGallons);
+  const canopyFt = Math.max(0, plant.canopyWidthInches || 0) / 12;
+  const heightFt = Math.max(0, plant.heightInches || 0) / 12;
+  return {
+    length: roundFt(Math.max(pot.length, canopyFt)),
+    width: roundFt(Math.max(pot.width, canopyFt)),
+    height: roundFt(pot.height + heightFt),
+    unit: 'ft'
+  };
+}
+
+/** Height of the fruit bodies above the substrate surface by stage (ft). */
+export function getMushroomFruitHeightFt(shroom: MushroomItem): number {
+  const progress = Math.max(0, Math.min(100, shroom.stageProgress || 0)) / 100;
+  switch (shroom.stage) {
+    case 'colonizing': return 0;
+    case 'pinning': return 0.05 + 0.1 * progress;
+    case 'fruiting': return 0.15 + 0.25 * progress;
+    default: return 0.45; // mature / ready
+  }
+}
+
+export function computeMushroomDimensions(shroom: MushroomItem): Dimensions {
+  const container = shroom.containerDimensions || getMushroomContainerDimensions(shroom.containerType);
+  return {
+    length: container.length,
+    width: container.width,
+    height: roundFt(container.height + getMushroomFruitHeightFt(shroom)),
+    unit: 'ft'
+  };
+}
+
+/**
+ * Ensures crops carry a container size and that their overall dimensions reflect
+ * current growth. Non-crop items are returned unchanged.
+ */
+export function syncItemGeometry<T extends Item>(item: T): T {
+  if (item.category === 'plant') {
+    const plant = item as PlantItem;
+    const containerDimensions = plant.containerDimensions || getPlantContainerDimensions(plant.containerType, plant.containerVolumeGallons);
+    const synced = { ...plant, containerDimensions };
+    return { ...synced, dimensions: computePlantDimensions(synced) } as T;
+  }
+  if (item.category === 'mushroom') {
+    const shroom = item as MushroomItem;
+    const containerDimensions = shroom.containerDimensions || getMushroomContainerDimensions(shroom.containerType);
+    const synced = { ...shroom, containerDimensions };
+    return { ...synced, dimensions: computeMushroomDimensions(synced) } as T;
+  }
+  return item;
+}
+
+/**
+ * Keeps an item's footprint (centered on position.x/y) inside its host container
+ * and its body below the container ceiling. Items larger than the container are centered.
+ */
+export function clampItemPosition(position: Position3D, itemDims: Dimensions, containerDims: Dimensions): Position3D {
+  const clampAxis = (v: number, half: number, max: number) =>
+    half * 2 >= max ? max / 2 : Math.max(half, Math.min(max - half, v));
+  return {
+    x: roundFt(clampAxis(position.x, itemDims.length / 2, containerDims.length)),
+    y: roundFt(clampAxis(position.y, itemDims.width / 2, containerDims.width)),
+    z: roundFt(Math.max(0, Math.min(Math.max(0, containerDims.height - itemDims.height), position.z)))
+  };
+}
+
 /**
  * Calculates a sensible default 3D position (X, Y, Z in feet) for a new item or tent
  * within its host container to prevent overlapping and clipping through walls.
@@ -198,6 +329,7 @@ export function getDefaultSpatialPosition(
   };
 }
 export const CANVAS_GRID_SIZE = 40; // 40 pixels = 1 foot (1 square = 1 foot)
+export const CANVAS_VERTICAL_PX_PER_FT = 30; // Upright sprite height: 30 pixels per foot of real height (3/4 view foreshortening)
 export const CANVAS_FLOOR_ORIGIN_X = 60; // Inner face of left wall (where X = 0 begins)
 export const CANVAS_FLOOR_ORIGIN_Y = 50; // Inner face of top wall (where Y = 0 begins)
 export const CANVAS_MAX_FLOOR_X = 940; // Inner face of right wall (60 + 22 * 40 = 940)
@@ -278,9 +410,9 @@ export function getSafeTentItemCanvasPosition(
   const tentLeft = tentCanvasX - halfW;
   const tentTop = tentCanvasY - halfH;
 
-  // Interior padding to keep sprites inside tent shell
-  const padX = Math.min(14, width * 0.12);
-  const padY = Math.min(14, height * 0.12);
+  // Keep the item's true-scale footprint inside the tent shell (centered if it is wider than the tent)
+  const padX = Math.min(width / 2, ((item.dimensions?.length || 0.5) * CANVAS_GRID_SIZE) / 2);
+  const padY = Math.min(height / 2, ((item.dimensions?.width || 0.5) * CANVAS_GRID_SIZE) / 2);
   const innerMinX = tentLeft + padX;
   const innerMaxX = tentLeft + width - padX;
   const innerMinY = tentTop + padY;

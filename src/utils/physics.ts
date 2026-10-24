@@ -1,5 +1,6 @@
 import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar } from './plantLifecycle';
+import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -1073,7 +1074,7 @@ function simulateCropItem(params: {
 
     // B. Soil & Medium Dynamics:
     // Volume buffering: 1-gal pot dries quickly; 10-gal or 50-gal raised bed buffers moisture
-    const volGallons = plant.containerVolumeGallons || (plant.containerType === 'raised_bed_cedar' ? 50 : plant.containerType === 'in_ground_earth' ? 100 : 5);
+    const volGallons = plant.containerVolumeGallons || getDefaultContainerVolumeGallons(plant.containerType);
     const volBuffer = Math.max(0.2, Math.min(2.5, 5 / volGallons));
     
     let mediumDrainFactor = 1.0;
@@ -1304,7 +1305,7 @@ function simulateCropItem(params: {
       }
     }
 
-    return plant;
+    return syncItemGeometry(plant);
   } else if (item.category === 'mushroom') {
     const shroom = { ...item } as MushroomItem;
     let healthDelta = 0;
@@ -1380,7 +1381,7 @@ function simulateCropItem(params: {
       }
     }
 
-    return shroom;
+    return syncItemGeometry(shroom);
   }
 
   return item;

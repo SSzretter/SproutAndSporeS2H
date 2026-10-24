@@ -1,4 +1,6 @@
 import { PlantItem, MushroomItem, PlantStage, MushroomStage } from '../../types/sim';
+import { getPlantContainerDimensions } from '../../utils/spatial';
+import { drawSpriteToScale, feetToPx, feetToVerticalPx } from './scaleRender';
 
 /**
  * Procedural 2D botanical canvas renderer
@@ -12,6 +14,7 @@ export interface RenderPlantOptions {
   scale?: number;
   time?: number; // for wind sway and trichome sparkle
   highlighted?: boolean;
+  bodyOnly?: boolean; // Skip ground shadow & floating badges (used by true-scale rendering)
 }
 
 /**
@@ -45,6 +48,110 @@ export function drawPlant(plant: PlantItem, options: RenderPlantOptions) {
   drawPot(ctx, plant.soilMoisture, plant.containerType);
 
   // 2. Draw Plant based on stage & propagation origin
+  drawPlantFoliage(ctx, plant, sway, time, isReady);
+
+  // 3. Health & Status Indicators
+  drawPlantStatusBadges(ctx, plant, time, isReady, -45, -68);
+
+  ctx.restore();
+}
+
+/**
+ * Draws a plant at true scale: the pot sized to plant.containerDimensions and the foliage
+ * sized to heightInches x canopyWidthInches, standing on (x, y) (the pot's base in screen px).
+ */
+export function drawPlantToScale(plant: PlantItem, options: RenderPlantOptions) {
+  const { ctx, x, y, time = 0 } = options;
+  const isReady = plant.stage === 'ready' || (plant.stage === 'ripening' && plant.stageProgress > 80);
+  const containerType = plant.containerType;
+  const pot = plant.containerDimensions || getPlantContainerDimensions(containerType, plant.containerVolumeGallons);
+  const potHeightPx = Math.max(3, feetToVerticalPx(pot.height));
+
+  drawSpriteToScale(ctx, {
+    key: `pot|${containerType || 'fabric_pot'}`,
+    draw: c => drawPot(c, plant.soilMoisture, containerType, false),
+    anchorX: x,
+    anchorY: y,
+    widthPx: feetToPx(pot.length),
+    heightPx: potHeightPx
+  });
+
+  // Foliage rises from the soil line, slightly below the rim
+  const soilY = y - potHeightPx * 0.85;
+  const heightPx = Math.max(3, feetToVerticalPx(plant.heightInches / 12));
+  const canopyPx = Math.max(3, feetToPx(plant.canopyWidthInches / 12));
+  const sway = Math.sin(time * 0.003 + x) * 2;
+
+  if (isReady) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(x, soilY - heightPx / 2, canopyPx / 2 + 6, heightPx / 2 + 6, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.18)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawSpriteToScale(ctx, {
+    key: `foliage|${plant.species}|${plant.stage}|${Math.round(plant.stageProgress || 0)}|${isReady}`,
+    // Native sprites put the soil surface at y = -14; shift it to the origin
+    draw: c => { c.translate(0, 14); drawPlantFoliage(c, plant, sway, time, isReady); },
+    measure: c => { c.translate(0, 14); drawPlantFoliage(c, plant, 0, 0, isReady); },
+    anchorX: x,
+    anchorY: soilY,
+    widthPx: canopyPx,
+    heightPx
+  });
+
+  ctx.save();
+  ctx.translate(x, soilY);
+  drawPlantStatusBadges(ctx, plant, time, isReady, -heightPx * 0.6, -heightPx - 14);
+  ctx.restore();
+}
+
+function drawPlantStatusBadges(
+  ctx: CanvasRenderingContext2D,
+  plant: PlantItem,
+  time: number,
+  isReady: boolean,
+  healthDotY: number,
+  harvestBadgeY: number
+) {
+  if (plant.health < 60) {
+    // Wilted yellow leaves effect
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+    ctx.beginPath();
+    ctx.arc(15, healthDotY, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Floating Harvest Indicator
+  if (isReady) {
+    const bob = Math.sin(time * 0.006) * 3;
+    ctx.save();
+    ctx.translate(0, harvestBadgeY + bob);
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath();
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✂', 0, 0);
+    ctx.restore();
+  }
+}
+
+/**
+ * Draws only the living plant (no pot), with the soil surface at native y = -14
+ */
+function drawPlantFoliage(
+  ctx: CanvasRenderingContext2D,
+  plant: PlantItem,
+  sway: number,
+  time: number,
+  isReady: boolean
+) {
   const stage = plant.stage;
 
   if (plant.species === 'Hops') {
@@ -71,45 +178,19 @@ export function drawPlant(plant: PlantItem, options: RenderPlantOptions) {
     // Heavy Ripened Colas & Trichome Frosting
     drawRipeningStage(ctx, plant.stageProgress, sway, plant.species, time, isReady);
   }
-
-  // 3. Health & Status Indicators
-  if (plant.health < 60) {
-    // Wilted yellow leaves effect
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
-    ctx.beginPath();
-    ctx.arc(15, -45, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Floating Harvest Indicator
-  if (isReady) {
-    const bob = Math.sin(time * 0.006) * 3;
-    ctx.save();
-    ctx.translate(0, -68 + bob);
-    ctx.fillStyle = '#fbbf24';
-    ctx.beginPath();
-    ctx.arc(0, 0, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#000000';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('✂', 0, 0);
-    ctx.restore();
-  }
-
-  ctx.restore();
 }
 
 /**
  * Draws the container pot with soil moisture depth and vessel type
  */
-function drawPot(ctx: CanvasRenderingContext2D, moisture: number, containerType?: string) {
+function drawPot(ctx: CanvasRenderingContext2D, moisture: number, containerType?: string, withShadow: boolean = true) {
   // Pot shadow
-  ctx.beginPath();
-  ctx.ellipse(0, 5, 20, 6, 0, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-  ctx.fill();
+  if (withShadow) {
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 20, 6, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.fill();
+  }
 
   if (containerType === 'raised_bed_cedar' || containerType === 'cedar_raised_bed') {
     // Cedar Wood Garden Bed
@@ -818,7 +899,7 @@ function drawColaCluster(
  * Draws a mushroom container and fruiting block (Lion's Mane, Oyster, etc.)
  */
 export function drawMushroom(shroom: MushroomItem, options: RenderPlantOptions) {
-  const { ctx, x, y, scale = 1, time = 0, highlighted = false } = options;
+  const { ctx, x, y, scale = 1, time = 0, highlighted = false, bodyOnly = false } = options;
 
   ctx.save();
   ctx.translate(x, y);
@@ -827,10 +908,12 @@ export function drawMushroom(shroom: MushroomItem, options: RenderPlantOptions) 
   const isReady = shroom.stage === 'ready' || shroom.stage === 'mature';
 
   // Substrate Block / Monotub container
-  ctx.fillStyle = 'rgba(0,0,0,0.2)';
-  ctx.beginPath();
-  ctx.ellipse(0, 5, 22, 7, 0, 0, Math.PI * 2);
-  ctx.fill();
+  if (!bodyOnly) {
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 22, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Grow bag / Monotub
   ctx.fillStyle = '#27272a';
@@ -878,7 +961,7 @@ export function drawMushroom(shroom: MushroomItem, options: RenderPlantOptions) 
   }
 
   // Harvest Bobbing Shears
-  if (isReady) {
+  if (isReady && !bodyOnly) {
     const bob = Math.sin(time * 0.006) * 3;
     ctx.save();
     ctx.translate(0, -36 + bob);
@@ -959,5 +1042,40 @@ function drawMushroomCaps(
       ctx.arc(sx, sy, 1, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+}
+
+/**
+ * Draws a mushroom container + fruit bodies at true scale (shroom.dimensions), standing on (x, y).
+ */
+export function drawMushroomToScale(shroom: MushroomItem, options: RenderPlantOptions) {
+  const { ctx, x, y, time = 0 } = options;
+  const heightPx = Math.max(3, feetToVerticalPx(shroom.dimensions.height));
+  const colonizationBucket = Math.round((shroom.myceliumColonization || 80) / 10);
+
+  drawSpriteToScale(ctx, {
+    key: `shroom|${shroom.species}|${shroom.stage}|${Math.round(shroom.stageProgress || 0)}|${colonizationBucket}`,
+    draw: c => drawMushroom(shroom, { ctx: c, x: 0, y: 0, time, bodyOnly: true }),
+    measure: c => drawMushroom(shroom, { ctx: c, x: 0, y: 0, time: 0, bodyOnly: true }),
+    anchorX: x,
+    anchorY: y,
+    widthPx: feetToPx(shroom.dimensions.length),
+    heightPx
+  });
+
+  if (shroom.stage === 'ready' || shroom.stage === 'mature') {
+    const bob = Math.sin(time * 0.006) * 3;
+    ctx.save();
+    ctx.translate(x, y - heightPx - 12 + bob);
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✂', 0, 0);
+    ctx.restore();
   }
 }

@@ -57,6 +57,7 @@ import {
 } from '../types/sim';
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
+import { clampItemPosition } from '../utils/spatial';
 import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 
@@ -161,15 +162,27 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   };
 
   // Dimension change helper for Item
+  // Crops (plants & mushrooms) edit their pot/container size; their overall dimensions are derived from it plus growth.
   const handleItemDimensionChange = (key: keyof Dimensions, value: number) => {
     if (!currentItem || isNaN(value) || value <= 0) return;
+    if (currentItem.category === 'plant' || currentItem.category === 'mushroom') {
+      const container = currentItem.containerDimensions || currentItem.dimensions;
+      onUpdateItem({
+        ...currentItem,
+        containerDimensions: {
+          ...container,
+          [key]: parseFloat(value.toFixed(2))
+        }
+      }, selectedParentTentId);
+      return;
+    }
     onUpdateItem({
       ...currentItem,
       dimensions: {
         ...currentItem.dimensions,
         [key]: parseFloat(value.toFixed(1))
       }
-    });
+    }, selectedParentTentId);
   };
 
   // Position change helper for Tent
@@ -189,12 +202,14 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   const handleItemPositionChange = (axis: 'x' | 'y' | 'z', value: number) => {
     if (!currentItem || isNaN(value)) return;
     const currentPos = currentItem.position || { x: 1.0, y: 1.0, z: 0 };
+    const containerDims = currentTent ? currentTent.dimensions : room.dimensions;
     onUpdateItem({
       ...currentItem,
-      position: {
-        ...currentPos,
-        [axis]: Math.max(0, parseFloat(value.toFixed(1)))
-      }
+      position: clampItemPosition(
+        { ...currentPos, [axis]: Math.max(0, parseFloat(value.toFixed(1))) },
+        currentItem.dimensions,
+        containerDims
+      )
     }, selectedParentTentId);
   };
 
@@ -1783,6 +1798,10 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   // 3. RENDER INSPECTOR WHEN SPECIFIC ITEM IS SELECTED
   if (selectedType === 'item' && currentItem) {
     const parentName = currentTent ? currentTent.name : room.name;
+    const isCropItem = currentItem.category === 'plant' || currentItem.category === 'mushroom';
+    const itemSizeDims = (currentItem.category === 'plant' || currentItem.category === 'mushroom') && currentItem.containerDimensions
+      ? currentItem.containerDimensions
+      : currentItem.dimensions;
 
     return (
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-sm space-y-6">
@@ -1876,52 +1895,60 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5 text-emerald-400" />
-                  Item Dimensions (L × W × H)
+                  {isCropItem ? 'Pot / Container Dimensions (L × W × H)' : 'Item Dimensions (L × W × H)'}
                 </span>
                 <span className="font-mono text-emerald-400 text-xs">
                   Footprint: {(currentItem.dimensions.length * currentItem.dimensions.width).toFixed(2)} sq ft
                 </span>
               </div>
+              {isCropItem && (
+                <div className="text-[10px] font-mono text-zinc-400">
+                  Overall with {currentItem.category === 'plant' ? 'canopy' : 'fruit bodies'}: {currentItem.dimensions.length}′ × {currentItem.dimensions.width}′ × {currentItem.dimensions.height}′
+                  {currentItem.category === 'plant' && (
+                    <> · plant {currentItem.heightInches.toFixed(0)}″ tall, {currentItem.canopyWidthInches.toFixed(0)}″ canopy</>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                    Length ({currentItem.dimensions.unit})
+                    Length ({itemSizeDims.unit})
                   </label>
                   <input
                     type="number"
                     step="0.1"
                     min="0.1"
                     max="20"
-                    value={currentItem.dimensions.length}
+                    value={itemSizeDims.length}
                     onChange={e => handleItemDimensionChange('length', parseFloat(e.target.value))}
                     className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                   />
                 </div>
                 <div>
                   <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                    Width ({currentItem.dimensions.unit})
+                    Width ({itemSizeDims.unit})
                   </label>
                   <input
                     type="number"
                     step="0.1"
                     min="0.1"
                     max="20"
-                    value={currentItem.dimensions.width}
+                    value={itemSizeDims.width}
                     onChange={e => handleItemDimensionChange('width', parseFloat(e.target.value))}
                     className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                   />
                 </div>
                 <div>
                   <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                    Height ({currentItem.dimensions.unit})
+                    Height ({itemSizeDims.unit})
                   </label>
                   <input
                     type="number"
                     step="0.1"
                     min="0.1"
                     max="20"
-                    value={currentItem.dimensions.height}
+                    value={itemSizeDims.height}
                     onChange={e => handleItemDimensionChange('height', parseFloat(e.target.value))}
                     className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                   />
