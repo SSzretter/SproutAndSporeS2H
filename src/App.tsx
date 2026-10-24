@@ -16,6 +16,7 @@ import {
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
 import { syncItemGeometry } from './utils/spatial';
+import { getPlantStageStartSize } from './utils/plantLifecycle';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
 import { HeaderClock } from './components/HeaderClock';
 import { ClimateDashboard } from './components/ClimateDashboard';
@@ -776,8 +777,8 @@ export default function App() {
       ageDays: 1,
       health: 98,
       soilMoisture: 70,
-      heightInches: 4,
-      canopyWidthInches: 4,
+      heightInches: getPlantStageStartSize(plant.species, 'seedling', plant.propagationType).heightInches,
+      canopyWidthInches: getPlantStageStartSize(plant.species, 'seedling', plant.propagationType).canopyWidthInches,
       yieldPotentialGrams: Math.round(plant.yieldPotentialGrams * 1.1)
     };
 

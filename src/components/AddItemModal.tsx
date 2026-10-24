@@ -46,7 +46,7 @@ import {
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
-import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS } from '../utils/plantLifecycle';
+import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 
 interface AddItemModalProps {
@@ -191,29 +191,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     };
 
     let calculatedAgeDays = 0;
-    let initialHeight = 2;
-    let initialCanopy = 2;
 
     if (propagationType === 'seed') {
       if (plantStage === 'germination') {
         calculatedAgeDays = 0;
-        initialHeight = 1;
-        initialCanopy = 1;
       } else if (plantStage === 'seedling') {
         calculatedAgeDays = germinationDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
         keyDates.sproutedDate = now;
         keyDates.seedlingDate = now;
-        initialHeight = 4;
-        initialCanopy = 3;
       } else if (plantStage === 'mature_seedling') {
         calculatedAgeDays = germinationDays + seedlingDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
         keyDates.sproutedDate = now - seedlingDays * 86400000;
         keyDates.seedlingDate = now - seedlingDays * 86400000;
         keyDates.matureSeedlingDate = now;
-        initialHeight = 10;
-        initialCanopy = 8;
       } else if (plantStage === 'vegetative') {
         calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
@@ -221,8 +213,6 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
         keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
         keyDates.vegetativeDate = now;
-        initialHeight = 22;
-        initialCanopy = 18;
       } else if (plantStage === 'flowering') {
         calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays + vegDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
@@ -231,30 +221,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
         keyDates.vegetativeDate = now - vegDays * 86400000;
         keyDates.floweringDate = now;
-        initialHeight = 34;
-        initialCanopy = 26;
       }
     } else {
       // Cutting / Clone
       if (plantStage === 'rooting') {
         calculatedAgeDays = 0;
-        initialHeight = 4;
-        initialCanopy = 3;
       } else if (plantStage === 'seedling') {
         calculatedAgeDays = rootingDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
         keyDates.rootedDate = now;
         keyDates.seedlingDate = now;
-        initialHeight = 6;
-        initialCanopy = 4;
       } else if (plantStage === 'mature_seedling') {
         calculatedAgeDays = rootingDays + seedlingDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
         keyDates.rootedDate = now - seedlingDays * 86400000;
         keyDates.seedlingDate = now - seedlingDays * 86400000;
         keyDates.matureSeedlingDate = now;
-        initialHeight = 12;
-        initialCanopy = 9;
       } else if (plantStage === 'vegetative') {
         calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
@@ -262,8 +244,6 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
         keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
         keyDates.vegetativeDate = now;
-        initialHeight = 24;
-        initialCanopy = 20;
       } else if (plantStage === 'flowering') {
         calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays + vegDays;
         keyDates.plantedDate = now - calculatedAgeDays * 86400000;
@@ -272,8 +252,6 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
         keyDates.vegetativeDate = now - vegDays * 86400000;
         keyDates.floweringDate = now;
-        initialHeight = 36;
-        initialCanopy = 28;
       }
     }
 
@@ -284,6 +262,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
     const initialPh = (growingMedium === 'hydroton_clay_pebbles' || growingMedium === 'rockwool_cubes' || growingMedium === 'aeroponic_mist' || systemType === 'dwc' || systemType === 'ebb_and_flow' || systemType === 'aeroponics') ? 5.8 : 6.4;
     const initialEc = nutrientProgram === 'water_only_flush' ? 300 : nutrientProgram === 'salt_mineral_ab' ? 1100 : 850;
+
+    // Start at the species' typical size for this stage & initial progress, scaled by pot volume
+    const initialProgress = plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15;
+    const initialSize = getPlantTargetSize(
+      { species: plantSpecies, stage: plantStage, propagationType, stageProgress: initialProgress } as PlantItem,
+      getContainerSizeFactor(containerVolume)
+    );
 
     const newPlant: PlantItem = {
       id: `plant-${Date.now()}`,
@@ -297,7 +282,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           : (plantStrain || plantSpecies),
       propagationType,
       stage: plantStage,
-      stageProgress: plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15,
+      stageProgress: initialProgress,
       ageDays: calculatedAgeDays,
       currentStageDays: 0,
       keyDates,
@@ -313,8 +298,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       soilMoisture: plantStage === 'germination' || plantStage === 'rooting' ? 82 : 72,
       rootTempF: plantStage === 'germination' || plantStage === 'rooting' ? (isPepper ? 82.0 : 74.0) : 68.0,
       nutrientLevel: 'balanced',
-      heightInches: initialHeight,
-      canopyWidthInches: initialCanopy,
+      heightInches: parseFloat(initialSize.heightInches.toFixed(1)),
+      canopyWidthInches: parseFloat(initialSize.canopyWidthInches.toFixed(1)),
       yieldPotentialGrams: isHop ? (hopData?.expectedYieldGrams || 400) : isPepper ? (pepperData?.expectedYieldGrams || 350) : plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
       isHarvested: false,
       dimensions: getDefaultItemDimensions({

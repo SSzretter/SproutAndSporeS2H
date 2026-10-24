@@ -1,4 +1,4 @@
-import { PlantItem, PlantStage, PropagationType, StageConditionRequirements, Climate } from '../types/sim';
+import { PlantItem, PlantStage, PlantSpecies, PropagationType, StageConditionRequirements, Climate } from '../types/sim';
 
 export interface StageSuitabilityReport {
   overallScore: number; // 0 to 1.5 multiplier
@@ -163,6 +163,128 @@ export const DEFAULT_STAGE_DURATIONS: Record<PlantStage, number> = {
   ripening: 10,       // 7 to 14 days
   ready: 5            // harvest window
 };
+
+export interface PlantSize {
+  heightInches: number; // Plant height above the soil surface
+  canopyWidthInches: number;
+}
+
+/**
+ * Typical plant size (in a 5-gallon container) reached at the END of each stage.
+ * 'ready' holds at the ripening size. Height for Hops is bine length up the trellis.
+ */
+export const STAGE_END_SIZES: Record<PlantSpecies, Record<PlantStage, PlantSize>> = {
+  Cannabis: {
+    germination: { heightInches: 1, canopyWidthInches: 1 },
+    rooting: { heightInches: 5, canopyWidthInches: 4 },
+    seedling: { heightInches: 4, canopyWidthInches: 4 },
+    mature_seedling: { heightInches: 9, canopyWidthInches: 9 },
+    vegetative: { heightInches: 26, canopyWidthInches: 24 },
+    flowering: { heightInches: 44, canopyWidthInches: 30 }, // Flower stretch roughly doubles height
+    ripening: { heightInches: 46, canopyWidthInches: 32 },
+    ready: { heightInches: 46, canopyWidthInches: 32 }
+  },
+  Tomato: {
+    germination: { heightInches: 1, canopyWidthInches: 1 },
+    rooting: { heightInches: 5, canopyWidthInches: 3 },
+    seedling: { heightInches: 4, canopyWidthInches: 3 },
+    mature_seedling: { heightInches: 8, canopyWidthInches: 6 },
+    vegetative: { heightInches: 30, canopyWidthInches: 18 },
+    flowering: { heightInches: 48, canopyWidthInches: 22 }, // Indeterminate vines keep climbing the cage
+    ripening: { heightInches: 56, canopyWidthInches: 24 },
+    ready: { heightInches: 56, canopyWidthInches: 24 }
+  },
+  'Chili Pepper': {
+    germination: { heightInches: 0.8, canopyWidthInches: 0.8 },
+    rooting: { heightInches: 4, canopyWidthInches: 3 },
+    seedling: { heightInches: 3, canopyWidthInches: 3 },
+    mature_seedling: { heightInches: 6, canopyWidthInches: 5 },
+    vegetative: { heightInches: 16, canopyWidthInches: 14 },
+    flowering: { heightInches: 24, canopyWidthInches: 18 },
+    ripening: { heightInches: 28, canopyWidthInches: 20 },
+    ready: { heightInches: 28, canopyWidthInches: 20 }
+  },
+  Basil: {
+    germination: { heightInches: 0.7, canopyWidthInches: 0.7 },
+    rooting: { heightInches: 4, canopyWidthInches: 3 },
+    seedling: { heightInches: 2.5, canopyWidthInches: 2.5 },
+    mature_seedling: { heightInches: 5, canopyWidthInches: 5 },
+    vegetative: { heightInches: 14, canopyWidthInches: 12 },
+    flowering: { heightInches: 20, canopyWidthInches: 14 },
+    ripening: { heightInches: 22, canopyWidthInches: 15 },
+    ready: { heightInches: 22, canopyWidthInches: 15 }
+  },
+  Hops: {
+    germination: { heightInches: 2, canopyWidthInches: 1 },
+    rooting: { heightInches: 6, canopyWidthInches: 2 },
+    seedling: { heightInches: 12, canopyWidthInches: 4 },
+    mature_seedling: { heightInches: 36, canopyWidthInches: 8 },
+    vegetative: { heightInches: 168, canopyWidthInches: 20 }, // ~14ft up the trellis
+    flowering: { heightInches: 192, canopyWidthInches: 26 },  // ~16ft, side arms loaded with cones
+    ripening: { heightInches: 198, canopyWidthInches: 28 },
+    ready: { heightInches: 198, canopyWidthInches: 28 }
+  }
+};
+
+// Size at the moment a plant enters each starting stage (a sown seed vs. a fresh cutting)
+const STAGE_ENTRY_SIZES: Partial<Record<PlantStage, PlantSize>> = {
+  germination: { heightInches: 0.2, canopyWidthInches: 0.3 },
+  rooting: { heightInches: 4, canopyWidthInches: 3 }
+};
+
+const STAGE_ORDER: PlantStage[] = ['seedling', 'mature_seedling', 'vegetative', 'flowering', 'ripening', 'ready'];
+
+/**
+ * Root-zone volume limits how big a plant gets: 5 gal = 1.0, 1 gal ≈ 0.75, 15+ gal / beds up to 1.25.
+ * Only applies from vegetative onward; seedlings aren't root-bound yet.
+ */
+export function getContainerSizeFactor(volumeGallons: number): number {
+  return Math.max(0.6, Math.min(1.25, 0.55 + 0.45 * Math.sqrt(Math.max(0.25, volumeGallons) / 5)));
+}
+
+function scaleSize(size: PlantSize, factor: number): PlantSize {
+  return { heightInches: size.heightInches * factor, canopyWidthInches: size.canopyWidthInches * factor };
+}
+
+function getStageEndSize(species: PlantSpecies, stage: PlantStage, containerFactor: number): PlantSize {
+  const table = STAGE_END_SIZES[species] || STAGE_END_SIZES.Cannabis;
+  const size = table[stage];
+  const isRootBound = stage === 'vegetative' || stage === 'flowering' || stage === 'ripening' || stage === 'ready';
+  return isRootBound ? scaleSize(size, containerFactor) : size;
+}
+
+/**
+ * Size a plant has when it ENTERS a stage (= end size of the stage before it).
+ * Seedlings started from cuttings enter at the rooted-cutting size.
+ */
+export function getPlantStageStartSize(
+  species: PlantSpecies,
+  stage: PlantStage,
+  propagation: PropagationType = 'seed',
+  containerFactor: number = 1
+): PlantSize {
+  const entry = STAGE_ENTRY_SIZES[stage];
+  if (entry) return entry;
+  if (stage === 'seedling') {
+    return getStageEndSize(species, propagation === 'cutting' ? 'rooting' : 'germination', containerFactor);
+  }
+  const prev = STAGE_ORDER[STAGE_ORDER.indexOf(stage) - 1];
+  return getStageEndSize(species, prev, containerFactor);
+}
+
+/**
+ * Target plant size for the current stage progress: interpolates from the stage's start
+ * size to its end size, scaled by the container's root-zone volume.
+ */
+export function getPlantTargetSize(plant: PlantItem, containerFactor: number): PlantSize {
+  const start = getPlantStageStartSize(plant.species, plant.stage, plant.propagationType, containerFactor);
+  const end = getStageEndSize(plant.species, plant.stage, containerFactor);
+  const t = Math.max(0, Math.min(100, plant.stageProgress || 0)) / 100;
+  return {
+    heightInches: start.heightInches + (end.heightInches - start.heightInches) * t,
+    canopyWidthInches: start.canopyWidthInches + (end.canopyWidthInches - start.canopyWidthInches) * t
+  };
+}
 
 /**
  * Evaluates how close current environmental conditions are to the plant's stage requirements.

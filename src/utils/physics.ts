@@ -1,5 +1,5 @@
 import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
-import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar } from './plantLifecycle';
+import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar, getPlantTargetSize, getContainerSizeFactor } from './plantLifecycle';
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
 
 export interface SimulationEvent {
@@ -1288,18 +1288,15 @@ function simulateCropItem(params: {
         }
       }
 
-      // Size & yield scaling
-      if (plant.stage === 'seedling') {
-        plant.heightInches = Math.min(10, plant.heightInches + 0.006 * progressDelta);
-        plant.canopyWidthInches = Math.min(8, plant.canopyWidthInches + 0.005 * progressDelta);
-      } else if (plant.stage === 'mature_seedling') {
-        plant.heightInches = Math.min(18, plant.heightInches + 0.015 * progressDelta);
-        plant.canopyWidthInches = Math.min(14, plant.canopyWidthInches + 0.012 * progressDelta);
-      } else if (plant.stage === 'vegetative') {
-        const maxHeight = plant.species === 'Hops' ? 180 : 54;
-        plant.heightInches = Math.min(maxHeight, plant.heightInches + (plant.species === 'Hops' ? 0.09 : 0.03) * progressDelta);
-        plant.canopyWidthInches = Math.min(42, plant.canopyWidthInches + 0.025 * progressDelta);
-      } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+      // Size: grow toward the species' size for the current stage progress (scaled by root-zone
+      // volume), easing in over ~a day so stage changes and older saves don't jump. Never shrinks.
+      const target = getPlantTargetSize(plant, getContainerSizeFactor(volGallons));
+      const approach = 1 - Math.exp(-1.5 * elapsedDays);
+      plant.heightInches = Math.max(plant.heightInches, plant.heightInches + (target.heightInches - plant.heightInches) * approach);
+      plant.canopyWidthInches = Math.max(plant.canopyWidthInches, plant.canopyWidthInches + (target.canopyWidthInches - plant.canopyWidthInches) * approach);
+
+      // Yield scaling
+      if (plant.stage === 'flowering' || plant.stage === 'ripening') {
         const maxYield = plant.species === 'Hops' ? 450 : 380;
         plant.yieldPotentialGrams = Math.min(maxYield, plant.yieldPotentialGrams + 0.22 * progressDelta);
       }
