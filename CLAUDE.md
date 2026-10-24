@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Sprout & Spore — a client-only React 19 + TypeScript + Vite + Tailwind v4 indoor plant/mushroom grow simulator (climate physics, multi-room/tent management, equipment automation, crop lifecycle). Originally generated in Google AI Studio (`metadata.json`, `.aistudio/`, `.env.example`); `@google/genai`, `express`, and `GEMINI_API_KEY` are leftover scaffolding and are not used by `src/`.
+Sprout & Spore — a client-only React 19 + TypeScript + Vite + Tailwind v4 indoor plant/mushroom grow simulator (climate physics, multi-room/tent management, equipment automation, crop lifecycle).
+
+## Tooling & Dual-Platform Compatibility
+- This repository is shared between Claude Code (desktop) and Google AI Studio (via github) and will be edited and should continue to work from both platforms.
 
 ## Commands
 

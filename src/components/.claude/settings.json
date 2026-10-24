@@ -1,0 +1,10 @@
+{
+    "permissions": {
+        "deny": [
+            "Read(dist/**)",
+            "Read(build/**)",
+            "Read(node_modules/**)",
+            "Read(.env*)"
+        ]
+    }
+}
