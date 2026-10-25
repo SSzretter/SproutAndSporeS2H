@@ -16,6 +16,7 @@ import {
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
 import { syncItemGeometry } from './utils/spatial';
+import { migrateHumidifierDucting } from './utils/humidifierDucting';
 import { getPlantStageStartSize } from './utils/plantLifecycle';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
 import { HeaderClock } from './components/HeaderClock';
@@ -485,10 +486,11 @@ export default function App() {
 
       const updatedRooms = currentRooms.map(rm => {
         if (!rm.tents.some(t => t.id === tentId)) return rm;
-        return {
+        // Unlink any humidifier hoses that fed the removed tent
+        return migrateHumidifierDucting({
           ...rm,
           tents: rm.tents.filter(t => t.id !== tentId)
-        };
+        });
       });
 
       const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];

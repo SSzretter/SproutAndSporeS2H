@@ -245,6 +245,9 @@ export interface EquipmentAutoTriggers {
   cycleOffMinutes?: number;       // For cycle mode: minutes OFF (e.g. 20 mins)
 }
 
+// Humidifier/fogger water-reservoir conditioning: 'none' lets the water drift to the air around the unit
+export type ReservoirConditioning = 'none' | 'heater' | 'chiller';
+
 export type ControllerPriority = 'humidity_first' | 'temperature_first' | 'balanced_auto' | 'co2_enrichment';
 
 export interface EquipmentItem {
@@ -268,6 +271,10 @@ export interface EquipmentItem {
   };
   interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
   effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
+  ductedToTentId?: string; // Humidifier in room.items whose mist is piped into this tent through a hose
+  reservoirTempF?: number; // Live humidifier water temperature (follows the air around the unit unless conditioned)
+  reservoirConditioning?: ReservoirConditioning; // Built-in reservoir heater / chiller
+  reservoirSetpointF?: number; // Target water temp for the reservoir heater / chiller
   dimensions: Dimensions;
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;

@@ -1,6 +1,7 @@
 import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar, getPlantTargetSize, getContainerSizeFactor } from './plantLifecycle';
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
+import { getDuctTargetTent, getDuctedHumidifiersForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, HOSE_DELIVERY_EFFICIENCY } from './humidifierDucting';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -239,6 +240,7 @@ export interface ArbitratedEquipmentResult {
   activeInterlocks: string[];
   activeHumidifierTarget: number | null;
   activeHumidifierCapacity: number;
+  activeHumidifierCoolingPerCapacity: number; // Capacity-weighted mist cooling (°F / 5 min), from reservoir water temps
   activeDehumidifierTarget: number | null;
   activeDehumidifierCapacity: number;
   co2RegulatorActive: boolean;
@@ -281,6 +283,7 @@ export function arbitrateEnclosureEquipment(params: {
   // 1. First Pass: Evaluate preliminary demands
   let activeHumidifierTarget: number | null = null;
   let activeHumidifierCapacity = 0;
+  let humidifierCoolingWeighted = 0;
   let humidifierDemanded = false;
 
   let activeDehumidifierTarget: number | null = null;
@@ -317,7 +320,12 @@ export function arbitrateEnclosureEquipment(params: {
           activeHumidifierTarget = Math.max(activeHumidifierTarget ?? 0, target);
           const powerRatio = Math.max(0.1, (item.setting || 80) / 100);
           const wattsFactor = Math.max(0.8, (item.powerWatts || 60) / 60);
-          activeHumidifierCapacity += powerRatio * wattsFactor;
+          // Reservoir water temperature shapes output; hose-ducted units lose a little to condensation
+          const water = getMistWaterEffects(item.reservoirTempF ?? climate.tempF, climate.tempF);
+          const hoseFactor = item.ductedToTentId ? HOSE_DELIVERY_EFFICIENCY : 1;
+          const capacity = powerRatio * wattsFactor * water.outputFactor * hoseFactor;
+          activeHumidifierCapacity += capacity;
+          humidifierCoolingWeighted += capacity * water.coolingPerCapacity;
         }
       } else if (item.type === 'dehumidifier' && item.powerOn) {
         const target = item.targetRh ?? 50;
@@ -599,6 +607,7 @@ export function arbitrateEnclosureEquipment(params: {
     activeInterlocks,
     activeHumidifierTarget,
     activeHumidifierCapacity,
+    activeHumidifierCoolingPerCapacity: activeHumidifierCapacity > 0 ? humidifierCoolingWeighted / activeHumidifierCapacity : 0,
     activeDehumidifierTarget,
     activeDehumidifierCapacity,
     co2RegulatorActive,
@@ -726,9 +735,12 @@ export function simulateEnvironmentTick(
             roomRH = Math.max(target, roomRH - 0.25 * (item.setting / 100) * (elapsedMinutes / 10));
           }
         } else if (item.type === 'humidifier') {
+          // Hose-ducted units mist into their tent instead (handled in the tent loop)
+          if (getDuctTargetTent(room, item)) return;
           const target = item.targetRh ?? 60;
           if (roomRH < target) {
-            roomRH = Math.min(target, roomRH + 0.35 * (item.setting / 100) * (elapsedMinutes / 10));
+            const { outputFactor } = getMistWaterEffects(item.reservoirTempF ?? roomTempF, roomTempF);
+            roomRH = Math.min(target, roomRH + 0.35 * (item.setting / 100) * outputFactor * (elapsedMinutes / 10));
           }
         } else if (item.type === 'co2_regulator') {
           const targetCo2 = item.targetCo2Ppm ?? 1000;
@@ -748,6 +760,9 @@ export function simulateEnvironmentTick(
   const roomVPD = calculateVPD(roomTempF, roomRH, roomLightPPFD);
 
   // 2. UPDATE EACH TENT'S CLIMATE & ITS ITEMS
+  // Arbitrated copies of room-level humidifiers that are hose-ducted into a tent (written back to room.items)
+  const ductedArbitrated = new Map<string, EquipmentItem>();
+
   const updatedTents: Tent[] = room.tents.map(tent => {
     let tTempF = tent.climate.tempF;
     let tRH = tent.climate.rh;
@@ -765,8 +780,14 @@ export function simulateEnvironmentTick(
     const hasExhaustFanInstalled = tent.items.some(i => i.category === 'equipment' && i.type === 'exhaust_fan');
     const baseFanSpeed = hasExhaustFanInstalled ? (tent.exhaustFanSpeed || 0) : 0;
 
+    // Reservoirs drift toward the air around the unit: tent air in here, room air for hose-ducted units
+    const withReservoir = (item: Tent['items'][number], ambientF: number) =>
+      isHumidifier(item) ? { ...item, reservoirTempF: stepReservoirTempF(item, ambientF, elapsedMinutes) } : item;
+    const ductedHumidifiers = getDuctedHumidifiersForTent(room, tent.id).map(i => withReservoir(i, roomTempF));
+    const ductedIds = new Set(ductedHumidifiers.map(i => i.id));
+
     const arbitration = arbitrateEnclosureEquipment({
-      items: tent.items,
+      items: [...tent.items.map(i => withReservoir(i, tTempF)), ...ductedHumidifiers],
       climate: { tempF: tTempF, rh: tRH, co2Ppm: tCo2, lightPPFD: tent.climate.lightPPFD },
       ambientLungRoom: { tempF: roomTempF, rh: roomRH, co2Ppm: roomCo2 },
       priority: tentPriority,
@@ -778,11 +799,12 @@ export function simulateEnvironmentTick(
     });
 
     const {
-      arbitratedItems,
+      arbitratedItems: allArbitratedItems,
       effectiveFanSpeed,
       activeInterlocks,
       activeHumidifierTarget,
       activeHumidifierCapacity,
+      activeHumidifierCoolingPerCapacity,
       activeDehumidifierTarget,
       activeDehumidifierCapacity,
       co2RegulatorActive,
@@ -791,6 +813,14 @@ export function simulateEnvironmentTick(
       lightPPFD: tLightPPFD,
       heatMatActive
     } = arbitration;
+
+    // Hose-ducted units live in room.items; pull them back out of this tent's item list
+    const arbitratedItems = allArbitratedItems.filter(item => {
+      if (!ductedIds.has(item.id)) return true;
+      const eq = item as EquipmentItem;
+      ductedArbitrated.set(eq.id, { ...eq, interlockStatus: `${eq.interlockStatus} → hose into ${tent.name}` });
+      return false;
+    });
 
     // Check biological occupants in tent
     arbitratedItems.forEach(item => {
@@ -826,7 +856,7 @@ export function simulateEnvironmentTick(
       if (tRH < steadyStateRH) {
         const humidifyFraction = 1 - Math.exp(-Math.max(0.4, activeHumidifierCapacity * 0.6) * elapsedMinutes);
         tRH = tRH + (steadyStateRH - tRH) * humidifyFraction;
-        tTempF -= 0.05 * (elapsedMinutes / 5) * activeHumidifierCapacity;
+        tTempF -= activeHumidifierCoolingPerCapacity * (elapsedMinutes / 5) * activeHumidifierCapacity;
       } else if (tRH > activeHumidifierTarget) {
         tRH += (roomRH - tRH) * airExchangeFraction;
       }
@@ -972,6 +1002,11 @@ export function simulateEnvironmentTick(
 
   // 3. UPDATE FREESTANDING ITEMS IN ROOM OR OUTDOOR GARDEN
   const updatedRoomItems = room.items.map(item => {
+    const ducted = ductedArbitrated.get(item.id);
+    if (ducted) return ducted;
+    if (isHumidifier(item)) {
+      return { ...item, reservoirTempF: stepReservoirTempF(item, roomTempF, elapsedMinutes) };
+    }
     return simulateCropItem({
       item,
       enclosureClimate: {

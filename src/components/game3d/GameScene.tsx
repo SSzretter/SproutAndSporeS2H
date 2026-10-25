@@ -11,6 +11,8 @@ import { EquipmentModel } from './EquipmentModel';
 import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
+import { HoseModel } from './HoseModel';
+import { getDuctTargetTent } from '../../utils/humidifierDucting';
 
 export type { Doorway } from './EnvironmentModels';
 export type { PlayerState } from './CharacterModels';
@@ -121,11 +123,18 @@ function ItemNode({
   );
 }
 
-/** Third-person follow camera: orbit freely around the cultivator, who stays the orbit target. */
+/**
+ * Third-person follow camera around the cultivator. Right-drag orbits, middle-drag pans along
+ * the floor, scroll zooms; left button is left free for interacting. A pan offset holds while
+ * the cultivator stands still and eases back to center once they walk.
+ */
 function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['playerRef']; cameraYawRef: GameSceneProps['cameraYawRef'] }) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
   const desired = useRef(new THREE.Vector3());
+  const panOffset = useRef(new THREE.Vector3());
+  const panning = useRef(false);
+  const lastPlayer = useRef({ x: playerRef.current.x, y: playerRef.current.y });
 
   useEffect(() => {
     const p = playerRef.current;
@@ -134,14 +143,42 @@ function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['pla
     controlsRef.current?.update();
   }, [camera, playerRef]);
 
+  useEffect(() => {
+    const el = gl.domElement;
+    const onDown = (e: PointerEvent) => { if (e.button === 1) panning.current = true; };
+    const onUp = (e: PointerEvent) => { if (e.button === 1) panning.current = false; };
+    // Middle-click would otherwise start the browser's autoscroll
+    const onMouseDown = (e: MouseEvent) => { if (e.button === 1) e.preventDefault(); };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [gl]);
+
   useFrame(() => {
     const controls = controlsRef.current;
     if (!controls) return;
     const p = playerRef.current;
     desired.current.set(p.x, 2.5, p.y);
-    const delta = desired.current.sub(controls.target).multiplyScalar(0.12);
-    controls.target.add(delta);
-    camera.position.add(delta);
+
+    if (panning.current) {
+      // OrbitControls is moving the target; remember where it is relative to the cultivator
+      panOffset.current.copy(controls.target).sub(desired.current);
+    } else {
+      const moved = p.x !== lastPlayer.current.x || p.y !== lastPlayer.current.y;
+      if (moved) panOffset.current.multiplyScalar(0.92);
+      desired.current.add(panOffset.current);
+      const delta = desired.current.sub(controls.target).multiplyScalar(0.12);
+      controls.target.add(delta);
+      camera.position.add(delta);
+    }
+    lastPlayer.current.x = p.x;
+    lastPlayer.current.y = p.y;
+
     controls.update();
     cameraYawRef.current = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
   });
@@ -150,7 +187,9 @@ function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['pla
     <OrbitControls
       ref={controlsRef}
       makeDefault
-      enablePan={false}
+      // -1 = no camera action, so left clicks only interact
+      mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
+      screenSpacePanning={false}
       minDistance={4}
       maxDistance={45}
       maxPolarAngle={Math.PI * 0.46}
@@ -271,6 +310,10 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
       {room.items.map(item => (
         <ItemNode key={item.id} item={item} room={room} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
       ))}
+      {room.items.map(item => {
+        const ductTent = getDuctTargetTent(room, item);
+        return ductTent ? <HoseModel key={`hose-${item.id}`} eq={item as EquipmentItem} tent={ductTent} room={room} /> : null;
+      })}
       <PlayerAvatar playerRef={playerRef} />
       <LabelProjector labels={labels} registry={labelRegistry} />
     </>

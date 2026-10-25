@@ -46,6 +46,7 @@ import {
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
+import { DEFAULT_RESERVOIR_SETPOINT_F } from '../utils/humidifierDucting';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 
@@ -134,6 +135,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [eqType, setEqType] = useState<EquipmentType>('grow_light');
   const [eqName, setEqName] = useState('Pro-Quantum 240W LED');
   const [eqWatts, setEqWatts] = useState(240);
+  const [eqHoseTentId, setEqHoseTentId] = useState(''); // Room-level humidifier ducted into a tent by hose
 
   // Person Form State
   const [personName, setPersonName] = useState('Grower / Cultivator');
@@ -387,6 +389,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       dimensions: getDefaultItemDimensions({ category: 'equipment', type: eqType }),
       position: getDefaultSpatialPosition('equipment', targetDims, count, eqType)
     };
+    if (eqType === 'humidifier') {
+      newEq.reservoirConditioning = 'none';
+      newEq.reservoirSetpointF = DEFAULT_RESERVOIR_SETPOINT_F;
+      if (selectedDestinationTentId === 'room' && room.tents.some(t => t.id === eqHoseTentId)) {
+        newEq.ductedToTentId = eqHoseTentId;
+      }
+    }
     onAddItem(newEq, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
   };
@@ -1482,6 +1491,25 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 />
               </div>
             </div>
+
+            {eqType === 'humidifier' && selectedDestinationTentId === 'room' && room.tents.length > 0 && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Mist Hose</label>
+                <select
+                  value={eqHoseTentId}
+                  onChange={e => setEqHoseTentId(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="">No hose — mists into the room</option>
+                  {room.tents.map(t => (
+                    <option key={t.id} value={t.id}>Duct by hose into {t.name}</option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-zinc-500 block mt-1">
+                  Keep the unit outside the tent to save space; its reservoir water follows room temperature.
+                </span>
+              </div>
+            )}
 
             <div className="pt-3 flex justify-end gap-2">
               <button

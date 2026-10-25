@@ -19,6 +19,7 @@ import { TentInspectorModal } from './TentInspectorModal';
 import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
+import { migrateHumidifierDucting } from '../../utils/humidifierDucting';
 import { 
   Volume2, 
   VolumeX, 
@@ -171,10 +172,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
         const nextRooms = rooms.map(rm => {
           if (!rm.tents.some(t => t.id === tentId)) return rm;
-          return {
+          // Unlink any humidifier hoses that fed the removed tent
+          return migrateHumidifierDucting({
             ...rm,
             tents: rm.tents.filter(t => t.id !== tentId)
-          };
+          });
         });
         const nextActiveRoom = nextRooms.find(r => r.id === activeRId) || nextRooms[0];
         const nextState: SimulationState = {
@@ -1102,8 +1104,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
             <span>Cultivator Controls</span>
           </div>
           <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
-            <div><span className="text-zinc-200 font-semibold">[WASD / Click]</span> Walk around</div>
-            <div><span className="text-zinc-200 font-semibold">[Drag / Scroll]</span> Orbit &amp; zoom camera</div>
+            <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
+            <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Interact with objects</div>
+            <div><span className="text-zinc-200 font-semibold">[Right Drag]</span> Rotate camera</div>
+            <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Pan camera (re-centers when you walk)</div>
+            <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Zoom</div>
             <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
             <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
             <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>

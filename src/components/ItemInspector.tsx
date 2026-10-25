@@ -58,7 +58,8 @@ import {
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
 import { clampItemPosition } from '../utils/spatial';
-import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
+import { getDuctTargetTent, DEFAULT_RESERVOIR_SETPOINT_F, HOSE_DELIVERY_EFFICIENCY } from '../utils/humidifierDucting';
+import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory, ReservoirConditioning } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 
 interface ItemInspectorProps {
@@ -3775,6 +3776,110 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* 3b. HUMIDIFIER HOSE DUCTING & RESERVOIR WATER */}
+              {eq.type === 'humidifier' && (() => {
+                const isRoomLevel = !selectedParentTentId;
+                const ductTent = getDuctTargetTent(room, eq);
+                const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
+                const ambientF = hostTent ? hostTent.climate.tempF : room.climate.tempF;
+                const waterF = eq.reservoirTempF ?? ambientF;
+                const conditioning = eq.reservoirConditioning || 'none';
+                const setpointF = eq.reservoirSetpointF ?? DEFAULT_RESERVOIR_SETPOINT_F;
+                const fmt = (f: number) => tempUnit === 'F' ? `${f.toFixed(1)}°F` : `${((f - 32) * 5 / 9).toFixed(1)}°C`;
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                      <div className="flex justify-between text-xs text-zinc-300">
+                        <span>Mist Hose / Ducting</span>
+                        <span className={`font-mono font-bold ${ductTent ? 'text-cyan-400' : 'text-zinc-500'}`}>
+                          {ductTent ? `→ ${ductTent.name}` : hostTent ? 'In tent' : 'Room air'}
+                        </span>
+                      </div>
+                      {isRoomLevel ? (
+                        <>
+                          <select
+                            value={ductTent?.id ?? ''}
+                            onChange={e => {
+                              const next: EquipmentItem = { ...eq };
+                              if (e.target.value) next.ductedToTentId = e.target.value;
+                              else delete next.ductedToTentId;
+                              onUpdateItem(next, selectedParentTentId);
+                            }}
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
+                          >
+                            <option value="">No hose — mists into the room</option>
+                            {room.tents.map(t => (
+                              <option key={t.id} value={t.id}>Hose into {t.name}</option>
+                            ))}
+                          </select>
+                          <span className="text-[10px] text-zinc-500 block">
+                            {ductTent
+                              ? `Sits outside the tent; mist is piped into ${ductTent.name} and runs on that tent's controller (~${Math.round((1 - HOSE_DELIVERY_EFFICIENCY) * 100)}% lost to hose condensation).`
+                              : room.tents.length > 0
+                                ? 'Duct this unit into a tent through a hose to free up tent floor space.'
+                                : 'Add a tent to this room to duct mist into it.'}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-zinc-500 block">
+                          Mists directly into {hostTent?.name ?? 'this tent'}. Place the unit in the room to duct it in through a hose instead.
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                      <div className="flex justify-between text-xs text-zinc-300">
+                        <span>Reservoir Water</span>
+                        <span className="font-mono font-bold text-cyan-400">{fmt(waterF)}</span>
+                      </div>
+                      <select
+                        value={conditioning}
+                        onChange={e => {
+                          onUpdateItem({
+                            ...eq,
+                            reservoirConditioning: e.target.value as ReservoirConditioning,
+                            reservoirSetpointF: setpointF
+                          }, selectedParentTentId);
+                        }}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
+                      >
+                        <option value="none">Unconditioned (follows ambient)</option>
+                        <option value="heater">Reservoir heater (warm mist)</option>
+                        <option value="chiller">Reservoir chiller (cold mist)</option>
+                      </select>
+                      {conditioning !== 'none' && (
+                        <>
+                          <div className="flex justify-between text-[10px] text-zinc-400">
+                            <span>Water set-point</span>
+                            <span className="font-mono">{fmt(setpointF)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="45"
+                            max="105"
+                            value={setpointF}
+                            onChange={e => {
+                              onUpdateItem({
+                                ...eq,
+                                reservoirSetpointF: parseInt(e.target.value)
+                              }, selectedParentTentId);
+                            }}
+                            className="w-full accent-cyan-500 cursor-pointer"
+                          />
+                        </>
+                      )}
+                      <span className="text-[10px] text-zinc-500 block">
+                        {conditioning === 'none'
+                          ? `Water drifts toward ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}). Warmer water fogs more and cools the air less.`
+                          : conditioning === 'heater'
+                            ? `Heats the water up to the set-point; above it, water follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}).`
+                            : `Chills the water down to the set-point; below it, water follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}).`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 4. CO2 REGULATOR SOLENOID CONTROLS */}
               {eq.type === 'co2_regulator' && (

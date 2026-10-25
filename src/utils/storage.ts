@@ -1,6 +1,7 @@
 import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, OutdoorLocation, Position3D, Item } from '../types/sim';
 import { simulateOutsideConditions, calculateVPD } from './physics';
 import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry } from './spatial';
+import { migrateHumidifierDucting } from './humidifierDucting';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -73,6 +74,8 @@ export function createDefaultSimulationState(): SimulationState {
       setting: 50,
       controlMode: 'auto',
       targetRh: 62,
+      reservoirConditioning: 'none',
+      reservoirSetpointF: 68,
       dimensions: { length: 0.8, width: 0.8, height: 1.2, unit: 'ft' },
       position: { x: 0.6, y: 3.2, z: 0 }, // Floor back-left corner
       notes: 'Maintains optimal VPD during vegetative growth.'
@@ -258,6 +261,8 @@ export function createDefaultSimulationState(): SimulationState {
       setting: 90,
       controlMode: 'auto',
       targetRh: 92,
+      reservoirConditioning: 'none',
+      reservoirSetpointF: 68,
       dimensions: { length: 1.2, width: 1.0, height: 1.5, unit: 'ft' },
       position: { x: 0.5, y: 2.3, z: 0 },
       notes: 'Ultrasonic fine cold droplet mist piped into top shelf.'
@@ -671,6 +676,9 @@ export function loadSimulation(): SimulationState {
       items: rm.items.map(syncItemGeometry),
       tents: rm.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
     }));
+
+    // Backfill humidifier reservoir fields and drop dangling hose links (tent deleted / unit moved into a tent)
+    state.rooms = state.rooms.map(migrateHumidifierDucting);
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     // Ensure backwards compatibility for harvest records

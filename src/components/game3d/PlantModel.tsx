@@ -1,13 +1,16 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { PlantItem } from '../../types/sim';
 import { getPlantContainerDimensions } from '../../utils/spatial';
 import { seededRandom } from './coords';
+import { buildPlantSkeleton, getPlantGrowth, layoutPlant, LayoutSite } from './plantLSystem';
+import { getLeafCard, LEAF_SHAPE } from './leafCards';
 
 /**
- * Procedural low-poly plant at true scale (feet): the pot from containerDimensions,
- * foliage sized to heightInches × canopyWidthInches, with species & stage detail.
+ * Procedural plant at true scale (feet): the pot from containerDimensions, then (from the
+ * seedling stage on) an L-system skeleton from plantLSystem.ts unfolded by stage progress and
+ * fitted to heightInches × canopyWidthInches, drawn as instanced stems, leaf cards and fruit.
  * The group origin is the pot's base center.
  */
 
@@ -128,79 +131,204 @@ function Sprout({ plant, heightFt }: FoliageProps) {
   );
 }
 
-/** Cannabis: tapering conical canopy with fan-leaf tiers, buds/colas once flowering. */
-function CannabisFoliage({ plant, heightFt, canopyRadiusFt }: FoliageProps) {
-  const leaf = healthTint(LEAF_GREEN.Cannabis, plant.health);
-  const tiers = Math.max(2, Math.min(6, Math.round(heightFt * 1.6)));
-  const flowering = plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready';
-  const budColor = plant.stage === 'flowering' ? '#c8e6b0' : '#e8d9a8';
-  const rand = useMemo(() => seededRandom(plant.id), [plant.id]);
-  const budOffsets = useMemo(() => Array.from({ length: 6 }, () => [rand() * Math.PI * 2, 0.55 + rand() * 0.35]), [rand]);
+// Real leaf size caps (ft) so a big plant's skeleton doesn't blow single leaves up
+const MAX_LEAF_FT: Record<string, number> = { Cannabis: 0.75, Tomato: 0.6, 'Chili Pepper': 0.3, Basil: 0.25, Hops: 0.4 };
 
-  return (
-    <group>
-      <Stem heightFt={heightFt} radius={Math.max(0.02, canopyRadiusFt * 0.05)} />
-      {Array.from({ length: tiers }, (_, i) => {
-        const t = i / tiers;
-        const tierH = heightFt / tiers;
-        const radius = canopyRadiusFt * (1 - t * 0.75);
-        return (
-          <mesh key={i} position={[0, heightFt * 0.18 + t * heightFt * 0.78 + tierH * 0.4, 0]}>
-            <coneGeometry args={[radius, tierH * 1.3, 9]} />
-            <meshStandardMaterial color={leaf} roughness={0.8} flatShading />
-          </mesh>
-        );
-      })}
-      {flowering && (
-        <>
-          <mesh position={[0, heightFt * 0.98, 0]} scale={[canopyRadiusFt * 0.18, heightFt * 0.12, canopyRadiusFt * 0.18]}>
-            <sphereGeometry args={[1, 10, 8]} />
-            <meshStandardMaterial color={budColor} roughness={0.5} />
-          </mesh>
-          {budOffsets.map(([angle, heightT], i) => (
-            <mesh
-              key={i}
-              position={[Math.cos(angle) * canopyRadiusFt * 0.55 * (1 - heightT * 0.6), heightFt * heightT, Math.sin(angle) * canopyRadiusFt * 0.55 * (1 - heightT * 0.6)]}
-              scale={[canopyRadiusFt * 0.1, heightFt * 0.06, canopyRadiusFt * 0.1]}
-            >
-              <sphereGeometry args={[1, 8, 6]} />
-              <meshStandardMaterial color={budColor} roughness={0.5} />
-            </mesh>
-          ))}
-        </>
-      )}
-    </group>
-  );
+const STEM_GEO = new THREE.CylinderGeometry(0.75, 1, 1, 6, 1).translate(0, 0.5, 0);
+const ROUND_GEO = new THREE.SphereGeometry(1, 10, 8);
+// Pod hangs from its base at the origin, tip pointing down
+const POD_GEO = new THREE.ConeGeometry(1, 1, 8).rotateX(Math.PI).translate(0, -0.5, 0);
+const PLAIN_MAT = new THREE.MeshStandardMaterial({ roughness: 0.8 });
+const FRUIT_MAT = new THREE.MeshStandardMaterial({ roughness: 0.4 });
+
+const STEM_GREEN = new THREE.Color('#5a8a2a');
+const STEM_WOOD = new THREE.Color('#7a5a36');
+const YOUNG_LEAF = new THREE.Color('#9bd46a');
+const SENESCENT = new THREE.Color('#d4b83a');
+
+interface FruitInstance {
+  pos: THREE.Vector3;
+  scale: THREE.Vector3;
+  color: THREE.ColorRepresentation;
+  pod?: boolean;
 }
 
-/** Rounded bushes (Tomato, Chili Pepper, Basil) built from foliage clumps, with fruit or flower spikes. */
-function BushFoliage({ plant, heightFt, canopyRadiusFt }: FoliageProps) {
-  const leaf = healthTint(LEAF_GREEN[plant.species] || '#3f8a2e', plant.health);
-  const rand = useMemo(() => seededRandom(plant.id), [plant.id]);
-  const clumps = useMemo(() => Array.from({ length: 9 }, () => ({
-    angle: rand() * Math.PI * 2,
-    radial: 0.35 + rand() * 0.55,
-    heightT: 0.25 + rand() * 0.75,
-    size: 0.35 + rand() * 0.25
-  })), [rand]);
-  const fruits = useMemo(() => Array.from({ length: 10 }, () => ({
-    angle: rand() * Math.PI * 2,
-    radial: 0.6 + rand() * 0.45,
-    heightT: 0.2 + rand() * 0.7
-  })), [rand]);
-
+/** Stage-dependent flowers, buds and fruit at the skeleton's sites (feet). */
+function buildFruits(plant: PlantItem, sites: LayoutSite[]): FruitInstance[] {
   const stage = plant.stage;
-  const showFlowers = stage === 'flowering';
-  const showFruit = stage === 'ripening' || stage === 'ready';
-  const isTomato = plant.species === 'Tomato';
-  const isPepper = plant.species === 'Chili Pepper';
-  const isBasil = plant.species === 'Basil';
-  const fruitColor = isTomato ? '#dc2626' : isPepper ? '#ef4444' : '#f5f5f4';
+  if (stage !== 'flowering' && stage !== 'ripening' && stage !== 'ready') return [];
+  const p = Math.max(0, Math.min(1, (plant.stageProgress || 0) / 100));
+  const flowering = stage === 'flowering';
+  const ripe = stage === 'ready' ? 1 : stage === 'ripening' ? p : 0;
+  // How filled-out buds/cones/spikes are from first flower to ready
+  const fill = flowering ? 0.15 + 0.6 * p : stage === 'ripening' ? 0.75 + 0.25 * p : 1;
+  const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  const out: FruitInstance[] = [];
+
+  for (const s of sites) {
+    const around = (r: number, i: number, n: number) => {
+      const a = s.rand * Math.PI * 2 + (i / n) * Math.PI * 2;
+      return v(Math.cos(a) * r, 0, Math.sin(a) * r);
+    };
+    switch (plant.species) {
+      case 'Cannabis': {
+        if (!s.tip && s.heightT < 0.4) break;
+        const k = (s.tip ? 1 : 0.5) * (s.main && s.tip ? 1.7 : 1) * fill;
+        const len = 0.06 + 0.24 * k;
+        const color = new THREE.Color('#b8dc9c').lerp(new THREE.Color('#d9c08a'), ripe);
+        out.push({ pos: s.pos.clone().add(v(0, len * 0.3, 0)), scale: v(0.025 + 0.05 * k, len / 2, 0.025 + 0.05 * k), color });
+        break;
+      }
+      case 'Tomato': {
+        if (s.tip) break;
+        for (let i = 0; i < 3; i++) {
+          const off = around(0.05, i, 3).add(v(0, -0.07 - i * 0.03, 0));
+          if (flowering) {
+            out.push({ pos: s.pos.clone().add(off), scale: v(0.018, 0.014, 0.018), color: '#facc15' });
+          } else {
+            const r = 0.05 + 0.025 * ((s.rand * 7 + i) % 1);
+            const t = Math.max(0, Math.min(1, ripe * 1.4 - i * 0.2 + s.rand * 0.15));
+            out.push({ pos: s.pos.clone().add(off), scale: v(r, r * 0.9, r), color: new THREE.Color('#6aa84f').lerp(new THREE.Color('#dc2626'), t) });
+          }
+        }
+        break;
+      }
+      case 'Chili Pepper': {
+        if (s.tip) break;
+        if (flowering) {
+          out.push({ pos: s.pos.clone().add(v(0, -0.02, 0)), scale: v(0.016, 0.012, 0.016), color: '#f5f5f4' });
+        } else {
+          const len = 0.14 + 0.08 * s.rand;
+          const t = Math.max(0, Math.min(1, ripe * 1.3 - s.rand * 0.3));
+          out.push({ pos: s.pos.clone().add(v(0, -0.01, 0)), scale: v(0.03, len, 0.03), color: new THREE.Color('#3f8a2e').lerp(new THREE.Color('#dc2626'), t), pod: true });
+        }
+        break;
+      }
+      case 'Basil': {
+        if (!s.tip) break;
+        const len = 0.04 + 0.08 * fill;
+        out.push({ pos: s.pos.clone().add(v(0, len / 2, 0)), scale: v(0.018, len / 2, 0.018), color: '#ede9fe' });
+        break;
+      }
+      case 'Hops': {
+        if (s.tip && s.main) break;
+        const r = 0.02 + 0.018 * fill;
+        const color = new THREE.Color('#bef264').lerp(new THREE.Color('#e3e8a6'), ripe);
+        for (let i = 0; i < 2; i++) {
+          out.push({ pos: s.pos.clone().add(around(0.03, i, 2)).add(v(0, -r * 1.6, 0)), scale: v(r, r * 1.7, r), color });
+        }
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+const tmpMatrix = new THREE.Matrix4();
+const tmpQuat = new THREE.Quaternion();
+const tmpVec = new THREE.Vector3();
+const tmpScale = new THREE.Vector3();
+const tmpColor = new THREE.Color();
+const xAxis = new THREE.Vector3();
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+function finishInstances(mesh: THREE.InstancedMesh | null, count: number) {
+  if (!mesh) return;
+  mesh.count = count;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  // Culling and raycasts use these, so they must follow the instances
+  mesh.computeBoundingBox();
+  mesh.computeBoundingSphere();
+}
+
+/** L-system plant: skeleton derived once per plant, unfolded by growth, fitted to its real size. */
+function LSystemFoliage({ plant, heightFt, canopyRadiusFt }: FoliageProps) {
+  const skeleton = useMemo(
+    () => buildPlantSkeleton(plant.species, plant.id, plant.propagationType),
+    [plant.species, plant.id, plant.propagationType]
+  );
+  const growth = getPlantGrowth(plant);
+  // Leaves hang lower when the pot dries out or health drops
+  const wilt = Math.max(0, (25 - plant.soilMoisture) / 25) * 35 + Math.max(0, (50 - plant.health) / 50) * 25;
+  const layout = useMemo(
+    () => layoutPlant(skeleton, { growth, heightFt, canopyRadiusFt, maxLeafFt: MAX_LEAF_FT[plant.species] ?? 0.5, droopDeg: wilt }),
+    [skeleton, growth, heightFt, canopyRadiusFt, plant.species, wilt]
+  );
+  const { stage, stageProgress, health, species } = plant;
+  const fruits = useMemo(() => buildFruits(plant, layout.sites), [plant, layout]);
+
+  const leafCard = getLeafCard(LEAF_SHAPE[species] || 'ovate');
+  const cotyledonCard = getLeafCard('ovate');
+  const segmentCapacity = Math.max(1, skeleton.segments.length);
+  const leafCapacity = Math.max(1, skeleton.leaves.length);
+  const fruitCapacity = Math.max(1, skeleton.sites.length * 3);
+
+  const stemRef = useRef<THREE.InstancedMesh>(null);
+  const leafRef = useRef<THREE.InstancedMesh>(null);
+  const cotyledonRef = useRef<THREE.InstancedMesh>(null);
+  const roundRef = useRef<THREE.InstancedMesh>(null);
+  const podRef = useRef<THREE.InstancedMesh>(null);
+
+  useLayoutEffect(() => {
+    const stemMesh = stemRef.current;
+    if (stemMesh) {
+      layout.stems.forEach((s, i) => {
+        const d = tmpVec.subVectors(s.end, s.start);
+        const len = d.length();
+        tmpQuat.setFromUnitVectors(Y_AXIS, len > 1e-6 ? d.divideScalar(len) : Y_AXIS);
+        tmpMatrix.compose(s.start, tmpQuat, tmpScale.set(s.radius, Math.max(1e-4, len), s.radius));
+        stemMesh.setMatrixAt(i, tmpMatrix);
+        stemMesh.setColorAt(i, tmpColor.copy(STEM_GREEN).lerp(STEM_WOOD, s.woody * 0.8));
+      });
+      finishInstances(stemMesh, layout.stems.length);
+    }
+
+    // Older leaves yellow as the plant ripens
+    const senesce = stage === 'ripening' ? (0.6 * stageProgress) / 100 : stage === 'ready' ? 0.65 : 0;
+    const base = new THREE.Color(healthTint(LEAF_GREEN[species] || '#3f8a2e', health));
+    let leafCount = 0;
+    let cotyledonCount = 0;
+    for (const l of layout.leaves) {
+      const mesh = l.cotyledon ? cotyledonRef.current : leafRef.current;
+      if (!mesh) continue;
+      const i = l.cotyledon ? cotyledonCount++ : leafCount++;
+      if (i >= mesh.instanceMatrix.count) continue;
+      xAxis.crossVectors(l.normal, l.dir);
+      tmpMatrix.makeBasis(xAxis, l.normal, l.dir).scale(tmpScale.setScalar(Math.max(1e-4, l.lengthFt))).setPosition(l.pos);
+      mesh.setMatrixAt(i, tmpMatrix);
+      tmpColor.copy(base).offsetHSL((l.rand - 0.5) * 0.03, 0, (l.rand - 0.5) * 0.08);
+      tmpColor.lerp(YOUNG_LEAF, (1 - l.unfold) * 0.5);
+      if (senesce > 0) tmpColor.lerp(SENESCENT, senesce * (1 - l.age));
+      mesh.setColorAt(i, tmpColor);
+    }
+    finishInstances(leafRef.current, Math.min(leafCount, leafCapacity));
+    finishInstances(cotyledonRef.current, Math.min(cotyledonCount, 2));
+
+    let roundCount = 0;
+    let podCount = 0;
+    for (const f of fruits) {
+      const mesh = f.pod ? podRef.current : roundRef.current;
+      if (!mesh) continue;
+      const i = f.pod ? podCount++ : roundCount++;
+      if (i >= fruitCapacity) continue;
+      tmpMatrix.compose(f.pos, tmpQuat.identity(), f.scale);
+      mesh.setMatrixAt(i, tmpMatrix);
+      mesh.setColorAt(i, tmpColor.set(f.color));
+    }
+    finishInstances(roundRef.current, Math.min(roundCount, fruitCapacity));
+    finishInstances(podRef.current, Math.min(podCount, fruitCapacity));
+  }, [layout, fruits, leafCapacity, fruitCapacity, health, stage, stageProgress, species]);
 
   return (
     <group>
-      <Stem heightFt={heightFt * 0.9} radius={Math.max(0.02, canopyRadiusFt * 0.06)} />
-      {isTomato && (
+      {/* Keys remount a mesh when its capacity changes (a new skeleton) */}
+      <instancedMesh key={`stem-${segmentCapacity}`} ref={stemRef} args={[STEM_GEO, PLAIN_MAT, segmentCapacity]} />
+      <instancedMesh key={`leaf-${species}-${leafCapacity}`} ref={leafRef} args={[leafCard.geometry, leafCard.material, leafCapacity]} />
+      <instancedMesh ref={cotyledonRef} args={[cotyledonCard.geometry, cotyledonCard.material, 2]} />
+      <instancedMesh key={`round-${fruitCapacity}`} ref={roundRef} args={[ROUND_GEO, FRUIT_MAT, fruitCapacity]} />
+      <instancedMesh key={`pod-${fruitCapacity}`} ref={podRef} args={[POD_GEO, FRUIT_MAT, fruitCapacity]} />
+      {species === 'Tomato' && (
         // Wire tomato cage
         [0.33, 0.66, 0.95].map((t, i) => (
           <mesh key={i} position={[0, heightFt * t, 0]} rotation={[Math.PI / 2, 0, 0]}>
@@ -209,83 +337,13 @@ function BushFoliage({ plant, heightFt, canopyRadiusFt }: FoliageProps) {
           </mesh>
         ))
       )}
-      {clumps.map((c, i) => {
-        const radial = canopyRadiusFt * c.radial * (isBasil ? 0.75 : 0.65);
-        const clumpR = Math.max(0.05, canopyRadiusFt * c.size * (isBasil ? 0.7 : 0.6));
-        return (
-          <mesh
-            key={i}
-            position={[Math.cos(c.angle) * radial, Math.max(clumpR * 0.6, heightFt * c.heightT - clumpR * 0.3), Math.sin(c.angle) * radial]}
-            scale={[clumpR, Math.min(clumpR, heightFt * 0.35), clumpR]}
-          >
-            <icosahedronGeometry args={[1, 1]} />
-            <meshStandardMaterial color={leaf} roughness={0.85} flatShading />
-          </mesh>
-        );
-      })}
-      {(showFlowers || showFruit) && fruits.map((f, i) => {
-        const pos: [number, number, number] = [
-          Math.cos(f.angle) * canopyRadiusFt * f.radial * 0.7,
-          heightFt * f.heightT,
-          Math.sin(f.angle) * canopyRadiusFt * f.radial * 0.7
-        ];
-        if (showFlowers || isBasil) {
-          return (
-            <mesh key={i} position={pos} scale={isBasil ? [0.025, 0.08, 0.025] : [0.03, 0.03, 0.03]}>
-              <sphereGeometry args={[1, 6, 5]} />
-              <meshStandardMaterial color={isBasil ? '#f5f5f4' : '#facc15'} />
-            </mesh>
-          );
-        }
-        return isPepper ? (
-          <mesh key={i} position={pos} rotation={[Math.PI, 0, 0]}>
-            <coneGeometry args={[0.035, 0.16, 6]} />
-            <meshStandardMaterial color={fruitColor} roughness={0.35} />
-          </mesh>
-        ) : (
-          <mesh key={i} position={pos}>
-            <sphereGeometry args={[0.055, 10, 8]} />
-            <meshStandardMaterial color={fruitColor} roughness={0.3} />
-          </mesh>
-        );
-      })}
-    </group>
-  );
-}
-
-/** Hops: twining bine climbing a trellis string to full height, cones once flowering. */
-function HopsFoliage({ plant, heightFt, canopyRadiusFt }: FoliageProps) {
-  const leaf = healthTint(LEAF_GREEN.Hops, plant.health);
-  const nodes = Math.max(3, Math.min(28, Math.round(heightFt * 1.8)));
-  const hasCones = plant.stage === 'flowering' || plant.stage === 'ripening' || plant.stage === 'ready';
-  const coneColor = plant.stage === 'flowering' ? '#bef264' : '#d9f99d';
-
-  return (
-    <group>
-      {/* Trellis twine */}
-      <mesh position={[0, heightFt * 0.55, 0]}>
-        <cylinderGeometry args={[0.006, 0.006, heightFt * 1.1, 4]} />
-        <meshStandardMaterial color="#d6d3d1" />
-      </mesh>
-      {Array.from({ length: nodes }, (_, i) => {
-        const t = (i + 1) / nodes;
-        const angle = i * 1.9;
-        const spread = canopyRadiusFt * (0.35 + 0.65 * Math.sin(Math.PI * Math.min(1, t * 1.15)));
-        return (
-          <group key={i} position={[0, heightFt * t, 0]} rotation={[0, angle, 0]}>
-            <mesh position={[spread * 0.5, 0, 0]} scale={[spread * 0.5, 0.05, 0.12]}>
-              <sphereGeometry args={[1, 8, 6]} />
-              <meshStandardMaterial color={leaf} roughness={0.85} flatShading />
-            </mesh>
-            {hasCones && i % 2 === 0 && (
-              <mesh position={[spread * 0.75, -0.1, 0]} rotation={[Math.PI, 0, 0]}>
-                <coneGeometry args={[0.05, 0.14, 7]} />
-                <meshStandardMaterial color={coneColor} roughness={0.6} />
-              </mesh>
-            )}
-          </group>
-        );
-      })}
+      {species === 'Hops' && (
+        // Trellis twine
+        <mesh position={[0, heightFt * 0.55, 0]}>
+          <cylinderGeometry args={[0.006, 0.006, heightFt * 1.1, 4]} />
+          <meshStandardMaterial color="#d6d3d1" />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -313,9 +371,7 @@ export function PlantModel({ plant }: { plant: PlantItem }) {
       <Pot plant={plant} />
       <group ref={swayRef} position={[0, soilY, 0]}>
         {isSprout ? <Sprout {...props} />
-          : plant.species === 'Hops' ? <HopsFoliage {...props} />
-          : plant.species === 'Cannabis' ? <CannabisFoliage {...props} />
-          : <BushFoliage {...props} />}
+          : <LSystemFoliage {...props} />}
       </group>
     </group>
   );
