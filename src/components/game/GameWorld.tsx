@@ -11,22 +11,13 @@ import {
   JournalEntry,
   JournalCategory
 } from '../../types/sim';
-import { drawPlantToScale, drawMushroomToScale } from './PlantSprites';
-import { drawSpriteToScale, drawSpriteFitted, drawItemFootprint, drawItemLabel, getItemScreenBox, isPointInItemBox, isOverheadItem, feetToPx, feetToVerticalPx } from './scaleRender';
+import { GameScene, HoverTarget, FloatingText, Doorway, PlayerState } from '../game3d/GameScene';
+import { itemWorldPosition, tentWorldOrigin, Vec3 } from '../game3d/coords';
 import { soundEffects } from './AudioEffects';
 import { PlantVisualizerModal } from './PlantVisualizerModal';
 import { TentInspectorModal } from './TentInspectorModal';
 import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
-import { 
-  getSafeTentCanvasPosition, 
-  getSafeTentItemCanvasPosition,
-  CANVAS_GRID_SIZE,
-  CANVAS_FLOOR_ORIGIN_X,
-  CANVAS_FLOOR_ORIGIN_Y,
-  CANVAS_MAX_FLOOR_X,
-  CANVAS_MAX_FLOOR_Y
-} from '../../utils/spatial';
 import { broadcastSimulationState } from '../../utils/syncChannel';
 import { 
   Volume2, 
@@ -52,6 +43,20 @@ import {
   Home,
   Sliders
 } from 'lucide-react';
+
+// Walking speed of the cultivator: ~6 ft/s at 60 ticks per second
+const WALK_SPEED_FT_PER_TICK = 0.1;
+// How far (ft, beyond a crop's footprint edge) the cultivator can reach with E / Space
+const REACH_FT = 3;
+// Doorways are 3ft wide openings centered on the left/right walls
+const DOOR_HALF_WIDTH_FT = 1.5;
+
+/** Where the cultivator appears when entering a room: front-center of the floor. */
+function getSpawnPoint(room: Room) {
+  const x = room.dimensions.length / 2;
+  const y = room.dimensions.width * 0.75;
+  return { x, y, targetX: x, targetY: y };
+}
 
 interface GameWorldProps {
   state: SimulationState;
@@ -91,7 +96,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   onLogJournalEntry
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const cameraYawRef = useRef(0);
 
   // Sound state
   const [isMuted, setIsMuted] = useState(() => soundEffects.isMuted());
@@ -109,13 +116,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     parentTentId?: string;
   } | null>(null);
 
-  // Player cultivator avatar state (in room coordinates)
-  const playerRef = useRef({
-    x: 240,
-    y: 280,
-    targetX: 240,
-    targetY: 280,
-    facing: 'down' as 'down' | 'up' | 'left' | 'right',
+  // Player cultivator avatar state (room-floor feet)
+  const playerRef = useRef<PlayerState>({
+    ...getSpawnPoint((state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room),
+    facing: 0,
     isMoving: false,
     walkFrame: 0,
     stepTimer: 0
@@ -269,25 +273,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     setInGameInspectorTarget(null);
   };
 
-  // Hovered interactable object in world
-  const [hoveredObject, setHoveredObject] = useState<{
-    type: 'tent' | 'plant' | 'mushroom' | 'door' | 'equipment' | 'occupant';
-    id: string;
-    parentTentId?: string;
-    title: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  // Hovered interactable object in the 3D world (the tooltip follows the mouse)
+  const [hoverTarget, setHoverTarget] = useState<HoverTarget | null>(null);
 
-  // Floating notifications / action popups (e.g. "+30% Hydrated", "Harvested 85g!")
-  const [floatingTexts, setFloatingTexts] = useState<Array<{
-    id: string;
-    text: string;
-    x: number;
-    y: number;
-    color: string;
-    createdAt: number;
-  }>>([]);
+  // Floating notifications / action popups (e.g. "+30% Hydrated", "Harvested 85g!"), anchored in room feet
+  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
 
   const addFloatingText = (text: string, x: number, y: number, color = '#34d399') => {
     const id = `float-${Date.now()}-${Math.random()}`;
@@ -298,26 +288,13 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   const currentRoom = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
   const allRooms = state.rooms && state.rooms.length > 0 ? state.rooms : [state.room];
 
-  // Live refs to guarantee immediate 60FPS canvas repaints without closure lag
-  const currentRoomRef = useRef(currentRoom);
-  currentRoomRef.current = currentRoom;
-
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
-  const hoveredObjectRef = useRef(hoveredObject);
-  hoveredObjectRef.current = hoveredObject;
-
-  const floatingTextsRef = useRef(floatingTexts);
-  floatingTextsRef.current = floatingTexts;
-
   // Immediate notification when a new item is added to any tent or room
   const prevItemsTotalRef = useRef<number>(-1);
   useEffect(() => {
     const totalItems = currentRoom.items.length + currentRoom.tents.reduce((sum, t) => sum + t.items.length, 0);
     if (prevItemsTotalRef.current !== -1 && totalItems > prevItemsTotalRef.current) {
       soundEffects.playClick();
-      addFloatingText('✨ New Item Added to Facility!', playerRef.current.x, playerRef.current.y - 45, '#34d399');
+      addFloatingText('✨ New Item Added to Facility!', playerRef.current.x, playerRef.current.y, '#34d399');
     }
     prevItemsTotalRef.current = totalItems;
   }, [currentRoom]);
@@ -346,11 +323,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       broadcastSimulationState(nextState);
       return nextState;
     });
-    // Reset player position near entrance door
-    playerRef.current.x = 240;
-    playerRef.current.y = 280;
-    playerRef.current.targetX = 240;
-    playerRef.current.targetY = 280;
+    // Enter the new room at its front-center
+    const targetRoom = allRooms.find(r => r.id === roomId);
+    if (targetRoom) Object.assign(playerRef.current, getSpawnPoint(targetRoom));
   };
 
   // Keyboard navigation (WASD / Arrows + Hotkeys 1-6 + E / Space)
@@ -413,7 +388,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
-    // Continuous movement loop
+    // Continuous movement loop (room feet). WASD moves relative to the camera's view direction.
     const moveInterval = setInterval(() => {
       const p = playerRef.current;
 
@@ -422,69 +397,75 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         return;
       }
 
-      const speed = 4.2;
+      let forward = 0;
+      let strafe = 0;
+      if (keysPressed['w'] || keysPressed['arrowup']) forward += 1;
+      if (keysPressed['s'] || keysPressed['arrowdown']) forward -= 1;
+      if (keysPressed['d'] || keysPressed['arrowright']) strafe += 1;
+      if (keysPressed['a'] || keysPressed['arrowleft']) strafe -= 1;
+      const usingKeys = forward !== 0 || strafe !== 0;
+
       let dx = 0;
       let dy = 0;
-
-      if (keysPressed['w'] || keysPressed['arrowup']) dy -= speed;
-      if (keysPressed['s'] || keysPressed['arrowdown']) dy += speed;
-      if (keysPressed['a'] || keysPressed['arrowleft']) dx -= speed;
-      if (keysPressed['d'] || keysPressed['arrowright']) dx += speed;
-
-      if (dx !== 0 || dy !== 0) {
-        // Diagonal normalization
-        if (dx !== 0 && dy !== 0) {
-          dx *= 0.7071;
-          dy *= 0.7071;
+      if (usingKeys) {
+        // Camera sits at (sin yaw, cos yaw) from its target: forward = away from it, right = (cos, -sin)
+        const yaw = cameraYawRef.current;
+        dx = -Math.sin(yaw) * forward + Math.cos(yaw) * strafe;
+        dy = -Math.cos(yaw) * forward - Math.sin(yaw) * strafe;
+        const len = Math.hypot(dx, dy) || 1;
+        dx = (dx / len) * WALK_SPEED_FT_PER_TICK;
+        dy = (dy / len) * WALK_SPEED_FT_PER_TICK;
+      } else {
+        // Walk toward the clicked floor target
+        const dist = Math.hypot(p.targetX - p.x, p.targetY - p.y);
+        if (dist > 0.1) {
+          const step = Math.min(WALK_SPEED_FT_PER_TICK, dist);
+          dx = ((p.targetX - p.x) / dist) * step;
+          dy = ((p.targetY - p.y) / dist) * step;
         }
+      }
 
-        // Room boundaries (inside walls)
-        const minX = 75;
-        const maxX = 925;
-        const minY = 65;
-        const maxY = 595;
+      if (dx === 0 && dy === 0) {
+        p.isMoving = false;
+        return;
+      }
 
-        p.x = Math.max(minX, Math.min(maxX, p.x + dx));
-        p.y = Math.max(minY, Math.min(maxY, p.y + dy));
+      const margin = 0.6;
+      const clampX = (x: number) => Math.max(margin, Math.min(currentRoom.dimensions.length - margin, x));
+      const clampY = (y: number) => Math.max(margin, Math.min(currentRoom.dimensions.width - margin, y));
+      // Tents are solid: try the full step, then slide along whichever axis is free
+      const candidates = [[p.x + dx, p.y + dy], [p.x + dx, p.y], [p.x, p.y + dy]];
+      // (If already standing inside a tent, e.g. spawned there, let the cultivator walk out.)
+      const startsInside = isInsideTent(p.x, p.y);
+      const next = candidates.map(([x, y]) => [clampX(x), clampY(y)]).find(([x, y]) => startsInside || !isInsideTent(x, y));
+      if (!next || (next[0] === p.x && next[1] === p.y)) {
+        // Fully blocked: stop walking toward an unreachable click target
         p.targetX = p.x;
         p.targetY = p.y;
-        p.isMoving = true;
+        p.isMoving = false;
+        return;
+      }
+      dx = next[0] - p.x;
+      dy = next[1] - p.y;
+      p.x = next[0];
+      p.y = next[1];
+      if (usingKeys) {
+        p.targetX = p.x;
+        p.targetY = p.y;
+      }
+      p.facing = Math.atan2(dx, dy);
+      p.isMoving = true;
+      p.walkFrame += 0.2;
+      p.stepTimer += 1;
+      if (p.stepTimer > 14) {
+        p.stepTimer = 0;
+        soundEffects.playStep();
+      }
 
-        if (Math.abs(dx) > Math.abs(dy)) {
-          p.facing = dx > 0 ? 'right' : 'left';
-        } else {
-          p.facing = dy > 0 ? 'down' : 'up';
-        }
-
-        p.walkFrame += 0.2;
-        p.stepTimer += 1;
-        if (p.stepTimer > 14) {
-          p.stepTimer = 0;
-          soundEffects.playStep();
-        }
-      } else {
-        // Handle mouse click target interpolation
-        const distSq = (p.targetX - p.x) ** 2 + (p.targetY - p.y) ** 2;
-        if (distSq > 16) {
-          const angle = Math.atan2(p.targetY - p.y, p.targetX - p.x);
-          p.x += Math.cos(angle) * speed;
-          p.y += Math.sin(angle) * speed;
-          p.isMoving = true;
-          p.walkFrame += 0.2;
-          p.stepTimer += 1;
-          if (p.stepTimer > 14) {
-            p.stepTimer = 0;
-            soundEffects.playStep();
-          }
-
-          if (Math.abs(Math.cos(angle)) > Math.abs(Math.sin(angle))) {
-            p.facing = Math.cos(angle) > 0 ? 'right' : 'left';
-          } else {
-            p.facing = Math.sin(angle) > 0 ? 'down' : 'up';
-          }
-        } else {
-          p.isMoving = false;
-        }
+      // Walking into a doorway travels to the room beyond it
+      const door = getDoorwayAt(p.x, p.y);
+      if (door && door.roomId !== 'ADD_ROOM') {
+        handleTravelToRoom(door.roomId);
       }
     }, 1000 / 60);
 
@@ -495,24 +476,27 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     };
   }, [currentRoom, inGameInspectorTarget, inspectedCrop, isInventoryOpen]);
 
-  // Proximity action: find nearest interactable crop or tent
+  // Proximity action: find nearest interactable crop (within reach of its footprint) or tent
   const triggerProximityAction = () => {
     const p = playerRef.current;
+    const candidates: Array<{ item: Item; tent?: Tent }> = [
+      ...currentRoom.tents.flatMap(tent => tent.items.map(item => ({ item, tent }))),
+      ...currentRoom.items.map(item => ({ item, tent: undefined }))
+    ];
 
-    // Nearest crop (inside tents or on the room floor) by distance to its footprint edge
-    let closestCrop: { item: PlantItem | MushroomItem; tentId?: string; dist: number; wx: number; wy: number } | null = null;
-    for (const placed of getPlacedRoomItems(currentRoom)) {
-      if (placed.item.category !== 'plant' && placed.item.category !== 'mushroom') continue;
-      const reachPx = 90 + feetToPx(Math.max(placed.item.dimensions.length, placed.item.dimensions.width)) / 2;
-      const dist = Math.hypot(p.x - placed.x, p.y - placed.y);
-      if (dist < reachPx && (!closestCrop || dist < closestCrop.dist)) {
-        closestCrop = { item: placed.item as PlantItem | MushroomItem, tentId: placed.tentId, dist, wx: placed.x, wy: placed.y };
+    let closest: { item: PlantItem | MushroomItem; tentId?: string; dist: number; x: number; y: number } | null = null;
+    for (const { item, tent } of candidates) {
+      if (item.category !== 'plant' && item.category !== 'mushroom') continue;
+      const [x, , y] = itemWorldPosition(item, currentRoom, tent);
+      const dist = Math.hypot(p.x - x, p.y - y);
+      const reach = REACH_FT + Math.max(item.dimensions.length, item.dimensions.width) / 2;
+      if (dist < reach && (!closest || dist < closest.dist)) {
+        closest = { item, tentId: tent?.id, dist, x, y };
       }
     }
 
-    if (closestCrop) {
-      const target: { item: PlantItem | MushroomItem; tentId?: string; wx: number; wy: number } = closestCrop;
-      applyToolToCrop(target.item, target.tentId, target.wx, target.wy);
+    if (closest) {
+      applyToolToCrop(closest.item, closest.tentId, closest.x, closest.y);
       return;
     }
 
@@ -523,13 +507,15 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   const inspectNearbyTent = () => {
     const p = playerRef.current;
     let closestTent: Tent | null = null;
-    let minDist = 150;
+    let minDist = Infinity;
 
-    for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
-      const tent = currentRoom.tents[tIdx];
-      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
-      const dist = Math.hypot(p.x - tentPos.x, p.y - tentPos.y);
-      if (dist < minDist) {
+    for (const tent of currentRoom.tents) {
+      const [ox, , oz] = tentWorldOrigin(tent, currentRoom);
+      const cx = ox + tent.dimensions.length / 2;
+      const cy = oz + tent.dimensions.width / 2;
+      const dist = Math.hypot(p.x - cx, p.y - cy);
+      const reach = REACH_FT + Math.max(tent.dimensions.length, tent.dimensions.width) / 2;
+      if (dist < reach && dist < minDist) {
         minDist = dist;
         closestTent = tent;
       }
@@ -542,7 +528,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         id: closestTent.id,
         parentTentId: null
       });
-      addFloatingText('Opening Tent & Items Inspector ⛺', playerRef.current.x, playerRef.current.y - 40, '#6ee7b7');
+      addFloatingText('Opening Tent & Items Inspector ⛺', playerRef.current.x, playerRef.current.y, '#6ee7b7');
     }
   };
 
@@ -553,8 +539,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     popupX?: number, 
     popupY?: number
   ) => {
-    const px = popupX || playerRef.current.x;
-    const py = popupY || playerRef.current.y - 30;
+    const px = popupX ?? playerRef.current.x;
+    const py = popupY ?? playerRef.current.y;
 
     if (activeTool === 'inspect') {
       soundEffects.playClick();
@@ -715,7 +701,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         return next;
       });
 
-      addFloatingText(`✨ Harvested ${yieldGrams}g (${quality})!`, px, py - 10, '#fbbf24');
+      addFloatingText(`✨ Harvested ${yieldGrams}g (${quality})!`, px, py, '#fbbf24');
     } else if (activeTool === 'build') {
       onOpenAddItem(tentId);
     }
@@ -805,290 +791,119 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   };
 
   // Canvas Mouse Click handler (Walk to or interact with item)
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const clickX = (e.clientX - rect.left) * scaleX;
-    const clickY = (e.clientY - rect.top) * scaleY;
-
-    // Check if clicked on a Doorway
-    const doorways = getRoomDoorways();
-    for (const d of doorways) {
-      if (
-        clickX >= d.x && clickX <= d.x + d.width &&
-        clickY >= d.y && clickY <= d.y + d.height
-      ) {
-        if (d.roomId === 'ADD_ROOM') {
-          onOpenAddRoom();
-        } else {
-          handleTravelToRoom(d.roomId);
-        }
-        return;
-      }
-    }
-
-    // Check if clicked on an Item (Crop, Equipment, or Occupant)
-    const clickedItem = findItemAtPosition(clickX, clickY);
-    if (clickedItem) {
-      if (clickedItem.type === 'crop') {
-        applyToolToCrop(clickedItem.item as PlantItem | MushroomItem, clickedItem.tentId, clickX, clickY);
-        return;
-      } else if (clickedItem.type === 'equipment') {
-        const eq = clickedItem.item as EquipmentItem;
-        if (activeTool === 'inspect') {
-          soundEffects.playClick();
-          setInGameInspectorTarget({
-            type: 'item',
-            id: eq.id,
-            parentTentId: clickedItem.tentId || null
-          });
-          return;
-        } else {
-          soundEffects.playClick();
-          onUpdateState(prev => {
-            const next = updateCropInSimulation(prev, eq.id, clickedItem.tentId, (item) => ({
-              ...item,
-              powerOn: !(item as EquipmentItem).powerOn
-            }));
-            broadcastSimulationState(next);
-            return next;
-          });
-          addFloatingText(`${eq.name}: ${!eq.powerOn ? 'ON ⚡' : 'Standby / OFF'}`, clickX, clickY - 15, !eq.powerOn ? '#34d399' : '#94a3b8');
-          return;
-        }
-      } else if (clickedItem.type === 'occupant') {
-        soundEffects.playClick();
-        setInGameInspectorTarget({
-          type: 'item',
-          id: clickedItem.item.id,
-          parentTentId: clickedItem.tentId || null
-        });
-        return;
-      }
-    }
-
-    // Check if clicked on a Tent (Open properties & internal items inspector)
-    const clickedTent = findTentAtPosition(clickX, clickY);
-    if (clickedTent) {
-      soundEffects.playClick();
-      setInGameInspectorTarget({
-        type: 'tent',
-        id: clickedTent.id,
-        parentTentId: null
-      });
+  // ---- 3D scene interactions ----
+  const handleSceneClickItem = (item: Item, tentId: string | undefined, worldPos: Vec3) => {
+    const [x, , y] = worldPos;
+    if (item.category === 'plant' || item.category === 'mushroom') {
+      applyToolToCrop(item, tentId, x, y);
       return;
     }
-
-    // Otherwise, set walk destination
-    playerRef.current.targetX = clickX;
-    playerRef.current.targetY = clickY;
-  };
-
-  // Canvas Mouse Move (for tooltips and hover rings)
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const mouseX = (e.clientX - rect.left) * scaleX;
-    const mouseY = (e.clientY - rect.top) * scaleY;
-
-    const hoveredItem = findItemAtPosition(mouseX, mouseY);
-    if (hoveredItem) {
-      if (hoveredItem.type === 'crop') {
-        const crop = hoveredItem.item as PlantItem | MushroomItem;
-        setHoveredObject({
-          type: crop.category === 'plant' ? 'plant' : 'mushroom',
-          id: crop.id,
-          parentTentId: hoveredItem.tentId,
-          title: `${crop.name} (${crop.stage}) [Click to Inspect & Care]`,
-          x: mouseX,
-          y: mouseY
-        });
-        return;
-      } else if (hoveredItem.type === 'equipment') {
-        const eq = hoveredItem.item as EquipmentItem;
-        setHoveredObject({
-          type: 'equipment',
-          id: eq.id,
-          parentTentId: hoveredItem.tentId,
-          title: `⚙️ ${eq.name} (${eq.powerOn ? 'ON' : 'OFF'} • ${eq.powerWatts}W) [Inspect to Edit • Click to Toggle]`,
-          x: mouseX,
-          y: mouseY
-        });
-        return;
-      } else if (hoveredItem.type === 'occupant') {
-        const occ = hoveredItem.item;
-        setHoveredObject({
-          type: 'occupant',
-          id: occ.id,
-          parentTentId: hoveredItem.tentId,
-          title: `${occ.category === 'person' ? '👤' : '🐾'} ${occ.name} [Click to Edit]`,
-          x: mouseX,
-          y: mouseY
-        });
-        return;
-      }
-    }
-
-    const tent = findTentAtPosition(mouseX, mouseY);
-    if (tent) {
-      setHoveredObject({
-        type: 'tent',
-        id: tent.id,
-        title: `${tent.name} [Click to Edit Tent & Items]`,
-        x: mouseX,
-        y: mouseY
+    soundEffects.playClick();
+    if (item.category === 'equipment' && activeTool !== 'inspect') {
+      const eq = item as EquipmentItem;
+      onUpdateState(prev => {
+        const next = updateCropInSimulation(prev, eq.id, tentId, (it) => ({
+          ...it,
+          powerOn: !(it as EquipmentItem).powerOn
+        }));
+        broadcastSimulationState(next);
+        return next;
       });
+      addFloatingText(`${eq.name}: ${!eq.powerOn ? 'ON ⚡' : 'Standby / OFF'}`, x, y, !eq.powerOn ? '#34d399' : '#94a3b8');
       return;
     }
-
-    setHoveredObject(null);
+    // Equipment (with the Inspect tool), people and pets open the inspector
+    setInGameInspectorTarget({ type: 'item', id: item.id, parentTentId: tentId || null });
   };
 
-  // Helper to get all doorways leading to other rooms
-  const getRoomDoorways = () => {
-    const doors: Array<{
-      roomId: string;
-      label: string;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-    }> = [];
+  const handleSceneHover = (next: HoverTarget | null) => {
+    const idOf = (t: HoverTarget | null) => !t ? null
+      : t.kind === 'item' ? t.item.id
+      : t.kind === 'tent' ? t.tent.id
+      : t.door.roomId;
+    setHoverTarget(prev => (idOf(prev) === idOf(next) ? prev : next));
+  };
 
-    const otherRooms = allRooms.filter(r => r.id !== currentRoom.id);
-    
-    // Left doorway: first other room
-    if (otherRooms.length > 0) {
-      doors.push({
-        roomId: otherRooms[0].id,
-        label: `🚪 ${otherRooms[0].name}`,
-        x: 10,
-        y: 220,
-        width: 50,
-        height: 120
-      });
-    }
+  const handleSceneClickTent = (tent: Tent) => {
+    soundEffects.playClick();
+    setInGameInspectorTarget({ type: 'tent', id: tent.id, parentTentId: null });
+  };
 
-    // Right doorway: second other room or Add Room portal
-    if (otherRooms.length > 1) {
-      doors.push({
-        roomId: otherRooms[1].id,
-        label: `🚪 ${otherRooms[1].name}`,
-        x: 940,
-        y: 220,
-        width: 50,
-        height: 120
-      });
+  const handleSceneClickDoor = (door: Doorway) => {
+    if (door.roomId === 'ADD_ROOM') {
+      onOpenAddRoom();
     } else {
-      doors.push({
-        roomId: 'ADD_ROOM',
-        label: `➕ New Room`,
-        x: 940,
-        y: 220,
-        width: 50,
-        height: 120
-      });
+      handleTravelToRoom(door.roomId);
     }
+  };
 
+  const handleSceneClickFloor = (x: number, y: number) => {
+    playerRef.current.targetX = x;
+    playerRef.current.targetY = y;
+  };
+
+  // Tooltip follows the mouse without re-rendering the scene
+  const handleWorldMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    lastMouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (tooltipRef.current) {
+      tooltipRef.current.style.left = `${lastMouseRef.current.x + 14}px`;
+      tooltipRef.current.style.top = `${lastMouseRef.current.y - 34}px`;
+    }
+  };
+
+  const hoveredId = !hoverTarget ? null
+    : hoverTarget.kind === 'item' ? hoverTarget.item.id
+    : hoverTarget.kind === 'tent' ? hoverTarget.tent.id
+    : hoverTarget.door.roomId;
+
+  const hoverTitle = (() => {
+    if (!hoverTarget) return null;
+    if (hoverTarget.kind === 'tent') return `${hoverTarget.tent.name} [Click to Edit Tent & Items]`;
+    if (hoverTarget.kind === 'door') {
+      return hoverTarget.door.roomId === 'ADD_ROOM' ? '➕ Add a New Room [Click]' : `${hoverTarget.door.label} [Click or Walk Through]`;
+    }
+    // Read the live item so the tooltip reflects changes made while hovering (e.g. power toggled)
+    const item = [...currentRoom.items, ...currentRoom.tents.flatMap(t => t.items)].find(i => i.id === hoverTarget.item.id) || hoverTarget.item;
+    if (item.category === 'plant' || item.category === 'mushroom') {
+      return `${item.name} (${item.stage}) [Click to Inspect & Care]`;
+    }
+    if (item.category === 'equipment') {
+      return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${item.powerWatts}W) [Inspect to Edit • Click to Toggle]`;
+    }
+    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Edit]`;
+  })();
+
+  // Doorways to other rooms on the left/right walls (or an Add Room portal)
+  const getRoomDoorways = (): Doorway[] => {
+    const otherRooms = allRooms.filter(r => r.id !== currentRoom.id);
+    const doors: Doorway[] = [];
+    if (otherRooms.length > 0) {
+      doors.push({ roomId: otherRooms[0].id, label: `🚪 ${otherRooms[0].name}`, side: 'left' });
+    }
+    if (otherRooms.length > 1) {
+      doors.push({ roomId: otherRooms[1].id, label: `🚪 ${otherRooms[1].name}`, side: 'right' });
+    } else {
+      doors.push({ roomId: 'ADD_ROOM', label: '➕ New Room', side: 'right' });
+    }
     return doors;
   };
 
-  // Helper to find any item (crop, equipment, occupant) under cursor.
-  // Uses each item's true-scale screen box; front-most (last drawn) wins.
-  const findItemAtPosition = (x: number, y: number) => {
-    // Floor-level items take priority so crops under a ceiling light stay clickable
-    const placedItems = getPlacedRoomItems(currentRoom);
-    const hitOrder = [
-      ...placedItems.filter(p => !p.overhead).reverse(),
-      ...placedItems.filter(p => p.overhead).reverse()
-    ];
-    for (const { item, tentId, x: px, y: py, overhead } of hitOrder) {
-      if (!isPointInItemBox(getItemScreenBox(item, px, py, overhead), x, y)) continue;
-      if (item.category === 'plant' || item.category === 'mushroom') {
-        return { item: item as PlantItem | MushroomItem, type: 'crop' as const, tentId, x: px, y: py };
-      }
-      if (item.category === 'equipment') {
-        return { item: item as EquipmentItem, type: 'equipment' as const, tentId, x: px, y: py };
-      }
-      return { item, type: 'occupant' as const, tentId, x: px, y: py };
-    }
-    return null;
+  // Is a point inside any tent's footprint (padded by the cultivator's body radius)?
+  const isInsideTent = (x: number, y: number): boolean => {
+    const pad = 0.35;
+    return currentRoom.tents.some(tent => {
+      const [ox, , oz] = tentWorldOrigin(tent, currentRoom);
+      return x > ox - pad && x < ox + tent.dimensions.length + pad && y > oz - pad && y < oz + tent.dimensions.width + pad;
+    });
   };
 
-  // Helper to find tent under cursor
-  const findTentAtPosition = (x: number, y: number) => {
-    for (let tIdx = 0; tIdx < currentRoom.tents.length; tIdx++) {
-      const tent = currentRoom.tents[tIdx];
-      const tentPos = getSafeTentCanvasPosition(tent, currentRoom, tIdx, 1000, 650);
-      const tx = tentPos.x;
-      const ty = tentPos.y;
-      const width = tentPos.width;
-      const height = tentPos.height;
-
-      if (
-        x >= tx - width / 2 && x <= tx + width / 2 &&
-        y >= ty - height / 2 && y <= ty + height / 2
-      ) {
-        return { ...tent, x: tx, y: ty, width, height };
-      }
-    }
-    return null;
+  const getDoorwayAt = (x: number, y: number): Doorway | null => {
+    const { length: L, width: W } = currentRoom.dimensions;
+    if (Math.abs(y - W / 2) > DOOR_HALF_WIDTH_FT) return null;
+    const side = x <= 0.7 ? 'left' : x >= L - 0.7 ? 'right' : null;
+    return side ? getRoomDoorways().find(d => d.side === side) || null : null;
   };
-
-  // Main 60FPS Game Render Loop
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let animId: number;
-
-    const render = (time: number) => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const room = currentRoomRef.current;
-      const simTime = stateRef.current.simTime;
-      const hovered = hoveredObjectRef.current;
-      const floatList = floatingTextsRef.current;
-
-      // 1. Draw Architectural Floor & Walls
-      drawRoomEnvironment(ctx, canvas.width, canvas.height, room, simTime);
-
-      // 2. Draw Doorways / Travel Portals
-      drawDoorways(ctx, getRoomDoorways(), time);
-
-      // 3. Draw Facility Tents
-      room.tents.forEach((tent, tIdx) => {
-        const tentPos = getSafeTentCanvasPosition(tent, room, tIdx, canvas.width, canvas.height);
-        drawTentStructure(ctx, tent, tentPos.x, tentPos.y, tentPos.width, tentPos.height, hovered?.id === tent.id, time);
-      });
-
-      // 4. Draw every item (in tents and on the room floor) at true scale, back-to-front
-      getPlacedRoomItems(room).forEach(placed => {
-        drawPlacedItem(ctx, placed, hovered?.id === placed.item.id, time);
-      });
-
-      // 5. Draw Player Avatar
-      drawCultivatorAvatar(ctx, playerRef.current);
-
-      // 6. Draw Floating Notifications & Sparkles
-      drawFloatingPopups(ctx, floatList);
-
-      animId = requestAnimationFrame(render);
-    };
-
-    animId = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(animId);
-  }, []);
 
   // Clean expired floating texts
   useEffect(() => {
@@ -1248,30 +1063,35 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         </div>
       </header>
 
-      {/* Main 2D Canvas Container */}
-      <div 
-        ref={containerRef} 
-        className="relative flex-1 w-full bg-zinc-950 flex items-center justify-center overflow-hidden cursor-crosshair"
+      {/* Main 3D World */}
+      <div
+        ref={containerRef}
+        onMouseMove={handleWorldMouseMove}
+        className={`relative flex-1 w-full bg-zinc-950 overflow-hidden ${hoverTarget ? 'cursor-pointer' : 'cursor-crosshair'}`}
       >
-        <canvas
-          ref={canvasRef}
-          width={1000}
-          height={650}
-          onClick={handleCanvasClick}
-          onMouseMove={handleCanvasMouseMove}
-          className="max-w-full max-h-full rounded-xl shadow-2xl border border-zinc-800/80"
+        <GameScene
+          room={currentRoom}
+          simTime={state.simTime}
+          doorways={getRoomDoorways()}
+          hoveredId={hoveredId}
+          floatingTexts={floatingTexts}
+          playerRef={playerRef}
+          cameraYawRef={cameraYawRef}
+          onHover={handleSceneHover}
+          onClickItem={handleSceneClickItem}
+          onClickTent={handleSceneClickTent}
+          onClickDoor={handleSceneClickDoor}
+          onClickFloor={handleSceneClickFloor}
         />
 
         {/* Hover Tooltip Overlay */}
-        {hoveredObject && (
-          <div 
-            className="absolute pointer-events-none z-30 px-2.5 py-1 rounded bg-zinc-900/95 border border-zinc-700 text-zinc-100 text-xs font-semibold shadow-xl"
-            style={{
-              left: `${Math.min(window.innerWidth - 180, Math.max(20, hoveredObject.x - 40))}px`,
-              top: `${Math.max(70, hoveredObject.y - 45)}px`
-            }}
+        {hoverTitle && (
+          <div
+            ref={tooltipRef}
+            className="absolute pointer-events-none z-30 px-2.5 py-1 rounded bg-zinc-900/95 border border-zinc-700 text-zinc-100 text-xs font-semibold shadow-xl whitespace-nowrap"
+            style={{ left: `${lastMouseRef.current.x + 14}px`, top: `${lastMouseRef.current.y - 34}px` }}
           >
-            {hoveredObject.title}
+            {hoverTitle}
           </div>
         )}
 
@@ -1283,6 +1103,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           </div>
           <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
             <div><span className="text-zinc-200 font-semibold">[WASD / Click]</span> Walk around</div>
+            <div><span className="text-zinc-200 font-semibold">[Drag / Scroll]</span> Orbit &amp; zoom camera</div>
             <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
             <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
             <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>
@@ -1426,7 +1247,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
               broadcastSimulationState(next);
               return next;
             });
-            addFloatingText('+Pruned Main Canopy ✂', playerRef.current.x, playerRef.current.y - 30, '#34d399');
+            addFloatingText('+Pruned Main Canopy ✂', playerRef.current.x, playerRef.current.y, '#34d399');
           }}
           onHarvest={(crop) => {
             applyToolToCrop(crop, inspectedCrop.parentTentId);
@@ -1583,873 +1404,3 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     </div>
   );
 };
-
-// ==========================================
-// PROCEDURAL CANVAS DRAWING HELPERS
-// ==========================================
-
-function drawRoomEnvironment(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  room: Room,
-  simTime: number
-) {
-  const isOutdoor = room.environmentType === 'outdoor_garden';
-  const isGreenhouse = room.environmentType === 'greenhouse';
-
-  if (isOutdoor) {
-    // 1. Lush Green Lawn / Soil Turf Base
-    const grassGrad = ctx.createLinearGradient(0, 0, 0, height);
-    grassGrad.addColorStop(0, '#14532d');
-    grassGrad.addColorStop(1, '#166534');
-    ctx.fillStyle = grassGrad;
-    ctx.fillRect(0, 0, width, height);
-
-    // Floor grid lines starting at CANVAS_FLOOR_ORIGIN_X and CANVAS_FLOOR_ORIGIN_Y
-    ctx.lineWidth = 1;
-    for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
-      const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
-      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)';
-      ctx.beginPath();
-      ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
-      ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
-      ctx.stroke();
-    }
-    for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
-      const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
-      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)';
-      ctx.beginPath();
-      ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
-      ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
-      ctx.stroke();
-    }
-
-    // Flagstone garden walkway
-    ctx.fillStyle = '#52525b';
-    ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, 350, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 38);
-    ctx.strokeStyle = '#3f3f46';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(CANVAS_FLOOR_ORIGIN_X, 350, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 38);
-    for (let px = CANVAS_FLOOR_ORIGIN_X + 25; px < CANVAS_MAX_FLOOR_X - 25; px += 45) {
-      ctx.beginPath();
-      ctx.moveTo(px, 350);
-      ctx.lineTo(px, 388);
-      ctx.stroke();
-    }
-
-    // Wooden Trellis Posts & Top Cable Wire across garden rows
-    ctx.strokeStyle = '#78350f'; // Cedar wood posts
-    ctx.lineWidth = 6;
-    for (let postX = CANVAS_FLOOR_ORIGIN_X + 60; postX <= CANVAS_MAX_FLOOR_X - 60; postX += 160) {
-      ctx.beginPath();
-      ctx.moveTo(postX, 100);
-      ctx.lineTo(postX, 260);
-      ctx.stroke();
-    }
-    // High-tension trellis wire cable connecting tops
-    ctx.strokeStyle = '#a1a1aa';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(CANVAS_FLOOR_ORIGIN_X + 30, 105);
-    ctx.lineTo(CANVAS_MAX_FLOOR_X - 30, 105);
-    ctx.stroke();
-
-    // Cedar Wood Garden Fence Perimeter
-    ctx.fillStyle = '#451a03';
-    ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y);
-    ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height);
-    ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height);
-    ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y);
-
-    // Fence pickets
-    ctx.fillStyle = '#78350f';
-    for (let fx = 10; fx < width; fx += 25) {
-      ctx.fillRect(fx, 4, 18, 36);
-      ctx.fillRect(fx, CANVAS_MAX_FLOOR_Y + 4, 18, 26);
-    }
-
-    // Natural sunlight / night tint based on live light PPFD
-    const ppfd = room.climate.lightPPFD || 0;
-    if (ppfd > 600) {
-      ctx.fillStyle = 'rgba(254, 240, 138, 0.08)';
-      ctx.fillRect(0, 0, width, height);
-    } else if (ppfd < 60) {
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
-      ctx.fillRect(0, 0, width, height);
-    }
-    return;
-  }
-
-  if (isGreenhouse) {
-    // Slate gravel floor
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, 0, width, height);
-
-    // Floor grid lines
-    ctx.lineWidth = 1;
-    for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
-      const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
-      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(148, 163, 184, 0.25)' : 'rgba(148, 163, 184, 0.08)';
-      ctx.beginPath();
-      ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
-      ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
-      ctx.stroke();
-    }
-    for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
-      const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
-      ctx.strokeStyle = ft % 5 === 0 ? 'rgba(148, 163, 184, 0.25)' : 'rgba(148, 163, 184, 0.08)';
-      ctx.beginPath();
-      ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
-      ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
-      ctx.stroke();
-    }
-
-    // Galvanized steel hoop arches
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 4;
-    for (let archX = CANVAS_FLOOR_ORIGIN_X + 80; archX < CANVAS_MAX_FLOOR_X - 40; archX += 160) {
-      ctx.beginPath();
-      ctx.moveTo(archX, CANVAS_FLOOR_ORIGIN_Y);
-      ctx.lineTo(archX, CANVAS_MAX_FLOOR_Y);
-      ctx.stroke();
-    }
-
-    // Polycarbonate greenhouse frame border
-    ctx.fillStyle = '#334155';
-    ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y);
-    ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height);
-    ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height);
-    ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y);
-    return;
-  }
-
-  // 1. Concrete / Parquet Floor Pattern (Indoor Grow Room)
-  ctx.fillStyle = '#18181b';
-  ctx.fillRect(0, 0, width, height);
-
-  // Floor grid tiles starting from CANVAS_FLOOR_ORIGIN_X and CANVAS_FLOOR_ORIGIN_Y
-  // 1 square = 1 foot (40px)
-  for (let x = CANVAS_FLOOR_ORIGIN_X; x <= CANVAS_MAX_FLOOR_X; x += CANVAS_GRID_SIZE) {
-    const ft = Math.round((x - CANVAS_FLOOR_ORIGIN_X) / CANVAS_GRID_SIZE);
-    const isMajor = ft % 5 === 0;
-    ctx.strokeStyle = isMajor ? '#3f3f46' : '#27272a';
-    ctx.lineWidth = isMajor ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(x, CANVAS_FLOOR_ORIGIN_Y);
-    ctx.lineTo(x, CANVAS_MAX_FLOOR_Y);
-    ctx.stroke();
-
-    // Subtle foot label every 5ft at top wall edge
-    if (isMajor && ft > 0 && ft < 22) {
-      ctx.fillStyle = '#52525b';
-      ctx.font = '8px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${ft}ft`, x, CANVAS_FLOOR_ORIGIN_Y - 6);
-    }
-  }
-
-  for (let y = CANVAS_FLOOR_ORIGIN_Y; y <= CANVAS_MAX_FLOOR_Y; y += CANVAS_GRID_SIZE) {
-    const ft = Math.round((y - CANVAS_FLOOR_ORIGIN_Y) / CANVAS_GRID_SIZE);
-    const isMajor = ft % 5 === 0;
-    ctx.strokeStyle = isMajor ? '#3f3f46' : '#27272a';
-    ctx.lineWidth = isMajor ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(CANVAS_FLOOR_ORIGIN_X, y);
-    ctx.lineTo(CANVAS_MAX_FLOOR_X, y);
-    ctx.stroke();
-
-    // Subtle foot label every 5ft at left wall edge
-    if (isMajor && ft > 0 && ft < 14) {
-      ctx.fillStyle = '#52525b';
-      ctx.font = '8px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${ft}ft`, CANVAS_FLOOR_ORIGIN_X - 6, y + 3);
-    }
-  }
-
-  // 2. Room Border Walls (Inner faces at 60, 50, 940, 610)
-  ctx.fillStyle = '#27272a';
-  ctx.fillRect(0, 0, width, CANVAS_FLOOR_ORIGIN_Y); // Top wall: 0 to 50
-  ctx.fillRect(0, 0, CANVAS_FLOOR_ORIGIN_X, height); // Left wall: 0 to 60
-  ctx.fillRect(CANVAS_MAX_FLOOR_X, 0, width - CANVAS_MAX_FLOOR_X, height); // Right wall: 940 to 1000
-  ctx.fillRect(0, CANVAS_MAX_FLOOR_Y, width, height - CANVAS_MAX_FLOOR_Y); // Bottom wall: 610 to 650
-
-  // Wall Baseboards
-  ctx.fillStyle = '#3f3f46';
-  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, CANVAS_FLOOR_ORIGIN_Y - 4, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 4);
-  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X, CANVAS_MAX_FLOOR_Y, CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X, 4);
-  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X - 4, CANVAS_FLOOR_ORIGIN_Y, 4, CANVAS_MAX_FLOOR_Y - CANVAS_FLOOR_ORIGIN_Y);
-  ctx.fillRect(CANVAS_MAX_FLOOR_X, CANVAS_FLOOR_ORIGIN_Y, 4, CANVAS_MAX_FLOOR_Y - CANVAS_FLOOR_ORIGIN_Y);
-
-  // Ceiling Ventilation Duct running across top
-  ctx.fillStyle = '#52525b';
-  ctx.fillRect(CANVAS_FLOOR_ORIGIN_X + 20, 16, (CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X) - 40, 18);
-  ctx.strokeStyle = '#71717a';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(CANVAS_FLOOR_ORIGIN_X + 20, 16, (CANVAS_MAX_FLOOR_X - CANVAS_FLOOR_ORIGIN_X) - 40, 18);
-
-  // Duct vent grates
-  for (let vx = CANVAS_FLOOR_ORIGIN_X + 80; vx < CANVAS_MAX_FLOOR_X - 80; vx += 120) {
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(vx, 20, 24, 10);
-  }
-}
-
-function drawDoorways(
-  ctx: CanvasRenderingContext2D,
-  doorways: Array<{ roomId: string; label: string; x: number; y: number; width: number; height: number }>,
-  time: number
-) {
-  doorways.forEach(d => {
-    // Door Portal Opening
-    ctx.save();
-    ctx.fillStyle = '#09090b';
-    ctx.fillRect(d.x, d.y, d.width, d.height);
-
-    // Glowing door frame
-    const pulse = (Math.sin(time * 0.005) + 1) / 2;
-    ctx.strokeStyle = `rgba(52, 211, 153, ${0.4 + pulse * 0.4})`;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(d.x, d.y, d.width, d.height);
-
-    // Signboard above door
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(d.x - 20, d.y - 25, d.width + 40, 20);
-    ctx.strokeStyle = '#3f3f46';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(d.x - 20, d.y - 25, d.width + 40, 20);
-
-    ctx.fillStyle = '#34d399';
-    ctx.font = 'bold 9px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(d.label, d.x + d.width / 2, d.y - 15);
-    ctx.restore();
-  });
-}
-
-function drawTentStructure(
-  ctx: CanvasRenderingContext2D,
-  tent: Tent,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  isHovered: boolean,
-  time: number
-) {
-  const halfW = width / 2;
-  const halfH = height / 2;
-
-  ctx.save();
-  ctx.translate(x, y);
-
-  // Tent Outer Shell Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.beginPath();
-  ctx.roundRect(-halfW + 4, -halfH + 6, width, height, 10);
-  ctx.fill();
-
-  // Tent Diamond Mylar Shell (Dark Oxford exterior)
-  ctx.fillStyle = '#18181b';
-  ctx.beginPath();
-  ctx.roundRect(-halfW, -halfH, width, height, 8);
-  ctx.fill();
-
-  // Highlight outline when hovered
-  if (isHovered) {
-    ctx.shadowColor = 'rgba(52, 211, 153, 0.5)';
-    ctx.shadowBlur = 10;
-  }
-  ctx.strokeStyle = isHovered ? '#34d399' : '#3f3f46';
-  ctx.lineWidth = isHovered ? 2.5 : 2;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  // Duct Port on Top Right with exhaust vent ring
-  const ductX = halfW - Math.min(22, width * 0.18);
-  ctx.fillStyle = '#3f3f46';
-  ctx.beginPath();
-  ctx.arc(ductX, -halfH, 12, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#09090b';
-  ctx.beginPath();
-  ctx.arc(ductX, -halfH, 8, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Internal reflective diamond mylar + warm LED grow light glow (Always visible)
-  ctx.save();
-  // Inner floor
-  ctx.fillStyle = '#27272a';
-  ctx.beginPath();
-  ctx.roundRect(-halfW + 6, -halfH + 6, width - 12, height - 12, 6);
-  ctx.fill();
-
-  // Warm overhead LED light cone glow
-  const lightGlow = ctx.createRadialGradient(0, -halfH + 25, 8, 0, 0, Math.min(halfW, halfH) * 1.15);
-  lightGlow.addColorStop(0, 'rgba(254, 240, 138, 0.28)');
-  lightGlow.addColorStop(0.7, 'rgba(254, 240, 138, 0.08)');
-  lightGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = lightGlow;
-  ctx.beginPath();
-  ctx.roundRect(-halfW + 6, -halfH + 6, width - 12, height - 12, 6);
-  ctx.fill();
-
-  // Hanging Quantum Board LED Light
-  const ledW = Math.min(width * 0.55, 85);
-  const ledH = 7;
-  ctx.fillStyle = '#d4d4d8';
-  ctx.fillRect(-ledW / 2, -halfH + 10, ledW, ledH);
-  ctx.fillStyle = '#fef08a';
-  ctx.fillRect(-ledW / 2 + 2, -halfH + 14, ledW - 4, 3);
-
-  // Hanging wire cables
-  ctx.strokeStyle = '#71717a';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-ledW / 2 + 4, -halfH + 6);
-  ctx.lineTo(-ledW / 2 + 4, -halfH + 10);
-  ctx.moveTo(ledW / 2 - 4, -halfH + 6);
-  ctx.lineTo(ledW / 2 - 4, -halfH + 10);
-  ctx.stroke();
-
-  ctx.restore();
-
-  // Tent Title & Climate HUD badge above tent
-  ctx.fillStyle = '#09090b';
-  ctx.beginPath();
-  ctx.roundRect(-halfW, -halfH - 24, width, 20, 5);
-  ctx.fill();
-  ctx.strokeStyle = isHovered ? '#34d399' : '#3f3f46';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  ctx.fillStyle = isHovered ? '#6ee7b7' : '#e4e4e7';
-  ctx.font = 'bold 10px sans-serif';
-  ctx.textAlign = 'left';
-  const itemCount = tent.items.length;
-  const countLabel = itemCount > 0 ? ` (${itemCount})` : '';
-  const tentLabel = isHovered ? `⚙️ ${tent.name}${countLabel}` : `⛺ ${tent.name}${countLabel}`;
-  ctx.fillText(tentLabel, -halfW + 6, -halfH - 11);
-
-  if (width >= 130) {
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#34d399';
-    const tentTemp = `${tent.climate.tempF.toFixed(0)}°F`;
-    const tentRh = `${tent.climate.rh.toFixed(0)}%`;
-    ctx.fillText(`${tentTemp} | ${tentRh}`, halfW - 6, -halfH - 11);
-  }
-
-  ctx.restore();
-}
-
-// Helper to calculate coordinates for crops placed on the room floor / outdoor garden
-function getRoomCropCoordinates(
-  room: Room,
-  cropIndex: number,
-  totalCrops: number,
-  canvasWidth: number = 1000
-): { x: number; y: number } {
-  if (room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse') {
-    const colsPerRow = Math.min(6, Math.max(3, Math.ceil(totalCrops / 2)));
-    const col = cropIndex % colsPerRow;
-    const row = Math.floor(cropIndex / colsPerRow);
-    return {
-      x: CANVAS_FLOOR_ORIGIN_X + (2 + col * 3) * CANVAS_GRID_SIZE,
-      y: CANVAS_FLOOR_ORIGIN_Y + (3 + row * 4) * CANVAS_GRID_SIZE
-    };
-  }
-  return {
-    x: CANVAS_FLOOR_ORIGIN_X + (16 + (cropIndex % 3) * 2) * CANVAS_GRID_SIZE,
-    y: CANVAS_FLOOR_ORIGIN_Y + (8 + Math.floor(cropIndex / 3) * 2) * CANVAS_GRID_SIZE
-  };
-}
-
-interface PlacedItem {
-  item: Item;
-  tentId?: string;
-  x: number; // screen px of the footprint center on the floor
-  y: number;
-  overhead: boolean; // ceiling-mounted: drawn top-down in the overhead layer
-}
-
-// Screen placement of every item in a room (tent contents + room floor) in draw order:
-// floor-level items back-to-front, then the overhead (ceiling-mounted) layer.
-function getPlacedRoomItems(room: Room): PlacedItem[] {
-  const placed: PlacedItem[] = [];
-  const isCrop = (it: Item) => it.category === 'plant' || it.category === 'mushroom';
-  const isOccupant = (it: Item) => it.category === 'person' || it.category === 'pet';
-
-  room.tents.forEach((tent, tIdx) => {
-    const tentPos = getSafeTentCanvasPosition(tent, room, tIdx, 1000, 650);
-    [tent.items.filter(isCrop), tent.items.filter(it => it.category === 'equipment'), tent.items.filter(isOccupant)].forEach(group => {
-      group.forEach((item, idx) => {
-        const pos = getSafeTentItemCanvasPosition(item, tent, tentPos.x, tentPos.y, idx, group.length);
-        placed.push({ item, tentId: tent.id, x: pos.x, y: pos.y, overhead: isOverheadItem(item, tent.dimensions.height) });
-      });
-    });
-  });
-
-  const fromPosition = (item: Item) => item.position && typeof item.position.x === 'number' && typeof item.position.y === 'number'
-    ? {
-        x: Math.round(CANVAS_FLOOR_ORIGIN_X + item.position.x * CANVAS_GRID_SIZE),
-        y: Math.round(CANVAS_FLOOR_ORIGIN_Y + item.position.y * CANVAS_GRID_SIZE)
-      }
-    : null;
-
-  const overheadInRoom = (item: Item) => isOverheadItem(item, room.dimensions.height);
-  const roomCrops = room.items.filter(isCrop);
-  roomCrops.forEach((item, idx) => {
-    placed.push({ item, overhead: overheadInRoom(item), ...(fromPosition(item) || getRoomCropCoordinates(room, idx, roomCrops.length)) });
-  });
-  room.items.filter(it => it.category === 'equipment').forEach((item, idx) => {
-    placed.push({ item, overhead: overheadInRoom(item), ...(fromPosition(item) || { x: CANVAS_FLOOR_ORIGIN_X + (idx + 1) * 3 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 }) });
-  });
-  room.items.filter(isOccupant).forEach((item, idx) => {
-    placed.push({ item, overhead: false, ...(fromPosition(item) || { x: CANVAS_FLOOR_ORIGIN_X + (idx + 1) * 4 * CANVAS_GRID_SIZE, y: CANVAS_MAX_FLOOR_Y - 40 }) });
-  });
-
-  return placed.sort((a, b) => (a.overhead === b.overhead ? a.y - b.y : a.overhead ? 1 : -1));
-}
-
-// Draws one item at true scale: floor footprint (L x W), then the upright sprite (L x H) lifted by its z elevation.
-function drawPlacedItem(ctx: CanvasRenderingContext2D, placed: PlacedItem, isHovered: boolean, time: number) {
-  const { item, x, y } = placed;
-  if (placed.overhead) {
-    drawOverheadItem(ctx, placed, isHovered, time);
-    return;
-  }
-  const box = getItemScreenBox(item, x, y);
-
-  drawItemFootprint(ctx, item, x, y, isHovered);
-
-  // Hanging / mounted items: dashed drop line from the footprint up to the item's base
-  if (box.baseY < y - 4) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(161, 161, 170, 0.35)';
-    ctx.setLineDash([2, 3]);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x, box.baseY);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  if (item.category === 'plant') {
-    drawPlantToScale(item, { ctx, x, y: box.baseY, time, highlighted: isHovered });
-    return;
-  }
-  if (item.category === 'mushroom') {
-    drawMushroomToScale(item, { ctx, x, y: box.baseY, time, highlighted: isHovered });
-    return;
-  }
-
-  const widthPx = feetToPx(item.dimensions.length);
-  const heightPx = feetToVerticalPx(item.dimensions.height);
-  if (item.category === 'equipment') {
-    drawSpriteToScale(ctx, {
-      key: `equipment|${item.type}`,
-      draw: c => drawEquipmentSprite(c, item, 0, 0, isHovered, time, false),
-      measure: c => drawEquipmentSprite(c, { ...item, powerOn: false }, 0, 0, false, 0, false),
-      anchorX: x,
-      anchorY: box.baseY,
-      widthPx,
-      heightPx
-    });
-    drawItemLabel(ctx, item.name.length > 12 ? item.name.substring(0, 10) + '..' : item.name, x, box.bottom + 2, isHovered);
-    return;
-  }
-
-  drawSpriteToScale(ctx, {
-    key: `occupant|${item.category}`,
-    draw: c => drawOccupantSprite(c, item, 0, 0, isHovered, false),
-    anchorX: x,
-    anchorY: box.baseY,
-    widthPx,
-    heightPx
-  });
-  drawItemLabel(ctx, item.name.length > 10 ? item.name.substring(0, 8) + '..' : item.name, x, box.bottom + 2, isHovered);
-}
-
-// Ceiling-mounted item seen from above: dashed to-scale footprint, light pool if lit, fitted sprite and height tag.
-function drawOverheadItem(ctx: CanvasRenderingContext2D, placed: PlacedItem, isHovered: boolean, time: number) {
-  const { item, x, y } = placed;
-  const l = feetToPx(item.dimensions.length);
-  const w = feetToPx(item.dimensions.width);
-
-  if (item.category === 'equipment' && item.type === 'grow_light' && item.powerOn) {
-    const radius = Math.max(l, w) * 0.75;
-    const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    glow.addColorStop(0, 'rgba(254, 240, 138, 0.16)');
-    glow.addColorStop(1, 'rgba(254, 240, 138, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-  }
-
-  ctx.save();
-  ctx.strokeStyle = isHovered ? 'rgba(56, 189, 248, 0.95)' : 'rgba(186, 230, 253, 0.45)';
-  ctx.lineWidth = isHovered ? 1.5 : 1;
-  ctx.setLineDash([5, 4]);
-  ctx.strokeRect(x - l / 2, y - w / 2, l, w);
-  ctx.restore();
-
-  // Translucent so the canopy below stays visible
-  ctx.save();
-  ctx.globalAlpha = isHovered ? 0.75 : 0.4;
-  if (item.category === 'equipment') {
-    drawSpriteFitted(ctx, {
-      key: `overhead-equipment|${item.type}`,
-      draw: c => drawEquipmentSprite(c, { ...item, powerOn: item.type === 'grow_light' ? false : item.powerOn }, 0, 0, isHovered, time, false),
-      measure: c => drawEquipmentSprite(c, { ...item, powerOn: false }, 0, 0, false, 0, false),
-      cx: x,
-      cy: y,
-      widthPx: l,
-      heightPx: w
-    });
-  } else if (item.category === 'plant') {
-    drawPlantToScale(item, { ctx, x, y: y + w / 2, time, highlighted: isHovered });
-  } else if (item.category === 'mushroom') {
-    drawMushroomToScale(item, { ctx, x, y: y + w / 2, time, highlighted: isHovered });
-  }
-  ctx.restore();
-
-  const name = item.name.length > 12 ? item.name.substring(0, 10) + '..' : item.name;
-  drawItemLabel(ctx, `${name} ▲${(item.position?.z || 0).toFixed(1)}′`, x, y + w / 2 + 2, isHovered);
-}
-
-function drawEquipmentSprite(
-  ctx: CanvasRenderingContext2D,
-  eq: EquipmentItem,
-  x: number,
-  y: number,
-  isHovered: boolean,
-  time: number,
-  showLabel: boolean = true
-) {
-  ctx.save();
-  ctx.translate(x, y);
-
-  if (isHovered) {
-    ctx.shadowColor = '#38bdf8';
-    ctx.shadowBlur = 8;
-  }
-
-  const powerColor = eq.powerOn ? '#10b981' : '#71717a';
-
-  if (eq.type === 'humidifier') {
-    // Humidifier tank & base
-    ctx.fillStyle = '#1e293b';
-    ctx.beginPath();
-    ctx.roundRect(-12, -18, 24, 30, 4);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#38bdf8' : '#475569';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Water level window (cyan)
-    ctx.fillStyle = '#0284c7';
-    ctx.fillRect(-6, -10, 12, 16);
-
-    // Power LED
-    ctx.fillStyle = powerColor;
-    ctx.beginPath();
-    ctx.arc(0, 8, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Animated mist plume when powered ON
-    if (eq.powerOn) {
-      const mistOffset = Math.sin(time * 0.006) * 3;
-      ctx.fillStyle = 'rgba(186, 230, 253, 0.6)';
-      ctx.beginPath();
-      ctx.arc(mistOffset, -24, 5, 0, Math.PI * 2);
-      ctx.arc(-mistOffset, -30, 7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (eq.type === 'dehumidifier') {
-    // Dehumidifier cube
-    ctx.fillStyle = '#27272a';
-    ctx.beginPath();
-    ctx.roundRect(-14, -14, 28, 28, 4);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#38bdf8' : '#52525b';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Grille lines
-    ctx.fillStyle = '#3f3f46';
-    for (let gy = -8; gy <= 4; gy += 4) {
-      ctx.fillRect(-10, gy, 20, 2);
-    }
-    // Power LED
-    ctx.fillStyle = powerColor;
-    ctx.beginPath();
-    ctx.arc(8, 8, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (eq.type === 'oscillating_fan') {
-    // Clip-on oscillating fan
-    ctx.fillStyle = '#3f3f46';
-    ctx.beginPath();
-    ctx.roundRect(-3, 6, 6, 8, 2);
-    ctx.fill();
-
-    // Fan cage
-    ctx.strokeStyle = isHovered ? '#38bdf8' : '#64748b';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, -2, 12, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Blades
-    ctx.save();
-    ctx.translate(0, -2);
-    if (eq.powerOn) {
-      ctx.rotate(time * 0.02);
-    }
-    ctx.fillStyle = eq.powerOn ? '#38bdf8' : '#94a3b8';
-    for (let b = 0; b < 3; b++) {
-      ctx.rotate((Math.PI * 2) / 3);
-      ctx.beginPath();
-      ctx.ellipse(0, 5, 3, 6, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-
-    // Fan center hub & LED
-    ctx.fillStyle = powerColor;
-    ctx.beginPath();
-    ctx.arc(0, -2, 3, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (eq.type === 'exhaust_fan') {
-    // Inline duct fan cylinder
-    ctx.fillStyle = '#334155';
-    ctx.beginPath();
-    ctx.roundRect(-15, -10, 30, 20, 5);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#38bdf8' : '#64748b';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Airflow impeller blades
-    ctx.fillStyle = eq.powerOn ? '#38bdf8' : '#94a3b8';
-    ctx.beginPath();
-    ctx.arc(0, 0, 7, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = powerColor;
-    ctx.beginPath();
-    ctx.arc(10, -5, 2, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (eq.type === 'grow_light') {
-    // Hanging LED quantum board
-    ctx.fillStyle = '#e2e8f0';
-    ctx.beginPath();
-    ctx.roundRect(-20, -6, 40, 12, 3);
-    ctx.fill();
-
-    // LED diodes glowing
-    ctx.fillStyle = eq.powerOn ? '#fef08a' : '#94a3b8';
-    for (let lx = -14; lx <= 14; lx += 7) {
-      ctx.fillRect(lx - 2, -2, 4, 4);
-    }
-    if (eq.powerOn) {
-      ctx.fillStyle = 'rgba(254, 240, 138, 0.2)';
-      ctx.beginPath();
-      ctx.moveTo(-20, 6);
-      ctx.lineTo(-28, 22);
-      ctx.lineTo(28, 22);
-      ctx.lineTo(20, 6);
-      ctx.closePath();
-      ctx.fill();
-    }
-  } else if (eq.type === 'heater' || eq.type === 'heat_mat') {
-    // Radiant heater
-    ctx.fillStyle = '#451a03';
-    ctx.beginPath();
-    ctx.roundRect(-10, -14, 20, 28, 4);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#f97316' : '#78350f';
-    ctx.stroke();
-
-    // Orange glowing coils
-    ctx.fillStyle = eq.powerOn ? '#f97316' : '#78350f';
-    for (let hy = -8; hy <= 6; hy += 4) {
-      ctx.fillRect(-6, hy, 12, 2);
-    }
-  } else if (eq.type === 'co2_regulator' || eq.type === 'co2_bag') {
-    // CO2 cylinder / bag
-    ctx.fillStyle = '#14532d';
-    ctx.beginPath();
-    ctx.roundRect(-8, -16, 16, 30, 4);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#34d399' : '#166534';
-    ctx.stroke();
-
-    // Brass gauge
-    ctx.fillStyle = '#facc15';
-    ctx.beginPath();
-    ctx.arc(0, -18, 4, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    // Generic environmental controller / gear box
-    ctx.fillStyle = '#27272a';
-    ctx.beginPath();
-    ctx.roundRect(-12, -12, 24, 24, 3);
-    ctx.fill();
-    ctx.strokeStyle = isHovered ? '#38bdf8' : '#52525b';
-    ctx.stroke();
-
-    ctx.fillStyle = powerColor;
-    ctx.beginPath();
-    ctx.arc(0, 0, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Mini label beneath device
-  if (showLabel) {
-    ctx.fillStyle = isHovered ? '#e2e8f0' : '#a1a1aa';
-    ctx.font = 'bold 7.5px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(eq.name.length > 12 ? eq.name.substring(0, 10) + '..' : eq.name, 0, 18);
-  }
-
-  ctx.restore();
-}
-
-function drawOccupantSprite(
-  ctx: CanvasRenderingContext2D,
-  occ: Item,
-  x: number,
-  y: number,
-  isHovered: boolean,
-  showLabel: boolean = true
-) {
-  ctx.save();
-  ctx.translate(x, y);
-
-  if (occ.category === 'person') {
-    // Worker / Cultivator
-    ctx.fillStyle = '#7c3aed';
-    ctx.beginPath();
-    ctx.roundRect(-7, -15, 14, 16, 3);
-    ctx.fill();
-    ctx.fillStyle = '#fed7aa';
-    ctx.beginPath();
-    ctx.arc(0, -20, 5, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (occ.category === 'pet') {
-    // Cute dog or cat
-    ctx.fillStyle = '#f97316';
-    ctx.beginPath();
-    ctx.ellipse(0, -4, 9, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(6, -9, 4.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  if (showLabel) {
-    ctx.fillStyle = isHovered ? '#e2e8f0' : '#d4d4d8';
-    ctx.font = 'bold 7.5px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(occ.name.length > 10 ? occ.name.substring(0, 8) + '..' : occ.name, 0, 10);
-  }
-
-  ctx.restore();
-}
-
-function drawCultivatorAvatar(
-  ctx: CanvasRenderingContext2D,
-  player: { x: number; y: number; facing: string; isMoving: boolean; walkFrame: number }
-) {
-  const { x, y, facing, isMoving, walkFrame } = player;
-
-  ctx.save();
-  ctx.translate(x, y);
-
-  // Drop shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath();
-  ctx.ellipse(0, 6, 12, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  const legOffset = isMoving ? Math.sin(walkFrame * 2) * 4 : 0;
-
-  // Boots / Legs
-  ctx.fillStyle = '#3f3f46';
-  ctx.fillRect(-7 + legOffset, -2, 5, 8);
-  ctx.fillRect(2 - legOffset, -2, 5, 8);
-
-  // Cultivator Work Overalls (Green Garden Apron)
-  ctx.fillStyle = '#059669';
-  ctx.beginPath();
-  ctx.roundRect(-9, -20, 18, 20, 4);
-  ctx.fill();
-
-  // Pockets on apron
-  ctx.fillStyle = '#047857';
-  ctx.fillRect(-6, -11, 12, 7);
-
-  // Tools in pocket (tiny shears handle)
-  ctx.fillStyle = '#fbbf24';
-  ctx.fillRect(-3, -15, 3, 5);
-
-  // Head
-  ctx.fillStyle = '#fed7aa';
-  ctx.beginPath();
-  ctx.arc(0, -26, 7, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Cultivator Cap
-  ctx.fillStyle = '#10b981';
-  ctx.beginPath();
-  ctx.arc(0, -29, 7.5, Math.PI, Math.PI * 2);
-  ctx.fill();
-  // Cap visor facing direction
-  if (facing === 'right') {
-    ctx.fillRect(0, -29, 9, 3);
-  } else if (facing === 'left') {
-    ctx.fillRect(-9, -29, 9, 3);
-  } else if (facing === 'down') {
-    ctx.fillRect(-6, -26, 12, 3);
-  }
-
-  // Eyes
-  if (facing === 'down') {
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(-3, -27, 2, 2);
-    ctx.fillRect(2, -27, 2, 2);
-  } else if (facing === 'right') {
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(2, -27, 2, 2);
-  } else if (facing === 'left') {
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(-4, -27, 2, 2);
-  }
-
-  ctx.restore();
-}
-
-function drawFloatingPopups(
-  ctx: CanvasRenderingContext2D,
-  floatingTexts: Array<{ id: string; text: string; x: number; y: number; color: string; createdAt: number }>
-) {
-  const now = Date.now();
-  floatingTexts.forEach(item => {
-    const elapsed = now - item.createdAt;
-    const progress = elapsed / 2000;
-    const floatY = item.y - progress * 40;
-    const alpha = Math.max(0, 1 - progress);
-
-    ctx.save();
-    ctx.fillStyle = item.color;
-    ctx.globalAlpha = alpha;
-    ctx.font = 'bold 12px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-    ctx.shadowBlur = 4;
-    ctx.fillText(item.text, item.x, floatY);
-    ctx.restore();
-  });
-}

@@ -1,0 +1,101 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
+import { Vec3 } from './coords';
+
+/**
+ * World-anchored DOM labels (tent names, doors, harvest badges, floating action text).
+ *
+ * Labels are ordinary DOM in the app's own React tree, positioned every frame by projecting
+ * their 3D anchor to the screen. (drei's <Html> mounts a separate React root per label, which
+ * React 19 errors on when the canvas unmounts.)
+ */
+
+export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float';
+
+export interface WorldLabel {
+  id: string;
+  position: Vec3;
+  text: string;
+  variant: LabelVariant;
+  color?: string; // float labels
+}
+
+export type LabelRegistry = React.MutableRefObject<Map<string, HTMLDivElement>>;
+
+/** Lives inside the <Canvas>: projects each label's anchor and moves its DOM element. */
+export function LabelProjector({ labels, registry }: { labels: WorldLabel[]; registry: LabelRegistry }) {
+  const { camera, size } = useThree();
+  const v = useRef(new THREE.Vector3());
+
+  useFrame(() => {
+    for (const label of labels) {
+      const el = registry.current.get(label.id);
+      if (!el) continue;
+      v.current.set(label.position[0], label.position[1], label.position[2]).project(camera);
+      const visible = v.current.z < 1 && Math.abs(v.current.x) < 1.2 && Math.abs(v.current.y) < 1.2;
+      el.style.display = visible ? 'block' : 'none';
+      if (!visible) continue;
+      const x = (v.current.x * 0.5 + 0.5) * size.width;
+      const y = (-v.current.y * 0.5 + 0.5) * size.height;
+      el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
+    }
+  });
+
+  return null;
+}
+
+const VARIANT_CLASSES: Record<LabelVariant, string> = {
+  tent: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-zinc-900/85 border-zinc-700 text-zinc-200',
+  tentActive: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-emerald-950/90 border-emerald-600 text-emerald-200',
+  door: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-zinc-900/90 border-zinc-700 text-zinc-100',
+  badge: 'w-6 h-6 rounded-full bg-amber-400 text-black text-xs font-bold flex items-center justify-center shadow-lg animate-bounce',
+  float: 'text-xs font-bold whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]'
+};
+
+/** Floating action text rises and fades out over 2s after it appears. */
+function FloatText({ text, color }: { text: string; color?: string }) {
+  const [risen, setRisen] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setRisen(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return (
+    <div
+      className={VARIANT_CLASSES.float}
+      style={{
+        color,
+        transform: `translateY(${risen ? -40 : 0}px)`,
+        opacity: risen ? 0 : 1,
+        transition: 'transform 2s ease-out, opacity 2s ease-in'
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+/** Lives outside the <Canvas>, over it: the label DOM elements themselves. */
+export function LabelLayer({ labels, registry }: { labels: WorldLabel[]; registry: LabelRegistry }) {
+  return (
+    <div className="absolute inset-0 pointer-events-none overflow-hidden">
+      {labels.map(label => (
+        <div
+          key={label.id}
+          ref={el => {
+            if (el) registry.current.set(label.id, el);
+            else registry.current.delete(label.id);
+          }}
+          className="absolute top-0 left-0"
+          style={{ display: 'none', zIndex: label.variant === 'float' ? 20 : 10 }}
+        >
+          {label.variant === 'float' ? (
+            <FloatText text={label.text} color={label.color} />
+          ) : (
+            <div className={VARIANT_CLASSES[label.variant]}>{label.text}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}

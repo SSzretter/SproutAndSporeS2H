@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { 
   SimulationState, 
   Room, 
@@ -27,8 +27,10 @@ import { HarvestLogModal } from './components/HarvestLogModal';
 import { GrowJournal } from './components/GrowJournal';
 import { LocationModal } from './components/LocationModal';
 import { AddRoomModal } from './components/AddRoomModal';
-import { GameWorld } from './components/game/GameWorld';
 import { broadcastSimulationState, subscribeToSimulationSync } from './utils/syncChannel';
+
+// The 3D game view (three.js) is only downloaded when the game view is opened
+const GameWorld = lazy(() => import('./components/game/GameWorld').then(m => ({ default: m.GameWorld })));
 
 export default function App() {
   const [state, setState] = useState<SimulationState>(() => loadSimulation());
@@ -908,33 +910,35 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
       {viewMode === 'game' ? (
-        <GameWorld
-          state={state}
-          onUpdateState={(updater) => setState(prev => {
-            const next = updater(prev);
-            broadcastSimulationState(next);
-            return next;
-          })}
-          onOpenAddItem={(tentId) => {
-            setAddModalTentId(tentId || null);
-            setIsAddModalOpen(true);
-          }}
-          onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
-          onOpenHarvestModal={() => setIsHarvestModalOpen(true)}
-          onSwitchToDashboard={() => {
-            window.location.hash = '';
-            setViewMode('dashboard');
-          }}
-          onUpdateRoom={handleUpdateRoom}
-          onUpdateTent={handleUpdateTent}
-          onUpdateItem={handleUpdateItem}
-          onDeleteTent={handleDeleteTent}
-          onDeleteItem={handleDeleteItem}
-          onDeleteRoom={handleDeleteRoom}
-          onHarvestPlant={handleHarvestPlant}
-          onHarvestMushroom={handleHarvestMushroom}
-          onLogJournalEntry={handleAddJournalEntry}
-        />
+        <Suspense fallback={<div className="h-screen flex items-center justify-center text-sm text-zinc-400">Loading 3D grow world…</div>}>
+          <GameWorld
+            state={state}
+            onUpdateState={(updater) => setState(prev => {
+              const next = updater(prev);
+              broadcastSimulationState(next);
+              return next;
+            })}
+            onOpenAddItem={(tentId) => {
+              setAddModalTentId(tentId || null);
+              setIsAddModalOpen(true);
+            }}
+            onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+            onOpenHarvestModal={() => setIsHarvestModalOpen(true)}
+            onSwitchToDashboard={() => {
+              window.location.hash = '';
+              setViewMode('dashboard');
+            }}
+            onUpdateRoom={handleUpdateRoom}
+            onUpdateTent={handleUpdateTent}
+            onUpdateItem={handleUpdateItem}
+            onDeleteTent={handleDeleteTent}
+            onDeleteItem={handleDeleteItem}
+            onDeleteRoom={handleDeleteRoom}
+            onHarvestPlant={handleHarvestPlant}
+            onHarvestMushroom={handleHarvestMushroom}
+            onLogJournalEntry={handleAddJournalEntry}
+          />
+        </Suspense>
       ) : (
         <>
           {/* 24-Hour Game Clock & Top Bar */}
