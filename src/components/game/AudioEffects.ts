@@ -1,5 +1,5 @@
 /**
- * Procedural Web Audio API sound synthesizer for the 2D Game World
+ * Procedural Web Audio API sound synthesizer for the 3D Game World
  * Zero external audio files required, instant playback and volume control
  */
 

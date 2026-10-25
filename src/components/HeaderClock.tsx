@@ -211,15 +211,15 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
             </span>
           </button>
 
-          {/* 2D Video Game Mode Button */}
+          {/* 3D Video Game Mode Button */}
           {onSwitchToGame && (
             <button
               onClick={onSwitchToGame}
               className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-zinc-950 text-xs font-bold transition-all shadow-sm"
-              title="Switch to 2D Video Game Mode (Walk rooms, place tents, inspect & harvest)"
+              title="Switch to 3D Video Game Mode (Walk rooms, place tents, inspect & harvest)"
             >
               <Gamepad2 className="w-3.5 h-3.5" />
-              <span>2D Game Mode</span>
+              <span>3D Game Mode</span>
             </button>
           )}
 
@@ -228,7 +228,7 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
             <button
               onClick={onPopOutGame}
               className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-750 border border-zinc-700/80 text-zinc-200 text-xs font-semibold transition-colors"
-              title="Pop out 2D Game to Screen 2 in separate window (100% live synced)"
+              title="Pop out 3D Game to Screen 2 in separate window (100% live synced)"
             >
               <ExternalLink className="w-3 h-3 text-emerald-400" />
               <span>Screen 2 ↗</span>

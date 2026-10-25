@@ -306,7 +306,7 @@ export const PlayerInventoryModal: React.FC<PlayerInventoryModalProps> = ({
                 </h4>
                 <p className="text-xs text-zinc-500 leading-relaxed">
                   {harvests.length === 0 
-                    ? 'Nurture your cannabis cultivars, hops, peppers, or oyster mushrooms to harvest maturity! Switch to Hotbar Tool [3] (Harvest Shears) in 2D game mode or use proximity action [E] to harvest mature crops.' 
+                    ? 'Nurture your cannabis cultivars, hops, peppers, or oyster mushrooms to harvest maturity! Switch to Hotbar Tool [3] (Harvest Shears) in 3D game mode or use proximity action [E] to harvest mature crops.' 
                     : 'Try clearing your search query or switching category filters to view other stored items.'}
                 </p>
               </div>

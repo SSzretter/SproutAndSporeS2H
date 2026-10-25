@@ -661,7 +661,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 {/* Custom Name for the Tent */}
                 <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3 space-y-1.5">
                   <label className="text-xs font-semibold text-zinc-200 block">
-                    Tent Custom Name / Label (Displayed in Simulation &amp; 2D Game):
+                    Tent Custom Name / Label (Displayed in Simulation &amp; 3D Game):
                   </label>
                   <input
                     type="text"
