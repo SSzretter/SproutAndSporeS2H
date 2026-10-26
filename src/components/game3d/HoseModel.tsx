@@ -57,3 +57,54 @@ export function HoseModel({ eq, tent, room }: { eq: EquipmentItem; tent: Tent; r
     </mesh>
   );
 }
+
+const DUCT_RADIUS_FT: Record<number, number> = { 4: 0.17, 6: 0.25 }; // 4" / 6" flex duct
+
+/**
+ * Foil flex duct from an exhaust fan ducted outdoors: up out of the tent's roof port, across to
+ * the nearest room wall near ceiling height, ending in a wall vent.
+ */
+export function ExhaustDuctModel({ eq, room, tent }: { eq: EquipmentItem; room: Room; tent?: Tent }) {
+  const [fx, fy, fz] = itemWorldPosition(eq, room, tent);
+  const { length: L, height: H } = eq.dimensions;
+  const radius = DUCT_RADIUS_FT[eq.ductSizeIn ?? 6] ?? 0.25;
+  const { length: rL, width: rW, height: rH } = room.dimensions;
+  const tentTop = tent ? tentWorldOrigin(tent, room)[1] + tent.dimensions.height : fy + H;
+
+  const { geometry, vent } = useMemo(() => {
+    const outlet = new THREE.Vector3(fx + L / 2, fy + H / 2, fz);
+    const runY = Math.min(rH - radius - 0.1, Math.max(tentTop + 0.4, outlet.y + 0.4));
+    // Nearest room wall to the fan
+    const dists = [fx, rL - fx, fz, rW - fz];
+    const wall = dists.indexOf(Math.min(...dists));
+    const wallPt = wall === 0 ? new THREE.Vector3(0, runY, fz)
+      : wall === 1 ? new THREE.Vector3(rL, runY, fz)
+      : wall === 2 ? new THREE.Vector3(fx, runY, 0)
+      : new THREE.Vector3(fx, runY, rW);
+    const bendOut = outlet.clone().add(new THREE.Vector3(0.35, 0, 0));
+    const up = new THREE.Vector3(bendOut.x, runY - 0.3, bendOut.z);
+    const top = new THREE.Vector3(bendOut.x, runY, bendOut.z);
+    const nearWall = top.clone().lerp(wallPt, 0.9);
+    const pts = [outlet, bendOut, up, top, nearWall, wallPt].filter((p, i, a) => i === 0 || p.distanceTo(a[i - 1]) > 0.05);
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+    return {
+      geometry: new THREE.TubeGeometry(curve, Math.max(32, Math.round(curve.getLength() * 10)), radius, 12, false),
+      vent: { pos: wallPt, wall }
+    };
+  }, [fx, fy, fz, L, H, radius, rL, rW, rH, tentTop]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  const ventRotation: [number, number, number] = vent.wall < 2 ? [0, Math.PI / 2, 0] : [0, 0, 0];
+  return (
+    // Never intercept pointer events meant for the fan, tent or canopy
+    <group>
+      <mesh geometry={geometry} raycast={() => null}>
+        <meshStandardMaterial color="#c8ccd2" metalness={0.75} roughness={0.35} />
+      </mesh>
+      <mesh position={vent.pos} rotation={ventRotation} raycast={() => null}>
+        <boxGeometry args={[radius * 3, radius * 3, 0.06]} />
+        <meshStandardMaterial color="#e4e4e7" roughness={0.6} />
+      </mesh>
+    </group>
+  );
+}

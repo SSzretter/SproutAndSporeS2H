@@ -75,6 +75,10 @@ export function getDefaultItemDimensions(params: {
         return { length: 0.8, width: 0.4, height: 1.3, unit: 'ft' }; // ExHale mycelial CO2 bag
       case 'heat_mat':
         return { length: 1.7, width: 0.8, height: 0.05, unit: 'ft' }; // 10" x 20.75" seedling heat mat
+      case 'portable_ac':
+        return { length: 1.5, width: 1.2, height: 2.4, unit: 'ft' }; // 8,000-12,000 BTU single-hose unit
+      case 'hvac_register':
+        return { length: 1.0, width: 0.4, height: 0.08, unit: 'ft' }; // 12" x 4" ceiling supply grille
       default:
         return { length: 1.2, width: 1.0, height: 1.0, unit: 'ft' };
     }
@@ -287,6 +291,14 @@ export function getDefaultSpatialPosition(
         x: 0.5,
         y: 0.5,
         z: Number((cH * 0.5).toFixed(1))
+      };
+    }
+    if (equipmentType === 'hvac_register') {
+      // Supply grille flush with the ceiling, centered
+      return {
+        x: Number((cL / 2).toFixed(1)),
+        y: Number((cW / 2).toFixed(1)),
+        z: Number(Math.max(0, cH - 0.08).toFixed(2))
       };
     }
     if (equipmentType === 'heat_mat') {

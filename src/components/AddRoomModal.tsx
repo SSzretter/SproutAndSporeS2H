@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Room, ConstructionStandard, Dimensions, Climate, RoomEnvironmentType, GardenLayoutConfig, PlantItem, OutsideConditions } from '../types/sim';
 import { calculateVPD } from '../utils/physics';
+import { createHvacRegister } from '../utils/roomThermal';
 
 interface AddRoomModalProps {
   isOpen: boolean;
@@ -43,9 +44,8 @@ interface RoomPreset {
   foundationType: 'conditioned_basement' | 'slab_on_grade' | 'second_floor' | 'attic';
   wallRValue: number;
   airChangesPerHour: number;
-  hvacMode: 'central_ac_active' | 'passive_drift' | 'heating_active';
-  hvacCoolingSetpointF: number;
-  hvacHeatingSetpointF: number;
+  // Start the room with a ceiling supply register on the house's central system (cool / heat), or none
+  centralRegister: 'cool' | 'heat' | null;
 }
 
 const ROOM_PRESETS: RoomPreset[] = [
@@ -62,9 +62,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'conditioned_basement',
     wallRValue: 19,
     airChangesPerHour: 0.35,
-    hvacMode: 'central_ac_active',
-    hvacCoolingSetpointF: 72,
-    hvacHeatingSetpointF: 68
+    centralRegister: 'cool'
   },
   {
     id: 'preset-bedroom',
@@ -78,9 +76,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'second_floor',
     wallRValue: 19,
     airChangesPerHour: 0.40,
-    hvacMode: 'central_ac_active',
-    hvacCoolingSetpointF: 72,
-    hvacHeatingSetpointF: 68
+    centralRegister: 'cool'
   },
   {
     id: 'preset-garage',
@@ -94,9 +90,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 13,
     airChangesPerHour: 0.65,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 78,
-    hvacHeatingSetpointF: 60
+    centralRegister: null
   },
   {
     id: 'preset-attic',
@@ -110,9 +104,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'attic',
     wallRValue: 25,
     airChangesPerHour: 0.45,
-    hvacMode: 'central_ac_active',
-    hvacCoolingSetpointF: 70,
-    hvacHeatingSetpointF: 66
+    centralRegister: 'cool'
   },
   // Outdoor Gardens & Greenhouses
   {
@@ -128,9 +120,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 1,
     airChangesPerHour: 10.0,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 75,
-    hvacHeatingSetpointF: 60
+    centralRegister: null
   },
   {
     id: 'preset-raised-beds',
@@ -145,9 +135,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 1,
     airChangesPerHour: 10.0,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 75,
-    hvacHeatingSetpointF: 60
+    centralRegister: null
   },
   {
     id: 'preset-in-ground',
@@ -162,9 +150,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 1,
     airChangesPerHour: 10.0,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 75,
-    hvacHeatingSetpointF: 60
+    centralRegister: null
   },
   {
     id: 'preset-patio-deck',
@@ -179,9 +165,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 1,
     airChangesPerHour: 8.0,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 75,
-    hvacHeatingSetpointF: 60
+    centralRegister: null
   },
   {
     id: 'preset-greenhouse',
@@ -196,9 +180,7 @@ const ROOM_PRESETS: RoomPreset[] = [
     foundationType: 'slab_on_grade',
     wallRValue: 3,
     airChangesPerHour: 2.0,
-    hvacMode: 'passive_drift',
-    hvacCoolingSetpointF: 80,
-    hvacHeatingSetpointF: 55
+    centralRegister: null
   }
 ];
 
@@ -221,7 +203,7 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
   const [constructionStandard, setConstructionStandard] = useState<ConstructionStandard>('older_drafty');
   const [wallRValue, setWallRValue] = useState<number>(1);
   const [airChangesPerHour, setAirChangesPerHour] = useState<number>(10.0);
-  const [hvacMode, setHvacMode] = useState<'central_ac_active' | 'passive_drift' | 'heating_active'>('passive_drift');
+  const [centralRegister, setCentralRegister] = useState<'cool' | 'heat' | null>(null);
   const [starterSetup, setStarterSetup] = useState<'empty' | 'starter_hops' | 'starter_raised_bed' | 'starter_veg'>('starter_hops');
 
   if (!isOpen) return null;
@@ -238,7 +220,7 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
     setConstructionStandard(preset.constructionStandard);
     setWallRValue(preset.wallRValue);
     setAirChangesPerHour(preset.airChangesPerHour);
-    setHvacMode(preset.hvacMode);
+    setCentralRegister(preset.centralRegister);
 
     if (preset.id === 'preset-hop-yard') {
       setStarterSetup('starter_hops');
@@ -276,8 +258,8 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
       ),
       co2Ppm: outsideClimate.co2Ppm || outdoorCo2Ppm
     } : {
-      tempF: isOutdoor ? 74.0 : hvacMode === 'central_ac_active' ? 72.0 : 70.0,
-      tempC: isOutdoor ? 23.3 : hvacMode === 'central_ac_active' ? 22.2 : 21.1,
+      tempF: isOutdoor ? 74.0 : centralRegister === 'cool' ? 72.0 : 70.0,
+      tempC: isOutdoor ? 23.3 : centralRegister === 'cool' ? 22.2 : 21.1,
       rh: 55,
       lightPPFD: isOutdoor ? 850 : 10,
       vpdKpa: calculateVPD(isOutdoor ? 74.0 : 72.0, 55, isOutdoor ? 850 : 10),
@@ -302,11 +284,13 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
       foundationType,
       wallRValue,
       airChangesPerHour,
-      hvacMode,
-      hvacCoolingSetpointF: 72.0,
-      hvacHeatingSetpointF: 68.0,
+      adjacentSpaceTempF: 70,
       roomCo2BaselinePpm: outdoorCo2Ppm
     };
+    // Heating / cooling only ever comes from equipment in the room: here, the central system's register
+    if (environmentType === 'indoor' && centralRegister) {
+      newRoom.items = [...newRoom.items, createHvacRegister(newRoom, centralRegister, centralRegister === 'cool' ? 72 : 68)];
+    }
 
     const now = Date.now();
 
@@ -666,9 +650,10 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
             <div className="p-3 bg-sky-950/20 border border-sky-900/40 rounded-xl text-xs text-sky-300/90 flex items-start gap-2.5">
               <Wind className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-semibold text-sky-200">Indoor Infiltration &amp; Central HVAC:</span>
+                <span className="font-semibold text-sky-200">Indoor Envelope &amp; Heating / Cooling:</span>
                 <p className="text-[11px] text-sky-300/80 mt-0.5">
-                  Exchanges fresh air with outdoor baseline (<strong>{outdoorCo2Ppm} PPM CO₂</strong>) with R-{wallRValue} insulation and central HVAC conditioning.
+                  Exchanges fresh air with outdoor baseline (<strong>{outdoorCo2Ppm} PPM CO₂</strong>) through R-{wallRValue} walls. Temperature is set only by equipment you add (heaters, portable A/C, HVAC registers).
+                  {centralRegister ? ` Starts with a ceiling supply register (${centralRegister === 'cool' ? 'cooling to 72°F' : 'heating to 68°F'}) on the house's central system.` : ' Starts with no heating or cooling.'}
                 </p>
               </div>
             </div>

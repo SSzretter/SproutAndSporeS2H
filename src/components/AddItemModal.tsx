@@ -52,6 +52,7 @@ import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
 import { canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
 import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
+import { getPortableAcBtu, DEFAULT_REGISTER_CFM } from '../utils/roomThermal';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
@@ -155,6 +156,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [eqWatts, setEqWatts] = useState(240);
   const [eqHoseTentId, setEqHoseTentId] = useState(''); // Room-level humidifier / CO2 controller ducted into a tent by hose
   const [eqDuctSize, setEqDuctSize] = useState<InlineFanDuctSize>(6); // Inline fan duct / port diameter
+  const [eqExhaustTo, setEqExhaustTo] = useState<'room' | 'outdoors'>('room'); // Where an exhaust fan's duct discharges
   const [eqMatTargetId, setEqMatTargetId] = useState(''); // Heat mat: tent floor tray or the item it sits under / wraps
 
   // Person Form State
@@ -404,6 +406,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   ];
   const heatMatPlacement = heatMatOptions.some(o => o.id === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.id ?? '';
 
+  // Portable A/Cs and supply registers condition the room itself, not a tent
+  const roomOnlyEquipment = eqType === 'portable_ac' || eqType === 'hvac_register';
+
   const handleCreateEquipment = () => {
     const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
       ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
@@ -429,11 +434,24 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     if ((eqType === 'humidifier' || eqType === 'co2_regulator') && selectedDestinationTentId === 'room' && room.tents.some(t => t.id === eqHoseTentId)) {
       newEq.ductedToTentId = eqHoseTentId;
     }
+    // Thermostat equipment for the room itself
+    if (eqType === 'heater') newEq.targetTempF = 74;
+    if (eqType === 'portable_ac') {
+      newEq.targetTempF = 72;
+      newEq.coolingCapacityBtu = getPortableAcBtu(newEq);
+    }
+    if (eqType === 'hvac_register') {
+      newEq.registerMode = 'cool';
+      newEq.targetTempF = 72;
+      newEq.flowRateCfm = DEFAULT_REGISTER_CFM;
+      newEq.setting = 100;
+    }
     if (eqType === 'exhaust_fan') {
       const spec = INLINE_FAN_SPECS[eqDuctSize];
       newEq.ductSizeIn = eqDuctSize;
       newEq.flowRateCfm = spec.cfm;
       newEq.dimensions = { ...spec.dimensions };
+      newEq.exhaustTo = eqExhaustTo;
     }
     if (eqType === 'heat_mat' && heatMatPlacement) {
       newEq.attachedToId = heatMatPlacement;
@@ -1646,7 +1664,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   { type: 'heat_mat', label: 'Root Heat Mat' },
                   { type: 'heater', label: 'Heater' },
                   { type: 'co2_bag', label: 'CO₂ ExHale Bag' },
-                  { type: 'oscillating_fan', label: 'Air Circulator' }
+                  { type: 'oscillating_fan', label: 'Air Circulator' },
+                  { type: 'portable_ac', label: 'Portable A/C' },
+                  { type: 'hvac_register', label: 'HVAC Register' }
                 ].map(opt => (
                   <button
                     key={opt.type}
@@ -1677,6 +1697,12 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       } else if (opt.type === 'oscillating_fan') {
                         setEqName('8" Clip-On Air Circulator');
                         setEqWatts(15);
+                      } else if (opt.type === 'portable_ac') {
+                        setEqName('8,000 BTU Portable Air Conditioner');
+                        setEqWatts(900);
+                      } else if (opt.type === 'hvac_register') {
+                        setEqName('Ceiling Supply Register (Central HVAC)');
+                        setEqWatts(0);
                       } else {
                         setEqName('Ceramic Heater');
                         setEqWatts(500);
@@ -1716,6 +1742,20 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 />
               </div>
             </div>
+
+            {eqType === 'exhaust_fan' && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Exhaust Ducted To</label>
+                <select
+                  value={eqExhaustTo}
+                  onChange={e => setEqExhaustTo(e.target.value as 'room' | 'outdoors')}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="room">The room (adds the tent's heat, humidity and CO₂ to it)</option>
+                  <option value="outdoors">Outdoors through a window / wall vent (room draws in outdoor air)</option>
+                </select>
+              </div>
+            )}
 
             {eqType === 'exhaust_fan' && (
               <div>
@@ -1793,9 +1833,15 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               >
                 Cancel
               </button>
+              {roomOnlyEquipment && selectedDestinationTentId !== 'room' && (
+                <span className="self-center text-[11px] text-amber-300 mr-auto">
+                  {eqType === 'portable_ac' ? 'A portable A/C' : 'An HVAC register'} conditions the whole room: choose the room floor as the destination.
+                </span>
+              )}
               <button
                 onClick={handleCreateEquipment}
-                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white shadow-md shadow-teal-950/40"
+                disabled={roomOnlyEquipment && selectedDestinationTentId !== 'room'}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white shadow-md shadow-teal-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Install Device
               </button>

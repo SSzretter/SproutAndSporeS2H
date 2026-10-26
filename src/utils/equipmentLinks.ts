@@ -412,3 +412,37 @@ export function migrateEquipmentLinks(room: Room): Room {
     tents: room.tents.map(t => ({ ...t, items: t.items.map(i => fix(i, t.items, t)) }))
   };
 }
+
+// ---------------------------------------------------------------------------
+// Exhaust ducting
+// ---------------------------------------------------------------------------
+
+/** Exhaust fan airflow (CFM) at its live output, from its set CFM or its duct-size model. */
+function liveFanCfm(eq: EquipmentItem, outputPercent: number): number {
+  const cfm = eq.flowRateCfm || INLINE_FAN_SPECS[eq.ductSizeIn || inferInlineFanDuctSize(eq)].cfm;
+  return cfm * Math.max(0, Math.min(100, outputPercent)) / 100;
+}
+
+/**
+ * CFM currently ducted out of the building by exhaust fans in these items. Tent fans use the
+ * controller's output; a room-level fan has no controller and runs at its setting while on.
+ */
+export function getOutdoorVentedCfm(items: Item[], controlled: boolean): number {
+  return items.reduce((sum, i) => {
+    if (i.category !== 'equipment' || i.type !== 'exhaust_fan' || i.exhaustTo !== 'outdoors' || !i.powerOn) return sum;
+    return sum + liveFanCfm(i, controlled ? (i.effectiveSetting ?? 0) : i.setting);
+  }, 0);
+}
+
+/** Share (0-1) of a tent's running fan airflow that is ducted outdoors rather than into the room. */
+export function getOutdoorFanShare(items: Item[]): number {
+  let total = 0;
+  let outdoors = 0;
+  for (const i of items) {
+    if (i.category !== 'equipment' || i.type !== 'exhaust_fan' || !i.powerOn) continue;
+    const cfm = liveFanCfm(i, i.effectiveSetting ?? 0);
+    total += cfm;
+    if (i.exhaustTo === 'outdoors') outdoors += cfm;
+  }
+  return total > 0 ? outdoors / total : 0;
+}

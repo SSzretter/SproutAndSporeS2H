@@ -232,7 +232,9 @@ export type EquipmentType =
   | 'oscillating_fan'
   | 'co2_regulator'
   | 'co2_bag'
-  | 'heat_mat';
+  | 'heat_mat'
+  | 'portable_ac'    // Room A/C: removes heat (BTU rating) and moisture, vents its own heat outside
+  | 'hvac_register'; // Supply register from the house's central system: heated / cooled air at a CFM
 
 export type EquipmentControlMode = 'auto' | 'manual' | 'schedule' | 'cycle';
 
@@ -284,6 +286,9 @@ export interface EquipmentItem {
   drainHoseConnected?: boolean; // Dehumidifier drains continuously through a hose, so its bucket never fills
   waterFlowLph?: number; // Live water use (humidifier) or collection (dehumidifier) over the last tick, L/h
   ductSizeIn?: InlineFanDuctSize; // Inline (exhaust) fan duct / port diameter in inches
+  exhaustTo?: 'room' | 'outdoors'; // Exhaust fan: where its duct discharges (default: into the room)
+  coolingCapacityBtu?: number; // Portable A/C rated cooling (BTU/h); defaults from the name ("8,000 BTU")
+  registerMode?: 'cool' | 'heat' | 'auto' | 'off'; // HVAC register: what the house system supplies through it
   attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
   dimensions: Dimensions;
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
@@ -369,9 +374,7 @@ export interface Room {
   wallRValue?: number; // R-19 exterior walls for 2005 colonial
   airChangesPerHour?: number; // 0.35 ACH
   foundationType?: 'conditioned_basement' | 'slab_on_grade' | 'second_floor' | 'attic';
-  hvacMode?: 'central_ac_active' | 'passive_drift' | 'heating_active';
-  hvacCoolingSetpointF?: number; // Default 72°F
-  hvacHeatingSetpointF?: number; // Default 68°F
+  adjacentSpaceTempF?: number; // Rest of the house around an indoor room (interior walls, floor/ceiling); default 70°F
   roomCo2BaselinePpm?: number; // Baseline outdoor fresh air infiltration (420 ppm)
   controllerPriority?: ControllerPriority;
   activeInterlocks?: string[];

@@ -64,6 +64,7 @@ import { TENT_CATALOG } from '../utils/tentCatalog';
 import { clampItemPosition } from '../utils/spatial';
 import { getDuctTargetTent, HOSE_DELIVERY_EFFICIENCY, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, getMistWaterUseLph, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, getDehumidifierExtractionLph, emptyBucket, getMaxReservoirLiters, getMaxBucketCapacityL, canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, isHeatMat } from '../utils/equipmentLinks';
 import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
+import { getPortableAcBtu, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F, REGISTER_HEAT_SUPPLY_F } from '../utils/roomThermal';
 import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
@@ -447,7 +448,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                       </div>
                     </div>
                     <div className="text-[10px] text-emerald-300/80 bg-zinc-950/60 p-2 rounded border border-zinc-850">
-                      Open-air garden: Crops transpire freely under outdoor solar PPFD, natural rain hydrates containers and soil, and temperatures mirror local ambient weather. No residential drywall, R-value, or central HVAC applied.
+                      Open-air garden: Crops transpire freely under outdoor solar PPFD, natural rain hydrates containers and soil, and temperatures mirror local ambient weather. No building envelope or heating / cooling equipment; it follows the local weather.
                     </div>
                   </div>
                 </div>
@@ -536,19 +537,33 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     </div>
                   </div>
 
-                  {/* Central HVAC Status */}
+                  {/* Surroundings & the heating / cooling equipment actually in the room (no hidden HVAC) */}
                   <div className="space-y-2 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
                     <div className="flex justify-between items-center text-zinc-400 text-[11px]">
-                      <span>Central HVAC Mode:</span>
-                      <select
-                        value={room.hvacMode || 'central_ac_active'}
-                        onChange={e => onUpdateRoom({ ...room, hvacMode: e.target.value as any })}
-                        className="bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-[11px] text-zinc-200"
-                      >
-                        <option value="central_ac_active">Active Central A/C (72°F)</option>
-                        <option value="heating_active">Active Central Heat (68°F)</option>
-                        <option value="passive_drift">Passive Envelope Drift (HVAC Off)</option>
-                      </select>
+                      <label htmlFor={`adjacent-${room.id}`}>Rest of house (adjacent spaces):</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          id={`adjacent-${room.id}`}
+                          type="number"
+                          min="35"
+                          max="95"
+                          value={room.adjacentSpaceTempF ?? 70}
+                          onChange={e => {
+                            const value = parseFloat(e.target.value);
+                            if (!isNaN(value)) onUpdateRoom({ ...room, adjacentSpaceTempF: Math.max(35, Math.min(95, value)) });
+                          }}
+                          className="w-14 bg-zinc-950 border border-zinc-750 rounded px-1.5 py-0.5 text-right font-mono text-[11px] text-zinc-200"
+                        />
+                        <span>°F</span>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-zinc-400 bg-zinc-950/60 p-2 rounded border border-zinc-850">
+                      {(() => {
+                        const climateGear = room.items.filter(i => i.category === 'equipment' && (i.type === 'heater' || i.type === 'portable_ac' || i.type === 'hvac_register'));
+                        return climateGear.length === 0
+                          ? 'No heating or cooling equipment: temperature drifts with the outdoors, the ground and the rest of the house, plus heat from lights and gear. Add a heater, portable A/C or HVAC register to control it.'
+                          : `Heating / cooling: ${climateGear.map(i => i.name).join(', ')}.`;
+                      })()}
                     </div>
                     <div className="flex justify-between items-center text-zinc-400 text-[11px]">
                       <span>Outdoor Air Infiltration CO₂:</span>
@@ -571,7 +586,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         const people = room.items.filter(i => i.category === 'person');
                         const pets = room.items.filter(i => i.category === 'pet');
                         if (people.length === 0 && pets.length === 0) {
-                          return 'Unoccupied: No residents or pets assumed. Infiltration maintains fresh outside air equilibrium (~420 PPM).';
+                          return 'Unoccupied: room CO₂ comes from tent exhaust (mushroom respiration, CO₂ injection); outdoor air leaking in pulls it back toward the outdoor level.';
                         }
                         return `Active Occupancy: ${people.length} People, ${pets.length} Pets exhaling biological CO₂ and radiating body warmth into the lung room.`;
                       })()}
@@ -609,7 +624,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 </div>
                 <div className="flex justify-between py-1 border-b border-zinc-850">
                   <span className="text-zinc-400">Ambient CO₂</span>
-                  <span className="font-mono font-bold text-emerald-400">{room.climate.co2Ppm || 420} PPM</span>
+                  <span className="font-mono font-bold text-emerald-400">{Math.round(room.climate.co2Ppm || 420)} PPM</span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-zinc-400">Ambient PPFD</span>
@@ -4596,6 +4611,99 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 </div>
               )}
 
+              {/* 5b. PORTABLE A/C */}
+              {eq.type === 'portable_ac' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                  <div className="flex justify-between text-xs text-zinc-300">
+                    <span>Cooling Thermostat</span>
+                    <span className="font-mono font-bold text-sky-400">{eq.targetTempF ?? 72}°F</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="60"
+                    max="85"
+                    value={eq.targetTempF ?? 72}
+                    onChange={e => onUpdateItem({ ...eq, targetTempF: parseInt(e.target.value) }, selectedParentTentId)}
+                    className="w-full accent-sky-500 cursor-pointer"
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    <label htmlFor={`btu-${eq.id}`}>Rated cooling capacity</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        id={`btu-${eq.id}`}
+                        type="number"
+                        min="4000"
+                        max="24000"
+                        step="1000"
+                        value={getPortableAcBtu(eq)}
+                        onChange={e => {
+                          const value = parseInt(e.target.value);
+                          if (!isNaN(value) && value > 0) onUpdateItem({ ...eq, coolingCapacityBtu: Math.max(1000, Math.min(36000, value)) }, selectedParentTentId);
+                        }}
+                        className="w-20 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right font-mono text-zinc-200 focus:outline-none focus:border-sky-500"
+                      />
+                      <span>BTU/h</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    Runs while the room is above the set-point, removing {getPortableAcBtu(eq).toLocaleString()} BTU/h of heat and some moisture. Its own heat is vented outside through the window hose.
+                  </span>
+                </div>
+              )}
+
+              {/* 5c. HVAC SUPPLY REGISTER */}
+              {eq.type === 'hvac_register' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                  <div className="flex justify-between items-center text-xs text-zinc-300">
+                    <span>Central System Supply</span>
+                    <select
+                      value={eq.registerMode ?? 'cool'}
+                      onChange={e => onUpdateItem({ ...eq, registerMode: e.target.value as EquipmentItem['registerMode'] }, selectedParentTentId)}
+                      className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="cool">Cooling</option>
+                      <option value="heat">Heating</option>
+                      <option value="auto">Auto (heat or cool)</option>
+                      <option value="off">Off (register closed)</option>
+                    </select>
+                  </div>
+                  <div className="flex justify-between text-xs text-zinc-300">
+                    <span>Room Thermostat</span>
+                    <span className="font-mono font-bold text-sky-400">{eq.targetTempF ?? 72}°F</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="60"
+                    max="85"
+                    value={eq.targetTempF ?? 72}
+                    onChange={e => onUpdateItem({ ...eq, targetTempF: parseInt(e.target.value) }, selectedParentTentId)}
+                    className="w-full accent-sky-500 cursor-pointer"
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    <label htmlFor={`cfm-${eq.id}`}>Airflow through the register</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        id={`cfm-${eq.id}`}
+                        type="number"
+                        min="25"
+                        max="600"
+                        step="25"
+                        value={eq.flowRateCfm ?? DEFAULT_REGISTER_CFM}
+                        onChange={e => {
+                          const value = parseInt(e.target.value);
+                          if (!isNaN(value) && value > 0) onUpdateItem({ ...eq, flowRateCfm: Math.max(25, Math.min(1000, value)) }, selectedParentTentId);
+                        }}
+                        className="w-16 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right font-mono text-zinc-200 focus:outline-none focus:border-sky-500"
+                      />
+                      <span>CFM</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    Blows the house system's air in ({REGISTER_COOL_SUPPLY_F}°F when cooling, {REGISTER_HEAT_SUPPLY_F}°F when heating) while the room is past the set-point. Cooling air is dry, so it also lowers humidity.
+                  </span>
+                </div>
+              )}
+
               {/* 6. INLINE FAN DUCT SIZE */}
               {eq.type === 'exhaust_fan' && (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
@@ -4628,6 +4736,25 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </div>
                   <span className="text-[10px] text-zinc-500 block">
                     Air exchange scales with the fan's CFM against the tent's volume.
+                  </span>
+                  <div className="flex items-center justify-between gap-2 pt-1 text-xs text-zinc-300">
+                    <label htmlFor={`exhaust-to-${eq.id}`}>Exhaust ducted to</label>
+                    <select
+                      id={`exhaust-to-${eq.id}`}
+                      value={eq.exhaustTo ?? 'room'}
+                      onChange={e => onUpdateItem({ ...eq, exhaustTo: e.target.value as 'room' | 'outdoors' }, selectedParentTentId)}
+                      className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="room">The room</option>
+                      <option value="outdoors">Outdoors (window / wall vent)</option>
+                    </select>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    {(eq.exhaustTo ?? 'room') === 'outdoors'
+                      ? 'Ducted out a window or wall vent: what it removes leaves the building. The room draws in the same amount of outdoor air to replace it.'
+                      : selectedParentTentId
+                        ? "Blows the tent's warm, humid (and CO\u2082-laden) air into the room, so it adds to the room's climate."
+                        : 'A room-level fan blowing into the room just stirs the air; duct it outdoors to ventilate the room.'}
                   </span>
                 </div>
               )}

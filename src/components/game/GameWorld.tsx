@@ -18,6 +18,8 @@ import { TentInspectorModal } from './TentInspectorModal';
 import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
+import { getCropIssues } from '../../utils/cropIssues';
+import { getEquipmentActivity } from '../../utils/equipmentStatus';
 import { migrateEquipmentLinks, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, emptyBucket } from '../../utils/equipmentLinks';
 import { 
   Volume2, 
@@ -965,20 +967,27 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     // Read the live item so the tooltip reflects changes made while hovering (e.g. power toggled)
     const item = [...currentRoom.items, ...currentRoom.tents.flatMap(t => t.items)].find(i => i.id === hoverTarget.item.id) || hoverTarget.item;
     if (item.category === 'plant' || item.category === 'mushroom') {
-      return `${item.name} (${item.stage}) [Click to Inspect & Care]`;
+      const host = hoverTarget.tentId ? currentRoom.tents.find(t => t.id === hoverTarget.tentId) : undefined;
+      const issues = getCropIssues(item, (host ?? currentRoom).climate, host ? host.items : currentRoom.items, !host && currentRoom.environmentType === 'outdoor_garden');
+      const problems = issues.length > 0 ? ` — ${issues.map(i => `${i.severity === 'critical' ? '⛔' : '⚠'} ${i.label}`).join(', ')}` : '';
+      return `${item.name} (${item.stage})${problems} [Click to Inspect & Care]`;
     }
     if (item.category === 'equipment') {
+      const activity = getEquipmentActivity(item, new Date(state.simTime).getHours());
+      const statusIcon = { running: '🟢', idle: '🟡', blocked: '🔴', off: '⚫' }[activity?.activity ?? 'off'];
+      const status = `${statusIcon} ${activity?.label ?? 'Off'}`;
       if (item.type === 'humidifier') {
         const water = isReservoirEmpty(item) ? '💧 EMPTY' : `💧 ${Math.round((getReservoirLevelL(item) / getReservoirLiters(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${water}) [Water Can to Refill • Inspect to Edit]`;
+        return `⚙️ ${item.name} (${status} • ${water}) [Water Can to Refill • Inspect to Edit]`;
       }
       if (item.type === 'dehumidifier') {
         const bucket = item.drainHoseConnected ? 'drain hose'
           : isBucketFull(item) ? '🪣 FULL'
           : `🪣 ${Math.round((getBucketLevelL(item) / getBucketCapacityL(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${bucket}) [Water Can to Empty • Inspect to Edit]`;
+        return `⚙️ ${item.name} (${status} • ${bucket}) [Water Can to Empty • Inspect to Edit]`;
       }
-      return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${item.powerWatts}W) [Inspect to Edit • Click to Toggle]`;
+      const vent = item.type === 'exhaust_fan' ? ` • → ${item.exhaustTo === 'outdoors' ? 'outdoors' : 'room'}` : '';
+      return `⚙️ ${item.name} (${status} • ${item.powerWatts}W${vent}) [Inspect to Edit • Click to Toggle]`;
     }
     return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Edit]`;
   })();
@@ -1069,8 +1078,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
             </select>
           </div>
 
-          {/* Climate Metrics Quick Bar */}
+          {/* Climate Metrics Quick Bar (the room you're in) */}
           <div className="hidden lg:flex items-center gap-2 text-xs font-mono">
+            <span className="text-[10px] font-sans font-semibold uppercase tracking-wide text-zinc-500">Room</span>
             <span className="px-2 py-0.5 rounded bg-zinc-950/80 border border-zinc-800 text-amber-300">
               🌡️ {state.tempUnit === 'F' ? `${currentRoom.climate.tempF.toFixed(1)}°F` : `${currentRoom.climate.tempC.toFixed(1)}°C`}
             </span>
@@ -1266,10 +1276,51 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           )}
         </div>
 
-        {/* Dual Screen Real-Time Sync Indicator */}
-        <div className="absolute top-4 right-6 z-10 bg-zinc-900/85 backdrop-blur border border-zinc-800 rounded-xl px-3 py-1.5 flex items-center gap-2 text-xs font-mono text-emerald-400 shadow-md">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span>Screen Sync: Active</span>
+        {/* Sim clock, outdoor conditions (outside the building) and the dual-screen sync indicator */}
+        <div className="absolute top-4 right-6 z-10 flex flex-col items-end gap-2 pointer-events-none">
+          {(() => {
+            const simDate = new Date(state.simTime);
+            const hour = simDate.getHours();
+            const outside = state.outside;
+            const location = state.outdoorLocation;
+            const weatherIcon: Record<string, string> = { sunny: '☀️', partly_cloudy: '⛅', cloudy: '☁️', rainy: '🌧️', clear_night: '🌙' };
+            const weatherLabel = (outside.weather || 'sunny').replace('_', ' ');
+            const fmtTemp = (f: number, c: number) => (state.tempUnit === 'F' ? `${f.toFixed(1)}°F` : `${c.toFixed(1)}°C`);
+            return (
+              <>
+                <div className="bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-xl px-3 py-1.5 shadow-md text-right">
+                  <div className="text-sm font-bold font-mono text-zinc-100 leading-tight">
+                    {hour >= 6 && hour < 20 ? '☀️' : '🌙'} {simDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 leading-tight">
+                    {simDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                  </div>
+                </div>
+                <div className="bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-xl px-3 py-2 shadow-md text-xs min-w-[190px]">
+                  <div className="flex items-center justify-between gap-3 mb-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Outdoors</span>
+                    <span className="text-[10px] text-zinc-500 truncate max-w-[130px]" title={location.isLiveWeather ? 'Live weather' : 'Regional climate normals'}>
+                      {location.cityName}{location.state ? `, ${location.state}` : ''}{location.isLiveWeather ? '' : ' (est.)'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-zinc-200 font-semibold">
+                    <span className="text-base leading-none">{weatherIcon[outside.weather] ?? '☀️'}</span>
+                    <span className="capitalize">{weatherLabel}</span>
+                    <span className="ml-auto font-mono text-amber-300">{fmtTemp(outside.tempF, outside.tempC)}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-x-2 mt-1 font-mono text-[11px]">
+                    <span className="text-cyan-300">💧 {Math.round(outside.rh)}%</span>
+                    <span className="text-purple-300">🌫️ {Math.round(outside.co2Ppm || 420)}</span>
+                    <span className="text-zinc-300">💨 {Math.round(outside.windMph)} mph</span>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+          <div className="bg-zinc-900/85 backdrop-blur border border-zinc-800 rounded-xl px-3 py-1.5 flex items-center gap-2 text-xs font-mono text-emerald-400 shadow-md">
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            <span>Screen Sync: Active</span>
+          </div>
         </div>
       </div>
 

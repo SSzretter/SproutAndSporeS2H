@@ -2,6 +2,7 @@ import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, Ou
 import { simulateOutsideConditions, calculateVPD } from './physics';
 import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry } from './spatial';
 import { migrateEquipmentLinks } from './equipmentLinks';
+import { createHvacRegister, migrateRoomClimateControl } from './roomThermal';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -57,7 +58,7 @@ export function createDefaultSimulationState(): SimulationState {
         rhTriggerLow: 45,
         co2TriggerHighPpm: 1500,
         co2TriggerLowPpm: 380,
-        minSpeedPercent: 10,
+        minSpeedPercent: 0, // Off until a trigger needs it; idling would vent heat & humidity for nothing
         maxSpeedPercent: 70
       },
       dimensions: { length: 1.2, width: 0.8, height: 0.8, unit: 'ft' },
@@ -393,9 +394,7 @@ export function createDefaultSimulationState(): SimulationState {
     wallRValue: 19, // R-19 exterior walls for 2005 colonial
     airChangesPerHour: 0.35, // 0.35 ACH
     foundationType: 'conditioned_basement',
-    hvacMode: 'central_ac_active',
-    hvacCoolingSetpointF: 72.0,
-    hvacHeatingSetpointF: 68.0,
+    adjacentSpaceTempF: 70, // Rest of the house around the basement suite
     roomCo2BaselinePpm: 420, // Clean outdoor baseline when unoccupied
     climate: {
       tempF: 71.0,
@@ -408,6 +407,8 @@ export function createDefaultSimulationState(): SimulationState {
     tents: [tentA, tentB],
     items: roomEquipment
   };
+  // Cooling comes from a visible ceiling register on the house's central system (no hidden HVAC)
+  initialRoom.items = [...initialRoom.items, createHvacRegister(initialRoom, 'cool', 72)];
 
   return {
     simTime,
@@ -483,9 +484,6 @@ export function loadSimulation(): SimulationState {
       state.room.wallRValue = 19;
       state.room.airChangesPerHour = 0.35;
       state.room.foundationType = 'conditioned_basement';
-      state.room.hvacMode = 'central_ac_active';
-      state.room.hvacCoolingSetpointF = 72;
-      state.room.hvacHeatingSetpointF = 68;
     }
 
     if (state.room.roomCo2BaselinePpm === 600 || !state.room.roomCo2BaselinePpm) {
@@ -612,7 +610,7 @@ export function loadSimulation(): SimulationState {
                   rhTriggerLow: 45,
                   co2TriggerHighPpm: 1500,
                   co2TriggerLowPpm: 380,
-                  minSpeedPercent: 10,
+                  minSpeedPercent: 0,
                   maxSpeedPercent: 70
                 })
               };
@@ -674,7 +672,7 @@ export function loadSimulation(): SimulationState {
     }));
 
     // Backfill humidifier reservoir fields and drop dangling hose links (tent deleted / unit moved into a tent)
-    state.rooms = state.rooms.map(migrateEquipmentLinks);
+    state.rooms = state.rooms.map(rm => migrateEquipmentLinks(migrateRoomClimateControl(rm)));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     // Ensure backwards compatibility for harvest records

@@ -11,7 +11,7 @@ import { Vec3 } from './coords';
  * React 19 errors on when the canvas unmounts.)
  */
 
-export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float';
+export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float' | 'issueCritical' | 'issueWarning';
 
 export interface WorldLabel {
   id: string;
@@ -30,12 +30,19 @@ export interface LabelStat {
 
 export type LabelRegistry = React.MutableRefObject<Map<string, HTMLDivElement>>;
 
+// Vertical gap left between labels that had to be stacked to avoid overlapping
+const LABEL_GAP_PX = 3;
+
 /** Lives inside the <Canvas>: projects each label's anchor and moves its DOM element. */
 export function LabelProjector({ labels, registry }: { labels: WorldLabel[]; registry: LabelRegistry }) {
   const { camera, size } = useThree();
   const v = useRef(new THREE.Vector3());
 
   useFrame(() => {
+    // Screen boxes of labels already placed this frame; later labels that would overlap one are
+    // nudged upward so neighbouring badges (e.g. two plants side by side) stay readable.
+    // Floating action text is exempt: it's brief and animates on its own.
+    const placed: Array<{ left: number; right: number; top: number; bottom: number }> = [];
     for (const label of labels) {
       const el = registry.current.get(label.id);
       if (!el) continue;
@@ -44,7 +51,18 @@ export function LabelProjector({ labels, registry }: { labels: WorldLabel[]; reg
       el.style.display = visible ? 'block' : 'none';
       if (!visible) continue;
       const x = (v.current.x * 0.5 + 0.5) * size.width;
-      const y = (-v.current.y * 0.5 + 0.5) * size.height;
+      let y = (-v.current.y * 0.5 + 0.5) * size.height;
+      if (label.variant !== 'float') {
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        for (let guard = 0; guard < 8; guard++) {
+          const box = { left: x - w / 2, right: x + w / 2, top: y - h, bottom: y };
+          const hit = placed.find(p => box.left < p.right && box.right > p.left && box.top < p.bottom && box.bottom > p.top);
+          if (!hit) break;
+          y = hit.top - LABEL_GAP_PX; // sit just above the label it collided with
+        }
+        placed.push({ left: x - w / 2, right: x + w / 2, top: y - h, bottom: y });
+      }
       el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
     }
   });
@@ -57,6 +75,8 @@ const VARIANT_CLASSES: Record<LabelVariant, string> = {
   tentActive: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-emerald-950/90 border-emerald-600 text-emerald-200',
   door: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-zinc-900/90 border-zinc-700 text-zinc-100',
   badge: 'w-6 h-6 rounded-full bg-amber-400 text-black text-xs font-bold flex items-center justify-center shadow-lg animate-bounce',
+  issueCritical: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-rose-600/95 border-rose-300 text-white shadow-lg animate-pulse',
+  issueWarning: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-amber-400/95 border-amber-200 text-zinc-950 shadow-lg',
   float: 'text-xs font-bold whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]'
 };
 

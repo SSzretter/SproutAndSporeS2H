@@ -446,7 +446,7 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-mono font-bold text-zinc-100">
-                      {room.climate.co2Ppm || 420} <span className="text-[10px] text-zinc-400 font-normal">PPM</span>
+                      {Math.round(room.climate.co2Ppm || 420)} <span className="text-[10px] text-zinc-400 font-normal">PPM</span>
                     </span>
                     <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${co2BadgeClass}`}>
                       {co2BadgeText}

@@ -12,7 +12,9 @@ import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
 import { getVpdZone } from '../../utils/physics';
-import { HoseModel } from './HoseModel';
+import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
+import { HoseModel, ExhaustDuctModel } from './HoseModel';
+import { getEquipmentActivity, EquipmentActivity } from '../../utils/equipmentStatus';
 import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
 
 export type { Doorway } from './EnvironmentModels';
@@ -70,10 +72,35 @@ function HoverRing({ item }: { item: Item }) {
   );
 }
 
+const ACTIVITY_COLORS: Record<EquipmentActivity, string> = {
+  running: '#22c55e',
+  idle: '#f59e0b',
+  blocked: '#ef4444',
+  off: '#52525b'
+};
+
+/** Status LED on a piece of equipment: pulsing green while it works, amber idle, flashing red blocked, grey off. */
+function ActivityLight({ activity, y, x }: { activity: EquipmentActivity; y: number; x: number }) {
+  const ref = useRef<THREE.MeshBasicMaterial>(null);
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    ref.current.opacity = activity === 'running' ? 0.65 + 0.35 * Math.sin(clock.elapsedTime * 4)
+      : activity === 'blocked' ? (Math.sin(clock.elapsedTime * 8) > 0 ? 1 : 0.25)
+      : activity === 'idle' ? 0.75 : 0.5;
+  });
+  return (
+    <mesh position={[x, y, 0]} raycast={() => null}>
+      <sphereGeometry args={[0.07, 12, 10]} />
+      <meshBasicMaterial ref={ref} color={ACTIVITY_COLORS[activity]} transparent toneMapped={false} />
+    </mesh>
+  );
+}
+
 function ItemNode({
   item,
   room,
   tent,
+  hour,
   hovered,
   onHover,
   onClickItem
@@ -81,6 +108,7 @@ function ItemNode({
   item: Item;
   room: Room;
   tent?: Tent;
+  hour: number;
   hovered: boolean;
   onHover: GameSceneProps['onHover'];
   onClickItem: GameSceneProps['onClickItem'];
@@ -130,6 +158,12 @@ function ItemNode({
         <group {...handlers}>{model}</group>
       )}
       {hovered && <HoverRing item={item} />}
+      {item.category === 'equipment' && !(item.type === 'heat_mat' && item.attachedToId) && (() => {
+        const activity = getEquipmentActivity(item, hour);
+        if (!activity) return null;
+        // On top near one end; under ceiling-hung gear so it stays visible from below
+        return <ActivityLight activity={activity.activity} x={item.dimensions.length * 0.35} y={ceilingMounted ? -0.1 : item.dimensions.height + 0.1} />;
+      })()}
     </group>
   );
 }
@@ -285,9 +319,21 @@ function buildWorldLabels(
   }
   const addBadges = (items: Item[], tent?: Tent) => {
     for (const item of items) {
-      if (!isCropReady(item)) continue;
+      if (item.category !== 'plant' && item.category !== 'mushroom') continue;
       const [x, y, z] = itemWorldPosition(item, room, tent);
-      labels.push({ id: `ready-${item.id}`, position: [x, y + item.dimensions.height + 0.4, z], text: '✂', variant: 'badge' });
+      const top = y + item.dimensions.height + 0.4;
+      const ready = isCropReady(item);
+      if (ready) labels.push({ id: `ready-${item.id}`, position: [x, top, z], text: '✂', variant: 'badge' });
+      // Most severe problem first, with a count of any others (all are listed in the hover tooltip)
+      const issues = getCropIssues(item, (tent ?? room).climate, items, !tent && room.environmentType === 'outdoor_garden');
+      if (issues.length > 0) {
+        labels.push({
+          id: `issue-${item.id}`,
+          position: [x, ready ? top + 0.9 : top, z],
+          text: `${issues[0].severity === 'critical' ? '⛔' : '⚠'} ${issueBadgeText(issues[0])}${issues.length > 1 ? ` +${issues.length - 1}` : ''}`,
+          variant: issues[0].severity === 'critical' ? 'issueCritical' : 'issueWarning'
+        });
+      }
     }
   };
   room.tents.forEach(t => addBadges(t.items, t));
@@ -300,6 +346,7 @@ function buildWorldLabels(
 
 function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegistry: LabelRegistry }) {
   const { room, simTime, doorways, hoveredId, playerRef, cameraYawRef, onHover, onClickItem, onClickTent, onClickDoor, onClickFloor, labels, labelRegistry } = props;
+  const hour = new Date(simTime).getHours();
 
   const handleFloorClick = (e: ThreeEvent<MouseEvent>) => {
     if (e.delta > DRAG_CLICK_THRESHOLD_PX) return;
@@ -330,12 +377,18 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
             onHover={t => onHover(t ? { kind: 'tent', tent: t } : null)}
           />
           {tent.items.map(item => (
-            <ItemNode key={item.id} item={item} room={room} tent={tent} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
+            <ItemNode key={item.id} item={item} room={room} tent={tent} hour={hour} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
           ))}
+          {tent.items.map(item => item.category === 'equipment' && item.type === 'exhaust_fan' && item.exhaustTo === 'outdoors'
+            ? <ExhaustDuctModel key={`duct-${item.id}`} eq={item} room={room} tent={tent} />
+            : null)}
         </group>
       ))}
+      {room.items.map(item => item.category === 'equipment' && item.type === 'exhaust_fan' && item.exhaustTo === 'outdoors'
+        ? <ExhaustDuctModel key={`duct-${item.id}`} eq={item} room={room} />
+        : null)}
       {room.items.map(item => (
-        <ItemNode key={item.id} item={item} room={room} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
+        <ItemNode key={item.id} item={item} room={room} hour={hour} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
       ))}
       {room.items.map(item => {
         const ductTent = getDuctTargetTent(room, item);

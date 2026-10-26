@@ -89,6 +89,7 @@ export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem
       );
     case 'exhaust_fan': {
       const r = Math.min(W, h) / 2;
+      const blowing = on && (eq.effectiveSetting ?? eq.setting) > 0;
       return (
         <group>
           <HangingCords length={L * 0.5} width={0.01} topY={h} hangFt={hangFt} />
@@ -102,7 +103,7 @@ export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem
           </mesh>
           <mesh position={[L * 0.31, h / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
             <circleGeometry args={[r * 0.18, 10]} />
-            <meshStandardMaterial color={on ? '#10b981' : '#52525b'} emissive={on ? '#10b981' : '#000000'} emissiveIntensity={0.8} />
+            <meshStandardMaterial color={blowing ? '#10b981' : '#52525b'} emissive={blowing ? '#10b981' : '#000000'} emissiveIntensity={0.8} />
           </mesh>
         </group>
       );
@@ -180,6 +181,47 @@ export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem
               <meshStandardMaterial color="#334155" roughness={0.6} />
             </mesh>
           )}
+        </group>
+      );
+    }
+    case 'portable_ac': {
+      const cooling = on && (eq.effectiveSetting ?? 0) > 0;
+      return (
+        <group>
+          <mesh position={[0, h / 2, 0]}>
+            <boxGeometry args={[L, h, W]} />
+            <meshStandardMaterial color="#f4f4f5" roughness={0.45} />
+          </mesh>
+          {[0.55, 0.65, 0.75].map(t => (
+            <mesh key={t} position={[0, h * t, W / 2 + 0.002]}>
+              <planeGeometry args={[L * 0.75, h * 0.035]} />
+              <meshStandardMaterial color={cooling ? '#38bdf8' : '#71717a'} emissive={cooling ? '#0ea5e9' : '#000000'} emissiveIntensity={cooling ? 0.5 : 0} />
+            </mesh>
+          ))}
+          {/* Exhaust hose stub out the back, toward the window kit */}
+          <mesh position={[0, h * 0.6, -W / 2 - 0.25]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.2, 0.2, 0.5, 14]} />
+            <meshStandardMaterial color="#a1a1aa" roughness={0.6} />
+          </mesh>
+        </group>
+      );
+    }
+    case 'hvac_register': {
+      const blowing = on && (eq.effectiveSetting ?? 0) > 0;
+      const heating = blowing && (eq.interlockStatus ?? '').startsWith('Heating');
+      const tint = !blowing ? '#d4d4d8' : heating ? '#fb923c' : '#38bdf8';
+      return (
+        <group>
+          <mesh position={[0, h / 2, 0]}>
+            <boxGeometry args={[L, h, W]} />
+            <meshStandardMaterial color="#e4e4e7" roughness={0.5} />
+          </mesh>
+          {[-0.3, -0.1, 0.1, 0.3].map(t => (
+            <mesh key={t} position={[L * t, -0.002, 0]} rotation={[Math.PI / 2, 0, 0]}>
+              <planeGeometry args={[L * 0.12, W * 0.8]} />
+              <meshStandardMaterial color={tint} emissive={blowing ? tint : '#000000'} emissiveIntensity={blowing ? 0.6 : 0} side={THREE.DoubleSide} />
+            </mesh>
+          ))}
         </group>
       );
     }
