@@ -1,7 +1,8 @@
 import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar, getPlantTargetSize, getContainerSizeFactor } from './plantLifecycle';
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
-import { getDuctTargetTent, getDuctedHumidifiersForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, HOSE_DELIVERY_EFFICIENCY } from './humidifierDucting';
+import { getDuctTargetTent, getDuctedEquipmentForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, getRootZoneHeat, applyRootZoneHeat, HOSE_DELIVERY_EFFICIENCY, RootZoneHeat, isReservoirEmpty, isDehumidifier, isBucketFull, getReservoirLevelL, getBucketLevelL, getBucketCapacityL, getMistWaterUseLph, getDehumidifierExtractionLph, absoluteHumidityGm3, shareEnclosureWater, CUBIC_METRES_PER_CUBIC_FOOT, MIST_EVAPORATION_EFFICIENCY } from './equipmentLinks';
+import { INLINE_FAN_SPECS } from './equipmentCatalog';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
 
 export interface SimulationEvent {
@@ -248,7 +249,6 @@ export interface ArbitratedEquipmentResult {
   co2RegulatorTarget: number | null;
   totalHeatWatts: number;
   lightPPFD: number;
-  heatMatActive: boolean;
 }
 
 export function arbitrateEnclosureEquipment(params: {
@@ -279,7 +279,6 @@ export function arbitrateEnclosureEquipment(params: {
 
   let totalHeatWatts = 0;
   let lightPPFD = 0;
-  let heatMatActive = false;
 
   // 1. First Pass: Evaluate preliminary demands
   let activeHumidifierTarget: number | null = null;
@@ -314,7 +313,7 @@ export function arbitrateEnclosureEquipment(params: {
   // Evaluate Humidifier & Dehumidifier Preliminary Demands
   items.forEach(item => {
     if (item.category === 'equipment') {
-      if (item.type === 'humidifier' && item.powerOn) {
+      if (item.type === 'humidifier' && item.powerOn && !isReservoirEmpty(item)) {
         const target = item.targetRh ?? item.setting ?? (isShroomEnclosure ? 90 : 60);
         if (climate.rh < target - 1.0) {
           humidifierDemanded = true;
@@ -328,7 +327,7 @@ export function arbitrateEnclosureEquipment(params: {
           activeHumidifierCapacity += capacity;
           humidifierCoolingWeighted += capacity * water.coolingPerCapacity;
         }
-      } else if (item.type === 'dehumidifier' && item.powerOn) {
+      } else if (item.type === 'dehumidifier' && item.powerOn && !isBucketFull(item)) {
         const target = item.targetRh ?? 50;
         if (climate.rh > target + 1.5) {
           dehumidifierDemanded = true;
@@ -343,8 +342,6 @@ export function arbitrateEnclosureEquipment(params: {
           co2RegulatorActive = true;
           co2RegulatorTarget = target;
         }
-      } else if (item.type === 'heat_mat' && item.powerOn) {
-        heatMatActive = true;
       }
     }
   });
@@ -412,7 +409,10 @@ export function arbitrateEnclosureEquipment(params: {
     // B. HUMIDIFIERS
     if (eq.type === 'humidifier') {
       const target = eq.targetRh ?? eq.setting ?? (isShroomEnclosure ? 90 : 60);
-      if (humidifierSuppressed) {
+      if (isReservoirEmpty(eq)) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Out of water: Refill reservoir';
+      } else if (humidifierSuppressed) {
         eq.effectiveSetting = 0;
         eq.interlockStatus = 'Locked out: Dehumidifier arbitration active';
       } else if (climate.rh >= target) {
@@ -428,7 +428,10 @@ export function arbitrateEnclosureEquipment(params: {
     // C. DEHUMIDIFIERS
     if (eq.type === 'dehumidifier') {
       const target = eq.targetRh ?? 50;
-      if (dehumidifierSuppressed) {
+      if (isBucketFull(eq)) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Bucket full: Empty collection bucket';
+      } else if (dehumidifierSuppressed) {
         eq.effectiveSetting = 0;
         eq.interlockStatus = 'Locked out: Humidifier priority active';
       } else if (climate.rh <= target) {
@@ -614,8 +617,7 @@ export function arbitrateEnclosureEquipment(params: {
     co2RegulatorActive,
     co2RegulatorTarget,
     totalHeatWatts,
-    lightPPFD,
-    heatMatActive
+    lightPPFD
   };
 }
 
@@ -645,6 +647,33 @@ export function simulateEnvironmentTick(
   let roomTempF = room.climate.tempF;
   let roomRH = room.climate.rh;
   let roomCo2 = room.climate.co2Ppm || 420;
+
+  // Water each room-floor humidifier used / dehumidifier collected this tick (litres), from the
+  // vapour it actually added to or removed from the room air
+  const roomWaterL = new Map<string, number>();
+  const roomVolM3 = roomVolCuFt * CUBIC_METRES_PER_CUBIC_FOOT;
+  // Announce the moment a tank runs dry or a bucket fills
+  const announceWaterLimits = <T extends Tent['items'][number]>(before: T, after: T, location?: string): T => {
+    if (before.category !== 'equipment' || after.category !== 'equipment') return after;
+    if (before.type === 'humidifier' && !isReservoirEmpty(before) && isReservoirEmpty(after)) {
+      events.push({
+        type: 'warning',
+        category: 'alert',
+        tentName: location,
+        title: `💧 Reservoir Empty: ${before.name}`,
+        message: `${before.name} ran out of water and stopped misting. Refill its reservoir to resume humidifying.`
+      });
+    } else if (before.type === 'dehumidifier' && !isBucketFull(before) && isBucketFull(after)) {
+      events.push({
+        type: 'warning',
+        category: 'alert',
+        tentName: location,
+        title: `🪣 Bucket Full: ${before.name}`,
+        message: `${before.name}'s collection bucket is full and it shut off. Empty the bucket (or connect a drain hose) to resume dehumidifying.`
+      });
+    }
+    return after;
+  };
   let roomLightPPFD = 10;
   const hvacMode = room.hvacMode || 'central_ac_active';
   const coolingSetpoint = room.hvacCoolingSetpointF || 72.0;
@@ -731,19 +760,35 @@ export function simulateEnvironmentTick(
             roomTempF += 0.06 * (item.setting / 100) * (elapsedMinutes / 10);
           }
         } else if (item.type === 'dehumidifier') {
+          if (isBucketFull(item)) return;
           const target = item.targetRh ?? 50;
           if (roomRH > target) {
-            roomRH = Math.max(target, roomRH - 0.25 * (item.setting / 100) * (elapsedMinutes / 10));
+            // Pull out up to the unit's capacity at these conditions (and what its bucket has room
+            // for), stopping once the room is down to target
+            const satGm3 = absoluteHumidityGm3(roomTempF, 100);
+            const bucketRoomL = item.drainHoseConnected ? Infinity : getBucketCapacityL(item) - getBucketLevelL(item);
+            const capacityG = Math.min(bucketRoomL, getDehumidifierExtractionLph(item, item.setting, roomRH, roomTempF) * (elapsedMinutes / 60)) * 1000;
+            const removedG = Math.max(0, Math.min(capacityG, ((roomRH - target) / 100) * satGm3 * roomVolM3));
+            roomRH -= (removedG / (satGm3 * roomVolM3)) * 100;
+            roomWaterL.set(item.id, removedG / 1000);
           }
         } else if (item.type === 'humidifier') {
           // Hose-ducted units mist into their tent instead (handled in the tent loop)
-          if (getDuctTargetTent(room, item)) return;
+          if (getDuctTargetTent(room, item) || isReservoirEmpty(item)) return;
           const target = item.targetRh ?? 60;
           if (roomRH < target) {
+            // Mist up to the unit's rated output (and the water it has left), stopping once the
+            // room reaches target; some atomized water settles out instead of evaporating
             const { outputFactor } = getMistWaterEffects(item.reservoirTempF ?? roomTempF, roomTempF);
-            roomRH = Math.min(target, roomRH + 0.35 * (item.setting / 100) * outputFactor * (elapsedMinutes / 10));
+            const satGm3 = absoluteHumidityGm3(roomTempF, 100);
+            const maxWaterL = Math.min(getReservoirLevelL(item), getMistWaterUseLph(item, item.setting) * outputFactor * (elapsedMinutes / 60));
+            const addedG = Math.max(0, Math.min(maxWaterL * 1000 * MIST_EVAPORATION_EFFICIENCY, ((target - roomRH) / 100) * satGm3 * roomVolM3));
+            roomRH += (addedG / (satGm3 * roomVolM3)) * 100;
+            roomWaterL.set(item.id, addedG / 1000 / MIST_EVAPORATION_EFFICIENCY);
           }
         } else if (item.type === 'co2_regulator') {
+          // Hose-ducted controllers inject into their tent instead (handled in the tent loop)
+          if (getDuctTargetTent(room, item)) return;
           const targetCo2 = item.targetCo2Ppm ?? 1000;
           if (roomCo2 < targetCo2) {
             roomCo2 = Math.min(targetCo2, roomCo2 + 15 * (item.setting / 100) * (elapsedMinutes / 5));
@@ -753,7 +798,8 @@ export function simulateEnvironmentTick(
     });
 
     roomTempF = Math.max(50, Math.min(105, parseFloat(roomTempF.toFixed(1))));
-    roomRH = Math.max(20, Math.min(95, Math.round(roomRH)));
+    // One decimal: a single unit moves room RH by a fraction of a percent per minute
+    roomRH = Math.max(20, Math.min(95, Math.round(roomRH * 10) / 10));
     roomCo2 = Math.max(350, Math.min(3000, Math.round(roomCo2)));
   }
 
@@ -781,14 +827,15 @@ export function simulateEnvironmentTick(
     const hasExhaustFanInstalled = tent.items.some(i => i.category === 'equipment' && i.type === 'exhaust_fan');
     const baseFanSpeed = hasExhaustFanInstalled ? (tent.exhaustFanSpeed || 0) : 0;
 
-    // Reservoirs drift toward the air around the unit: tent air in here, room air for hose-ducted units
-    const withReservoir = (item: Tent['items'][number], ambientF: number) =>
-      isHumidifier(item) ? { ...item, reservoirTempF: stepReservoirTempF(item, ambientF, elapsedMinutes) } : item;
-    const ductedHumidifiers = getDuctedHumidifiersForTent(room, tent.id).map(i => withReservoir(i, roomTempF));
-    const ductedIds = new Set(ductedHumidifiers.map(i => i.id));
+    // Reservoirs drift toward the air around the unit (tent air in here, room air for hose-ducted units)
+    // and are warmed by any heat mat wrapped around them (mats live in the same container as the unit)
+    const withReservoir = (item: Tent['items'][number], ambientF: number, containerItems: Tent['items']) =>
+      isHumidifier(item) ? { ...item, reservoirTempF: stepReservoirTempF(item, ambientF, elapsedMinutes, containerItems) } : item;
+    const ductedEquipment = getDuctedEquipmentForTent(room, tent.id).map(i => withReservoir(i, roomTempF, room.items));
+    const ductedIds = new Set(ductedEquipment.map(i => i.id));
 
     const arbitration = arbitrateEnclosureEquipment({
-      items: [...tent.items.map(i => withReservoir(i, tTempF)), ...ductedHumidifiers],
+      items: [...tent.items.map(i => withReservoir(i, tTempF, tent.items)), ...ductedEquipment],
       climate: { tempF: tTempF, rh: tRH, co2Ppm: tCo2, lightPPFD: tent.climate.lightPPFD },
       ambientLungRoom: { tempF: roomTempF, rh: roomRH, co2Ppm: roomCo2 },
       priority: tentPriority,
@@ -811,17 +858,12 @@ export function simulateEnvironmentTick(
       co2RegulatorActive,
       co2RegulatorTarget,
       totalHeatWatts,
-      lightPPFD: tLightPPFD,
-      heatMatActive
+      lightPPFD: tLightPPFD
     } = arbitration;
 
     // Hose-ducted units live in room.items; pull them back out of this tent's item list
-    const arbitratedItems = allArbitratedItems.filter(item => {
-      if (!ductedIds.has(item.id)) return true;
-      const eq = item as EquipmentItem;
-      ductedArbitrated.set(eq.id, { ...eq, interlockStatus: `${eq.interlockStatus} → hose into ${tent.name}` });
-      return false;
-    });
+    // Hose-ducted units are written back to room.items once this tent's water flow is settled below
+    let arbitratedItems = allArbitratedItems.filter(item => !ductedIds.has(item.id));
 
     // Check biological occupants in tent
     arbitratedItems.forEach(item => {
@@ -844,11 +886,17 @@ export function simulateEnvironmentTick(
 
     // 3. Ventilation & Air Exchange with Host Lung Room:
     // Use arbitrated effectiveFanSpeed (respects humidifier lockout & auto triggers!)
-    const fanFraction = effectiveFanSpeed / 100;
+    // A 6" fan (~400 CFM) on a 4x4 tent (~107 cu ft) is the reference; bigger fans or smaller tents exchange faster
+    const fanCfm = tent.items.reduce((sum, i) => i.category === 'equipment' && i.type === 'exhaust_fan'
+      ? sum + (i.flowRateCfm || INLINE_FAN_SPECS[i.ductSizeIn || 6].cfm) : sum, 0);
+    const cfmFactor = fanCfm > 0 ? Math.max(0.25, Math.min(3, (fanCfm / tentVolCuFt) / (402 / 107))) : 1;
+    const fanFraction = (effectiveFanSpeed / 100) * cfmFactor;
     const airExchangeFraction = Math.min(0.95, 1 - Math.exp(-Math.max(0.04, fanFraction * 0.45) * elapsedMinutes));
     tTempF += (roomTempF - tTempF) * airExchangeFraction;
 
     // Relative Humidity dynamics:
+    const tentVolM3 = tentVolCuFt * CUBIC_METRES_PER_CUBIC_FOOT;
+    const vaporBeforeGm3 = absoluteHumidityGm3(tTempF, tRH);
     if (activeHumidifierTarget !== null && activeHumidifierCapacity > 0) {
       // Sonic fogger saturation
       const exhaustDamping = 1 / (1 + fanFraction * 0.12);
@@ -874,9 +922,35 @@ export function simulateEnvironmentTick(
       tRH += (roomRH - tRH) * airExchangeFraction;
     }
 
+    // Water actually moved this tick: what the air gained or lost, plus what the air exchange carried
+    // through while humidity was held above (humidifying) or below (dehumidifying) the room's
+    const vaporAfterGm3 = absoluteHumidityGm3(tTempF, tRH);
+    const roomVaporGm3 = absoluteHumidityGm3(roomTempF, roomRH);
+    let humidifierWaterL = 0;
+    let dehumidifierWaterL = 0;
+    if (activeHumidifierTarget !== null && activeHumidifierCapacity > 0) {
+      const vaporG = (Math.max(0, vaporAfterGm3 - vaporBeforeGm3) + airExchangeFraction * Math.max(0, vaporAfterGm3 - roomVaporGm3)) * tentVolM3;
+      humidifierWaterL = vaporG / 1000 / MIST_EVAPORATION_EFFICIENCY;
+    } else if (activeDehumidifierTarget !== null && activeDehumidifierCapacity > 0) {
+      const vaporG = (Math.max(0, vaporBeforeGm3 - vaporAfterGm3) + airExchangeFraction * Math.max(0, roomVaporGm3 - vaporAfterGm3)) * tentVolM3;
+      dehumidifierWaterL = vaporG / 1000;
+    }
+    const enclosureEquipment = [...arbitratedItems, ...allArbitratedItems.filter(item => ductedIds.has(item.id))];
+    const watered = shareEnclosureWater(enclosureEquipment, humidifierWaterL, dehumidifierWaterL, { rh: tent.climate.rh, tempF: tent.climate.tempF }, elapsedMinutes)
+      .map((item, i) => announceWaterLimits(enclosureEquipment[i], item, tent.name));
+    arbitratedItems = watered.filter(item => !ductedIds.has(item.id));
+    watered.filter(item => ductedIds.has(item.id)).forEach(item => {
+      const eq = item as EquipmentItem;
+      ductedArbitrated.set(eq.id, { ...eq, interlockStatus: `${eq.interlockStatus} → ${eq.type === 'co2_regulator' ? 'tubing' : 'hose'} into ${tent.name}` });
+    });
+
     // Heat & humidity return to lung room (discharge into the host room)
     const exhaustHeatToRoom = (tTempF - roomTempF) * airExchangeFraction * (tentVolCuFt / roomVolCuFt);
     roomTempF += exhaustHeatToRoom * 0.2;
+    // The tent's exhausted air carries its water vapour into the room (humid tents are what a
+    // grow room's dehumidifier ends up collecting); a drier tent pulls a little out instead
+    const exhaustedVaporG = airExchangeFraction * tentVolM3 * (vaporAfterGm3 - roomVaporGm3);
+    roomRH = Math.max(20, Math.min(95, roomRH + (exhaustedVaporG / (absoluteHumidityGm3(roomTempF, 100) * roomVolM3)) * 100));
 
     // 4. CANOPY CO2 MASS BALANCE & EXPONENTIAL DECAY
     // Continuous ventilation continuously pulls in host room air (roomCo2, e.g. 420 PPM).
@@ -980,7 +1054,7 @@ export function simulateEnvironmentTick(
         room,
         outside,
         tentName: tent.name,
-        heatMatActive
+        rootHeat: getRootZoneHeat(item, tent.items, tent.id)
       });
     });
 
@@ -1005,8 +1079,35 @@ export function simulateEnvironmentTick(
   const updatedRoomItems = room.items.map(item => {
     const ducted = ductedArbitrated.get(item.id);
     if (ducted) return ducted;
+    // Room units aren't run by a tent controller; record what they actually did this tick
+    const movedL = roomWaterL.get(item.id) ?? 0;
+    const flowLph = movedL / Math.max(1e-6, elapsedMinutes / 60);
+    if (item.category === 'equipment' && item.type === 'dehumidifier') {
+      const running = movedL > 0;
+      const filled = announceWaterLimits(item, {
+        ...item,
+        bucketLevelL: item.drainHoseConnected ? 0 : Math.min(getBucketCapacityL(item), getBucketLevelL(item) + movedL),
+        waterFlowLph: flowLph
+      }, room.name);
+      return {
+        ...filled,
+        effectiveSetting: running ? item.setting : 0,
+        interlockStatus: isBucketFull(filled) ? 'Bucket full: Empty collection bucket'
+          : running ? `Dehumidifying: Extracting moisture to ${item.targetRh ?? 50}%`
+          : item.powerOn ? 'Idle: Target reached' : 'Off'
+      };
+    }
     if (isHumidifier(item)) {
-      return { ...item, reservoirTempF: stepReservoirTempF(item, roomTempF, elapsedMinutes) };
+      const running = movedL > 0;
+      const drained = announceWaterLimits(item, { ...item, reservoirLevelL: Math.max(0, getReservoirLevelL(item) - movedL), waterFlowLph: flowLph }, room.name);
+      return {
+        ...drained,
+        reservoirTempF: stepReservoirTempF(drained, roomTempF, elapsedMinutes, room.items),
+        effectiveSetting: running ? item.setting : 0,
+        interlockStatus: isReservoirEmpty(drained) ? 'Out of water: Refill reservoir'
+          : running ? `Misting: Raising RH to ${item.targetRh ?? 60}%`
+          : item.powerOn ? 'Idle: Target reached' : 'Off'
+      };
     }
     return simulateCropItem({
       item,
@@ -1025,7 +1126,7 @@ export function simulateEnvironmentTick(
       room,
       outside,
       tentName: isOutdoorGarden ? room.name : undefined,
-      heatMatActive: false
+      rootHeat: getRootZoneHeat(item, room.items)
     });
   });
 
@@ -1035,7 +1136,8 @@ export function simulateEnvironmentTick(
       climate: {
         tempF: roomTempF,
         tempC: roomTempC,
-        rh: roomRH,
+        // One decimal keeps small per-minute vapour flows (tent exhaust, single units) without long decimals in the UI
+        rh: Math.round(roomRH * 10) / 10,
         lightPPFD: roomLightPPFD,
         vpdKpa: roomVPD,
         co2Ppm: roomCo2
@@ -1052,6 +1154,21 @@ export function simulateEnvironmentTick(
  * Evaluates soil dynamics, container volume buffering, medium drainage,
  * natural rainfall, microbial health, EC nutrient uptake, pH drift, and Hops lupulin accumulation.
  */
+/**
+ * Colonization speed by substrate temperature, 1.0 at a typical 72°F room: peaks around 80°F,
+ * crawls when cold and falls off sharply once the substrate overheats.
+ */
+function getColonizationWarmthFactor(substrateF: number): number {
+  const points: Array<[number, number]> = [[50, 0.15], [60, 0.55], [72, 1.0], [80, 1.25], [86, 1.0], [92, 0.3]];
+  if (substrateF <= points[0][0]) return points[0][1];
+  for (let i = 1; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x0, y0] = points[i - 1];
+    if (substrateF <= x1) return y0 + ((substrateF - x0) / (x1 - x0)) * (y1 - y0);
+  }
+  return points[points.length - 1][1];
+}
+
 function simulateCropItem(params: {
   item: any;
   enclosureClimate: { tempF: number; tempC: number; rh: number; lightPPFD: number; vpdKpa: number; co2Ppm: number };
@@ -1062,9 +1179,9 @@ function simulateCropItem(params: {
   room: Room;
   outside?: OutsideConditions;
   tentName?: string;
-  heatMatActive?: boolean;
+  rootHeat?: RootZoneHeat | null; // Heat mats under this pot / container (or under the tent's floor tray)
 }): any {
-  const { item, enclosureClimate, photoperiodHours, elapsedMinutes, currentSimTime, events, room, outside, tentName, heatMatActive } = params;
+  const { item, enclosureClimate, photoperiodHours, elapsedMinutes, currentSimTime, events, room, outside, tentName, rootHeat = null } = params;
 
   if (item.category === 'plant') {
     const plant = { ...item } as PlantItem;
@@ -1106,15 +1223,11 @@ function simulateCropItem(params: {
     }
 
     // A. Root Zone Temperature Simulation
-    let targetRootTemp = enclosureClimate.tempF * 0.75 + 16.0;
-    if (heatMatActive) {
-      targetRootTemp += 8.0;
-    }
-    if (isOutdoor) {
-      targetRootTemp = enclosureClimate.tempF * 0.82 + 12.0;
-    }
+    let targetRootTemp = isOutdoor ? enclosureClimate.tempF * 0.82 + 12.0 : enclosureClimate.tempF * 0.75 + 16.0;
+    targetRootTemp = applyRootZoneHeat(targetRootTemp, rootHeat);
     const currentRoot = plant.rootTempF || targetRootTemp;
-    plant.rootTempF = parseFloat((currentRoot + (targetRootTemp - currentRoot) * 0.05 * (elapsedMinutes / 10)).toFixed(1));
+    // Not rounded: per-minute changes are smaller than 0.1° and would otherwise be lost
+    plant.rootTempF = currentRoot + (targetRootTemp - currentRoot) * Math.min(1, 0.05 * (elapsedMinutes / 10));
 
     // B. Soil & Medium Dynamics:
     // Volume buffering: 1-gal pot dries quickly; 10-gal or 50-gal raised bed buffers moisture
@@ -1429,6 +1542,15 @@ function simulateCropItem(params: {
       }
     }
 
+    // Substrate follows the air (plus any heat mat underneath) with a few hours of thermal lag
+    const targetSubstrateF = applyRootZoneHeat(enclosureClimate.tempF, rootHeat);
+    const currentSubstrateF = shroom.substrateTempF ?? targetSubstrateF;
+    shroom.substrateTempF = currentSubstrateF + (targetSubstrateF - currentSubstrateF) * (1 - Math.exp(-elapsedMinutes / 180));
+    if (shroom.substrateTempF > 88) {
+      // Overheated substrate stresses (and eventually cooks) the mycelium
+      healthDelta -= 0.4 * (elapsedMinutes / 60);
+    }
+
     const loss = 0.03 * (elapsedMinutes / 60);
     shroom.substrateMoisture = Math.max(0, parseFloat((shroom.substrateMoisture - loss).toFixed(2)));
     if (shroom.substrateMoisture < 40) {
@@ -1455,7 +1577,9 @@ function simulateCropItem(params: {
 
     if (shroom.health > 35 && !shroom.isHarvested && shroom.traits?.sporeViabilityOutcome !== 'failed') {
       const vigorMult = shroom.traits?.colonizationVigor || 1.0;
-      const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24)) * vigorMult;
+      // Mycelium runs fastest on warm substrate; fruiting isn't temperature-limited here
+      const warmthMult = shroom.stage === 'colonizing' ? getColonizationWarmthFactor(shroom.substrateTempF ?? enclosureClimate.tempF) : 1;
+      const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24)) * vigorMult * warmthMult;
       shroom.ageDays = parseFloat((shroom.ageDays + elapsedMinutes / (60 * 24)).toFixed(2));
       shroom.stageProgress = Math.min(100, shroom.stageProgress + shroomProgressRate * 14);
 

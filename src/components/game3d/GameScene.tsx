@@ -7,12 +7,13 @@ import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem } from '../../
 import { tentWorldOrigin, itemWorldPosition, isCeilingMounted, Vec3 } from './coords';
 import { PlantModel } from './PlantModel';
 import { MushroomModel } from './MushroomModel';
-import { EquipmentModel } from './EquipmentModel';
+import { EquipmentModel, HeatMatMount } from './EquipmentModel';
 import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
+import { getVpdZone } from '../../utils/physics';
 import { HoseModel } from './HoseModel';
-import { getDuctTargetTent } from '../../utils/humidifierDucting';
+import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
 
 export type { Doorway } from './EnvironmentModels';
 export type { PlayerState } from './CharacterModels';
@@ -45,6 +46,8 @@ interface GameSceneProps {
   onClickTent: (tent: Tent) => void;
   onClickDoor: (door: Doorway) => void;
   onClickFloor: (x: number, y: number) => void;
+  tempUnit: 'F' | 'C';
+  showTentStats: boolean; // live temp / RH / VPD / CO2 under each tent's name
 }
 
 // Clicks that end a camera drag are ignored (pixels moved between pointer down and up)
@@ -100,7 +103,15 @@ function ItemNode({
   let model: React.ReactNode;
   if (item.category === 'plant') model = <PlantModel plant={item as PlantItem} />;
   else if (item.category === 'mushroom') model = <MushroomModel shroom={item as MushroomItem} />;
-  else if (item.category === 'equipment') model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} />;
+  else if (item.category === 'equipment') {
+    // Attached heat mats are drawn around / under whatever they're attached to
+    const matTarget = getHeatMatTarget(item, tent ? tent.items : room.items, tent);
+    const matMount: HeatMatMount | undefined = !matTarget ? undefined
+      : matTarget.kind === 'tent_floor' ? { kind: 'under_tray' }
+      : matTarget.wrapped ? { kind: 'wrap', radius: matTarget.item.dimensions.length / 2, height: matTarget.item.dimensions.height }
+      : undefined;
+    model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} />;
+  }
   else model = <OccupantModel occ={item} />;
 
   return (
@@ -241,15 +252,31 @@ function SceneLighting({ room, simTime }: { room: Room; simTime: number }) {
 }
 
 /** Every world-anchored label in the room: tent names, doors, harvest-ready badges, action popups. */
-function buildWorldLabels(room: Room, doorways: Doorway[], floatingTexts: FloatingText[], hoveredId: string | null): WorldLabel[] {
+function buildWorldLabels(
+  room: Room,
+  doorways: Doorway[],
+  floatingTexts: FloatingText[],
+  hoveredId: string | null,
+  tempUnit: 'F' | 'C',
+  showTentStats: boolean
+): WorldLabel[] {
   const labels: WorldLabel[] = [];
   for (const tent of room.tents) {
     const [ox, oy, oz] = tentWorldOrigin(tent, room);
+    const { climate } = tent;
+    // VPD is coloured by the zone that suits this tent's crop
+    const vpdZone = getVpdZone(climate.vpdKpa, tent.items.some(i => i.category === 'mushroom') ? 'mushroom' : 'plant');
     labels.push({
       id: `tent-${tent.id}`,
       position: [ox + tent.dimensions.length / 2, oy + tent.dimensions.height + 0.3, oz + tent.dimensions.width / 2],
       text: `⛺ ${tent.name}`,
-      variant: hoveredId === tent.id ? 'tentActive' : 'tent'
+      variant: hoveredId === tent.id ? 'tentActive' : 'tent',
+      stats: showTentStats ? [
+        { icon: '🌡️', value: tempUnit === 'F' ? `${climate.tempF.toFixed(1)}°F` : `${climate.tempC.toFixed(1)}°C`, className: 'text-amber-300' },
+        { icon: '💧', value: `${Math.round(climate.rh)}%`, className: 'text-cyan-300' },
+        { icon: '🌿', value: `${climate.vpdKpa.toFixed(2)} kPa`, className: vpdZone.color },
+        { icon: '🌫️', value: `${Math.round(climate.co2Ppm || 0)} ppm`, className: 'text-purple-300' }
+      ] : undefined
     });
   }
   for (const door of doorways) {
@@ -322,7 +349,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
 
 export function GameScene(props: GameSceneProps) {
   const labelRegistry: LabelRegistry = useRef(new Map<string, HTMLDivElement>());
-  const labels = buildWorldLabels(props.room, props.doorways, props.floatingTexts, props.hoveredId);
+  const labels = buildWorldLabels(props.room, props.doorways, props.floatingTexts, props.hoveredId, props.tempUnit, props.showTentStats);
   return (
     <div className="absolute inset-0">
       <Canvas

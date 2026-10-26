@@ -1,4 +1,5 @@
 import { Item, Tent, Room } from '../../types/sim';
+import { getAttachedPosition } from '../../utils/equipmentLinks';
 
 /**
  * 3D world mapping. One world unit = 1 foot.
@@ -21,7 +22,10 @@ export function tentWorldOrigin(tent: Tent, room: Room): Vec3 {
  */
 export function itemWorldPosition(item: Item, room: Room, tent?: Tent): Vec3 {
   const container = tent ? tent.dimensions : room.dimensions;
-  const pos = item.position || { x: container.length / 2, y: container.width / 2, z: 0 };
+  // Attached heat mats follow whatever they sit under / are wrapped around
+  const pos = getAttachedPosition(item, tent ? tent.items : room.items, tent)
+    || item.position
+    || { x: container.length / 2, y: container.width / 2, z: 0 };
   if (!tent) return [pos.x, pos.z || 0, pos.y];
   const [tx, ty, tz] = tentWorldOrigin(tent, room);
   return [tx + pos.x, ty + (pos.z || 0), tz + pos.y];

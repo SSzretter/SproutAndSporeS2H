@@ -19,6 +19,13 @@ export interface WorldLabel {
   text: string;
   variant: LabelVariant;
   color?: string; // float labels
+  stats?: LabelStat[]; // live readings shown under a tent's name
+}
+
+export interface LabelStat {
+  icon: string;
+  value: string;
+  className?: string; // e.g. a VPD-zone colour
 }
 
 export type LabelRegistry = React.MutableRefObject<Map<string, HTMLDivElement>>;
@@ -91,6 +98,17 @@ export function LabelLayer({ labels, registry }: { labels: WorldLabel[]; registr
         >
           {label.variant === 'float' ? (
             <FloatText text={label.text} color={label.color} />
+          ) : label.stats ? (
+            <div className="flex flex-col items-center gap-0.5">
+              <div className={VARIANT_CLASSES[label.variant]}>{label.text}</div>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 px-2 py-1 rounded-md bg-zinc-950/85 border border-zinc-700/80 text-[10px] font-mono leading-tight shadow-lg">
+                {label.stats.map(stat => (
+                  <span key={stat.icon} className={`whitespace-nowrap ${stat.className ?? 'text-zinc-200'}`}>
+                    {stat.icon} {stat.value}
+                  </span>
+                ))}
+              </div>
+            </div>
           ) : (
             <div className={VARIANT_CLASSES[label.variant]}>{label.text}</div>
           )}

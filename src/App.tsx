@@ -15,8 +15,8 @@ import {
 } from './types/sim';
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
-import { syncItemGeometry } from './utils/spatial';
-import { migrateHumidifierDucting } from './utils/humidifierDucting';
+import { syncItemGeometry, placeItemInFreeSpace } from './utils/spatial';
+import { migrateEquipmentLinks } from './utils/equipmentLinks';
 import { getPlantStageStartSize } from './utils/plantLifecycle';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
 import { HeaderClock } from './components/HeaderClock';
@@ -461,7 +461,7 @@ export default function App() {
             items: rm.items.filter(i => i.id !== itemId)
           };
         }
-      });
+      }).map(rm => (rm.id === targetRoomId ? migrateEquipmentLinks(rm) : rm)); // re-home heat mats that were attached to it
 
       const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
 
@@ -486,8 +486,8 @@ export default function App() {
 
       const updatedRooms = currentRooms.map(rm => {
         if (!rm.tents.some(t => t.id === tentId)) return rm;
-        // Unlink any humidifier hoses that fed the removed tent
-        return migrateHumidifierDucting({
+        // Unlink any hoses that fed the removed tent
+        return migrateEquipmentLinks({
           ...rm,
           tents: rm.tents.filter(t => t.id !== tentId)
         });
@@ -549,7 +549,7 @@ export default function App() {
 
   // Add Item (Plant, Mushroom, Equipment, Person, or Pet)
   const handleAddItem = useCallback((addedItem: Item, tentId?: string | null) => {
-    const newItem = syncItemGeometry(addedItem);
+    const sizedItem = syncItemGeometry(addedItem);
     setState(prev => {
       const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
@@ -562,6 +562,11 @@ export default function App() {
           targetRoomId = foundRoom.id;
         }
       }
+
+      // Put the new item in open space instead of on top of what's already there
+      const targetRoom = currentRooms.find(r => r.id === targetRoomId) || currentRooms[0];
+      const targetTent = tentId ? targetRoom.tents.find(t => t.id === tentId) : undefined;
+      const newItem = placeItemInFreeSpace(sizedItem, targetRoom, targetTent);
 
       let destinationName = 'room';
 

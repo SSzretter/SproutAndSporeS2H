@@ -39,6 +39,7 @@ import {
   PlantSpecies, 
   MushroomSpecies, 
   EquipmentType,
+  InlineFanDuctSize,
   TentBrand,
   Dimensions,
   CultivationSystemType,
@@ -49,7 +50,8 @@ import {
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
-import { DEFAULT_RESERVOIR_SETPOINT_F } from '../utils/humidifierDucting';
+import { canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
+import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
@@ -80,21 +82,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     targetTentId || 'room'
   );
 
+  // Point the destination at the requested tent when the modal opens. This must not depend on
+  // `room`, which changes every sim tick and would keep undoing the user's destination choice.
   React.useEffect(() => {
-    if (isOpen) {
-      if (targetTentId) {
-        setSelectedDestinationTentId(targetTentId);
-        setActiveTab(prev => prev === 'tent' ? 'plant' : prev);
-      } else {
-        if (selectedDestinationTentId !== 'room') {
-          const tentExists = room.tents && room.tents.some(t => t.id === selectedDestinationTentId);
-          if (!tentExists) {
-            setSelectedDestinationTentId(room.tents && room.tents.length > 0 ? room.tents[0].id : 'room');
-          }
-        }
-      }
+    if (isOpen && targetTentId) {
+      setSelectedDestinationTentId(targetTentId);
+      setActiveTab(prev => prev === 'tent' ? 'plant' : prev);
     }
-  }, [targetTentId, isOpen, room]);
+  }, [targetTentId, isOpen]);
+
+  // Fall back if the chosen tent no longer exists
+  React.useEffect(() => {
+    if (!isOpen || selectedDestinationTentId === 'room') return;
+    if (!room.tents.some(t => t.id === selectedDestinationTentId)) {
+      setSelectedDestinationTentId(room.tents.length > 0 ? room.tents[0].id : 'room');
+    }
+  }, [isOpen, room.tents, selectedDestinationTentId]);
 
   // Tent Catalog & Form State
   const [tentBrandFilter, setTentBrandFilter] = useState<'all' | 'AC Infinity' | 'Spider Farmer' | 'Custom'>('AC Infinity');
@@ -150,7 +153,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [eqType, setEqType] = useState<EquipmentType>('grow_light');
   const [eqName, setEqName] = useState('Pro-Quantum 240W LED');
   const [eqWatts, setEqWatts] = useState(240);
-  const [eqHoseTentId, setEqHoseTentId] = useState(''); // Room-level humidifier ducted into a tent by hose
+  const [eqHoseTentId, setEqHoseTentId] = useState(''); // Room-level humidifier / CO2 controller ducted into a tent by hose
+  const [eqDuctSize, setEqDuctSize] = useState<InlineFanDuctSize>(6); // Inline fan duct / port diameter
+  const [eqMatTargetId, setEqMatTargetId] = useState(''); // Heat mat: tent floor tray or the item it sits under / wraps
 
   // Person Form State
   const [personName, setPersonName] = useState('Grower / Cultivator');
@@ -384,6 +389,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     onClose();
   };
 
+  // Where a new heat mat can go in the chosen destination: under a tent's floor tray, under a pot or
+  // mushroom container, or wrapped around a humidifier
+  const destinationTent = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+    ? room.tents.find(t => t.id === selectedDestinationTentId)
+    : undefined;
+  const destinationItems = destinationTent ? destinationTent.items : room.items;
+  const heatMatOptions = [
+    ...(destinationTent ? [{ id: destinationTent.id, label: describeHeatMatPlacement({ kind: 'tent_floor', tent: destinationTent }) }] : []),
+    ...destinationItems.filter(canHeatMatAttachTo).map(item => {
+      const probe = { id: 'probe', category: 'equipment', type: 'heat_mat', attachedToId: item.id } as EquipmentItem;
+      return { id: item.id, label: describeHeatMatPlacement(getHeatMatTarget(probe, destinationItems, destinationTent)) };
+    })
+  ];
+  const heatMatPlacement = heatMatOptions.some(o => o.id === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.id ?? '';
+
   const handleCreateEquipment = () => {
     const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
       ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
@@ -406,12 +426,26 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       dimensions: getDefaultItemDimensions({ category: 'equipment', type: eqType }),
       position: getDefaultSpatialPosition('equipment', targetDims, count, eqType)
     };
+    if ((eqType === 'humidifier' || eqType === 'co2_regulator') && selectedDestinationTentId === 'room' && room.tents.some(t => t.id === eqHoseTentId)) {
+      newEq.ductedToTentId = eqHoseTentId;
+    }
+    if (eqType === 'exhaust_fan') {
+      const spec = INLINE_FAN_SPECS[eqDuctSize];
+      newEq.ductSizeIn = eqDuctSize;
+      newEq.flowRateCfm = spec.cfm;
+      newEq.dimensions = { ...spec.dimensions };
+    }
+    if (eqType === 'heat_mat' && heatMatPlacement) {
+      newEq.attachedToId = heatMatPlacement;
+    }
+    // Tank / bucket capacity is an explicit property, sized to fit the unit's body
     if (eqType === 'humidifier') {
-      newEq.reservoirConditioning = 'none';
-      newEq.reservoirSetpointF = DEFAULT_RESERVOIR_SETPOINT_F;
-      if (selectedDestinationTentId === 'room' && room.tents.some(t => t.id === eqHoseTentId)) {
-        newEq.ductedToTentId = eqHoseTentId;
-      }
+      newEq.reservoirCapacityL = getDefaultReservoirLiters(newEq);
+      newEq.reservoirLevelL = newEq.reservoirCapacityL;
+    }
+    if (eqType === 'dehumidifier') {
+      newEq.bucketCapacityL = getDefaultBucketCapacityL(newEq);
+      newEq.bucketLevelL = 0;
     }
     onAddItem(newEq, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -1623,8 +1657,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         setEqName('Full-Spectrum 300W LED');
                         setEqWatts(300);
                       } else if (opt.type === 'exhaust_fan') {
-                        setEqName('6" EC Duct Fan');
-                        setEqWatts(65);
+                        setEqName(INLINE_FAN_SPECS[eqDuctSize].name);
+                        setEqWatts(INLINE_FAN_SPECS[eqDuctSize].watts);
                       } else if (opt.type === 'co2_regulator') {
                         setEqName('Digital CO₂ Solenoid Regulator');
                         setEqWatts(15);
@@ -1640,6 +1674,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       } else if (opt.type === 'dehumidifier') {
                         setEqName('50-Pint Dehumidifier');
                         setEqWatts(350);
+                      } else if (opt.type === 'oscillating_fan') {
+                        setEqName('8" Clip-On Air Circulator');
+                        setEqWatts(15);
                       } else {
                         setEqName('Ceramic Heater');
                         setEqWatts(500);
@@ -1680,21 +1717,71 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               </div>
             </div>
 
-            {eqType === 'humidifier' && selectedDestinationTentId === 'room' && room.tents.length > 0 && (
+            {eqType === 'exhaust_fan' && (
               <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">Mist Hose</label>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Duct / Port Size</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {INLINE_FAN_DUCT_SIZES.map(size => (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => {
+                        setEqDuctSize(size);
+                        setEqName(INLINE_FAN_SPECS[size].name);
+                        setEqWatts(INLINE_FAN_SPECS[size].watts);
+                      }}
+                      className={`py-1.5 px-2.5 rounded-lg text-xs font-medium border ${
+                        eqDuctSize === size ? 'bg-blue-950 border-blue-500 text-blue-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                      }`}
+                    >
+                      {size}" duct · {INLINE_FAN_SPECS[size].cfm} CFM
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(eqType === 'humidifier' || eqType === 'co2_regulator') && selectedDestinationTentId === 'room' && room.tents.length > 0 && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                  {eqType === 'humidifier' ? 'Mist Hose' : 'CO₂ Injection Tubing'}
+                </label>
                 <select
                   value={eqHoseTentId}
                   onChange={e => setEqHoseTentId(e.target.value)}
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
                 >
-                  <option value="">No hose — mists into the room</option>
+                  <option value="">{eqType === 'humidifier' ? 'No hose — mists into the room' : 'No tubing — injects into the room'}</option>
                   {room.tents.map(t => (
-                    <option key={t.id} value={t.id}>Duct by hose into {t.name}</option>
+                    <option key={t.id} value={t.id}>{eqType === 'humidifier' ? 'Duct by hose into' : 'Run tubing into'} {t.name}</option>
                   ))}
                 </select>
                 <span className="text-[10px] text-zinc-500 block mt-1">
-                  Keep the unit outside the tent to save space; its reservoir water follows room temperature.
+                  {eqType === 'humidifier'
+                    ? 'Keep the unit outside the tent to save space; its reservoir water follows room temperature.'
+                    : 'Keep the tank and solenoid outside the tent; CO₂ is injected into the tent and follows that tent\'s controller.'}
+                </span>
+              </div>
+            )}
+
+            {eqType === 'heat_mat' && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Placed Under / Wrapped Around</label>
+                {heatMatOptions.length > 0 ? (
+                  <select
+                    value={heatMatPlacement}
+                    onChange={e => setEqMatTargetId(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                  >
+                    {heatMatOptions.map(o => (
+                      <option key={o.id} value={o.id}>{o.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] text-zinc-400 block">Nothing here to put it under yet — it will lie on the floor unattached.</span>
+                )}
+                <span className="text-[10px] text-zinc-500 block mt-1">
+                  Under a tent's floor tray it warms everything standing on it; under a pot or monotub it warms that root zone or substrate; wrapped around a humidifier it heats the water.
                 </span>
               </div>
             )}

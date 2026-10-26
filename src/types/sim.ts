@@ -209,6 +209,7 @@ export interface MushroomItem {
   ageDays: number;
   health: number; // 0 - 100%
   substrateMoisture: number; // 0 - 100%
+  substrateTempF?: number; // Live substrate temperature (follows the air, plus any heat mat underneath)
   myceliumColonization: number; // 0 - 100%
   flushCount: number;
   yieldPotentialGrams: number;
@@ -249,7 +250,7 @@ export interface EquipmentAutoTriggers {
 }
 
 // Humidifier/fogger water-reservoir conditioning: 'none' lets the water drift to the air around the unit
-export type ReservoirConditioning = 'none' | 'heater' | 'chiller';
+export type InlineFanDuctSize = 4 | 6;
 
 export type ControllerPriority = 'humidity_first' | 'temperature_first' | 'balanced_auto' | 'co2_enrichment';
 
@@ -274,10 +275,16 @@ export interface EquipmentItem {
   };
   interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
   effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
-  ductedToTentId?: string; // Humidifier in room.items whose mist is piped into this tent through a hose
-  reservoirTempF?: number; // Live humidifier water temperature (follows the air around the unit unless conditioned)
-  reservoirConditioning?: ReservoirConditioning; // Built-in reservoir heater / chiller
-  reservoirSetpointF?: number; // Target water temp for the reservoir heater / chiller
+  ductedToTentId?: string; // Humidifier / CO2 controller in room.items whose output is piped into this tent through a hose
+  reservoirTempF?: number; // Live humidifier water temperature (follows the air around the unit, plus any wrapped heat mat)
+  reservoirLevelL?: number; // Humidifier water left in the tank (litres); drains while misting, refilled by hand
+  reservoirCapacityL?: number; // Humidifier tank size (litres); must fit in the unit's body (see getMaxReservoirLiters)
+  bucketLevelL?: number; // Dehumidifier condensate in its collection bucket (litres); fills while extracting, emptied by hand
+  bucketCapacityL?: number; // Dehumidifier bucket size (litres); must fit in the unit's body (see getMaxBucketCapacityL)
+  drainHoseConnected?: boolean; // Dehumidifier drains continuously through a hose, so its bucket never fills
+  waterFlowLph?: number; // Live water use (humidifier) or collection (dehumidifier) over the last tick, L/h
+  ductSizeIn?: InlineFanDuctSize; // Inline (exhaust) fan duct / port diameter in inches
+  attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
   dimensions: Dimensions;
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;

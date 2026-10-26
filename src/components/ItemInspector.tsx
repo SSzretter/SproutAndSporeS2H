@@ -62,8 +62,9 @@ import {
 import { VpdBadge } from './VpdBadge';
 import { TENT_CATALOG } from '../utils/tentCatalog';
 import { clampItemPosition } from '../utils/spatial';
-import { getDuctTargetTent, DEFAULT_RESERVOIR_SETPOINT_F, HOSE_DELIVERY_EFFICIENCY } from '../utils/humidifierDucting';
-import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory, ReservoirConditioning } from '../types/sim';
+import { getDuctTargetTent, HOSE_DELIVERY_EFFICIENCY, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, getMistWaterUseLph, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, getDehumidifierExtractionLph, emptyBucket, getMaxReservoirLiters, getMaxBucketCapacityL, canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, isHeatMat } from '../utils/equipmentLinks';
+import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
+import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 
@@ -4297,106 +4298,241 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 </div>
               )}
 
-              {/* 3b. HUMIDIFIER HOSE DUCTING & RESERVOIR WATER */}
-              {eq.type === 'humidifier' && (() => {
+              {/* 3b. HOSE DUCTING (humidifiers & CO2 controllers kept outside a tent) */}
+              {(eq.type === 'humidifier' || eq.type === 'co2_regulator') && (() => {
+                const isMist = eq.type === 'humidifier';
                 const isRoomLevel = !selectedParentTentId;
                 const ductTent = getDuctTargetTent(room, eq);
                 const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
-                const ambientF = hostTent ? hostTent.climate.tempF : room.climate.tempF;
-                const waterF = eq.reservoirTempF ?? ambientF;
-                const conditioning = eq.reservoirConditioning || 'none';
-                const setpointF = eq.reservoirSetpointF ?? DEFAULT_RESERVOIR_SETPOINT_F;
-                const fmt = (f: number) => tempUnit === 'F' ? `${f.toFixed(1)}°F` : `${((f - 32) * 5 / 9).toFixed(1)}°C`;
                 return (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
-                      <div className="flex justify-between text-xs text-zinc-300">
-                        <span>Mist Hose / Ducting</span>
-                        <span className={`font-mono font-bold ${ductTent ? 'text-cyan-400' : 'text-zinc-500'}`}>
-                          {ductTent ? `→ ${ductTent.name}` : hostTent ? 'In tent' : 'Room air'}
-                        </span>
-                      </div>
-                      {isRoomLevel ? (
-                        <>
-                          <select
-                            value={ductTent?.id ?? ''}
-                            onChange={e => {
-                              const next: EquipmentItem = { ...eq };
-                              if (e.target.value) next.ductedToTentId = e.target.value;
-                              else delete next.ductedToTentId;
-                              onUpdateItem(next, selectedParentTentId);
-                            }}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
-                          >
-                            <option value="">No hose — mists into the room</option>
-                            {room.tents.map(t => (
-                              <option key={t.id} value={t.id}>Hose into {t.name}</option>
-                            ))}
-                          </select>
-                          <span className="text-[10px] text-zinc-500 block">
-                            {ductTent
-                              ? `Sits outside the tent; mist is piped into ${ductTent.name} and runs on that tent's controller (~${Math.round((1 - HOSE_DELIVERY_EFFICIENCY) * 100)}% lost to hose condensation).`
-                              : room.tents.length > 0
-                                ? 'Duct this unit into a tent through a hose to free up tent floor space.'
-                                : 'Add a tent to this room to duct mist into it.'}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="text-[10px] text-zinc-500 block">
-                          Mists directly into {hostTent?.name ?? 'this tent'}. Place the unit in the room to duct it in through a hose instead.
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
-                      <div className="flex justify-between text-xs text-zinc-300">
-                        <span>Reservoir Water</span>
-                        <span className="font-mono font-bold text-cyan-400">{fmt(waterF)}</span>
-                      </div>
-                      <select
-                        value={conditioning}
-                        onChange={e => {
-                          onUpdateItem({
-                            ...eq,
-                            reservoirConditioning: e.target.value as ReservoirConditioning,
-                            reservoirSetpointF: setpointF
-                          }, selectedParentTentId);
-                        }}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
-                      >
-                        <option value="none">Unconditioned (follows ambient)</option>
-                        <option value="heater">Reservoir heater (warm mist)</option>
-                        <option value="chiller">Reservoir chiller (cold mist)</option>
-                      </select>
-                      {conditioning !== 'none' && (
-                        <>
-                          <div className="flex justify-between text-[10px] text-zinc-400">
-                            <span>Water set-point</span>
-                            <span className="font-mono">{fmt(setpointF)}</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="45"
-                            max="105"
-                            value={setpointF}
-                            onChange={e => {
-                              onUpdateItem({
-                                ...eq,
-                                reservoirSetpointF: parseInt(e.target.value)
-                              }, selectedParentTentId);
-                            }}
-                            className="w-full accent-cyan-500 cursor-pointer"
-                          />
-                        </>
-                      )}
-                      <span className="text-[10px] text-zinc-500 block">
-                        {conditioning === 'none'
-                          ? `Water drifts toward ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}). Warmer water fogs more and cools the air less.`
-                          : conditioning === 'heater'
-                            ? `Heats the water up to the set-point; above it, water follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}).`
-                            : `Chills the water down to the set-point; below it, water follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}).`}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>{isMist ? 'Mist Hose / Ducting' : 'CO₂ Injection Tubing'}</span>
+                      <span className={`font-mono font-bold ${ductTent ? 'text-cyan-400' : 'text-zinc-500'}`}>
+                        {ductTent ? `→ ${ductTent.name}` : hostTent ? 'In tent' : 'Room air'}
                       </span>
                     </div>
+                    {isRoomLevel ? (
+                      <>
+                        <select
+                          value={ductTent?.id ?? ''}
+                          onChange={e => {
+                            const next: EquipmentItem = { ...eq };
+                            if (e.target.value) next.ductedToTentId = e.target.value;
+                            else delete next.ductedToTentId;
+                            onUpdateItem(next, selectedParentTentId);
+                          }}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500"
+                        >
+                          <option value="">{isMist ? 'No hose — mists into the room' : 'No tubing — injects into the room'}</option>
+                          {room.tents.map(t => (
+                            <option key={t.id} value={t.id}>{isMist ? 'Hose into' : 'Tubing into'} {t.name}</option>
+                          ))}
+                        </select>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {ductTent
+                            ? isMist
+                              ? `Sits outside the tent; mist is piped into ${ductTent.name} and runs on that tent's controller (~${Math.round((1 - HOSE_DELIVERY_EFFICIENCY) * 100)}% lost to hose condensation).`
+                              : `Tank and solenoid sit outside the tent; CO₂ is injected into ${ductTent.name} and runs on that tent's controller.`
+                            : room.tents.length > 0
+                              ? `Run ${isMist ? 'a hose' : 'tubing'} into a tent to free up tent floor space.`
+                              : `Add a tent to this room to ${isMist ? 'duct mist' : 'inject CO₂'} into it.`}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-zinc-500 block">
+                        {isMist ? 'Mists' : 'Injects'} directly into {hostTent?.name ?? 'this tent'}. Place the unit in the room to {isMist ? 'duct it in through a hose' : 'feed it through tubing'} instead.
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* 3c. HUMIDIFIER RESERVOIR WATER (follows ambient; heated only by a wrapped heat mat) */}
+              {eq.type === 'humidifier' && (() => {
+                const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
+                const ambientF = hostTent ? hostTent.climate.tempF : room.climate.tempF;
+                const waterF = eq.reservoirTempF ?? ambientF;
+                const containerItems = hostTent ? hostTent.items : room.items;
+                const wrappedMats = containerItems.filter(i => isHeatMat(i) && i.attachedToId === eq.id) as EquipmentItem[];
+                const fmt = (f: number) => tempUnit === 'F' ? `${f.toFixed(1)}°F` : `${((f - 32) * 5 / 9).toFixed(1)}°C`;
+                const capacityL = getReservoirLiters(eq);
+                const empty = isReservoirEmpty(eq);
+                const levelL = empty ? 0 : getReservoirLevelL(eq);
+                const levelPct = Math.round((levelL / capacityL) * 100);
+                // Live use from the last tick (follows the moisture the air actually took up); max is the rated output
+                const useLph = eq.powerOn ? (eq.waterFlowLph ?? 0) : 0;
+                const maxLph = getMistWaterUseLph(eq, eq.setting);
+                const maxCapacityL = getMaxReservoirLiters(eq);
+                return (
+                  <div className={`bg-zinc-900 border rounded-xl p-3.5 space-y-2 ${empty ? 'border-rose-700/70' : 'border-zinc-800'}`}>
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>Reservoir Water</span>
+                      <span className="font-mono font-bold text-cyan-400">{fmt(waterF)}</span>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="h-2 rounded-full bg-zinc-950 border border-zinc-800 overflow-hidden">
+                        <div
+                          className={`h-full ${empty ? 'bg-rose-500' : levelPct < 20 ? 'bg-amber-400' : 'bg-cyan-500'}`}
+                          style={{ width: `${levelPct}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono">
+                        <span className={empty ? 'text-rose-400 font-bold' : levelPct < 20 ? 'text-amber-300' : 'text-zinc-400'}>
+                          {empty ? 'EMPTY — not misting' : `${levelL.toFixed(1)} / ${capacityL.toFixed(1)} L (${levelPct}%)`}
+                        </span>
+                        <span className="text-zinc-500">
+                          {empty ? '' : useLph > 0.0005 ? `using ${useLph.toFixed(2)} L/h · ~${Math.floor(levelL / useLph)}h left` : 'Idle — not using water'}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={levelPct >= 100}
+                      onClick={() => {
+                        onUpdateItem(refillReservoir(eq, ambientF), selectedParentTentId);
+                        onLogJournalEntry?.({
+                          title: `💧 Refilled ${eq.name}`,
+                          message: `Topped up the reservoir with ${(capacityL - levelL).toFixed(1)} L of fresh tap water (${capacityL.toFixed(1)} L tank).`,
+                          type: 'action',
+                          category: 'care'
+                        });
+                      }}
+                      className="w-full py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-cyan-950/50 border-cyan-800 text-cyan-200 hover:bg-cyan-900/60"
+                    >
+                      {levelPct >= 100 ? 'Reservoir Full' : 'Refill Reservoir'}
+                    </button>
+                    <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400 pt-1">
+                      <label htmlFor={`cap-${eq.id}`}>Tank capacity (max {maxCapacityL.toFixed(1)} L to fit this unit)</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          id={`cap-${eq.id}`}
+                          type="number"
+                          min="0.5"
+                          step="0.5"
+                          max={maxCapacityL.toFixed(1)}
+                          value={Number(capacityL.toFixed(1))}
+                          onChange={e => {
+                            const value = parseFloat(e.target.value);
+                            if (isNaN(value) || value <= 0) return;
+                            const capped = Math.min(maxCapacityL, value);
+                            onUpdateItem({ ...eq, reservoirCapacityL: capped, reservoirLevelL: Math.min(capped, getReservoirLevelL(eq)) }, selectedParentTentId);
+                          }}
+                          className="w-16 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right font-mono text-zinc-200 focus:outline-none focus:border-cyan-500"
+                        />
+                        <span>L</span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-zinc-500 block">
+                      Rated up to {maxLph.toFixed(2)} L/h at its {eq.setting}% setting; it only uses what the air actually takes up (more with the exhaust or vents carrying humid air out).
+                    </span>
+                    <span className="text-[10px] text-zinc-500 block">
+                      {wrappedMats.length > 0
+                        ? `Heated by ${wrappedMats.map(m => `${m.name}${m.powerOn ? ` (${m.powerWatts}W)` : ' (off)'}`).join(', ')} wrapped around it; otherwise follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}).`
+                        : `Follows ${hostTent ? 'tent' : 'room'} air (${fmt(ambientF)}). Wrap a heat mat around the unit to warm the water.`}
+                      {' '}Warmer water fogs more and cools the air less.
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* 3d. DEHUMIDIFIER COLLECTION BUCKET & DRAIN HOSE */}
+              {eq.type === 'dehumidifier' && (() => {
+                const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
+                const rh = hostTent ? hostTent.climate.rh : room.climate.rh;
+                const capacityL = getBucketCapacityL(eq);
+                const levelL = getBucketLevelL(eq);
+                const full = isBucketFull(eq);
+                const levelPct = Math.round((levelL / capacityL) * 100);
+                // Live collection from the last tick (follows the moisture actually pulled out of the air)
+                const fillLph = eq.powerOn ? (eq.waterFlowLph ?? 0) : 0;
+                const tempF = hostTent ? hostTent.climate.tempF : room.climate.tempF;
+                const maxLph = getDehumidifierExtractionLph(eq, eq.setting, rh, tempF);
+                const maxCapacityL = getMaxBucketCapacityL(eq);
+                return (
+                  <div className={`bg-zinc-900 border rounded-xl p-3.5 space-y-2 ${full ? 'border-rose-700/70' : 'border-zinc-800'}`}>
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>Collection Bucket</span>
+                      <span className="font-mono font-bold text-cyan-400">
+                        {eq.drainHoseConnected ? 'Drain hose' : `${levelL.toFixed(1)} / ${capacityL.toFixed(1)} L`}
+                      </span>
+                    </div>
+                    {!eq.drainHoseConnected && (
+                      <div className="space-y-1">
+                        <div className="h-2 rounded-full bg-zinc-950 border border-zinc-800 overflow-hidden">
+                          <div
+                            className={`h-full ${full ? 'bg-rose-500' : levelPct > 80 ? 'bg-amber-400' : 'bg-cyan-500'}`}
+                            style={{ width: `${levelPct}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between text-[10px] font-mono">
+                          <span className={full ? 'text-rose-400 font-bold' : levelPct > 80 ? 'text-amber-300' : 'text-zinc-400'}>
+                            {full ? 'FULL — shut off' : `${levelPct}% full`}
+                          </span>
+                          <span className="text-zinc-500">
+                            {full ? '' : fillLph > 0.0005 ? `collecting ${fillLph.toFixed(2)} L/h · full in ~${Math.floor((capacityL - levelL) / fillLph)}h` : 'Idle — not collecting'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {!eq.drainHoseConnected && (
+                      <button
+                        type="button"
+                        disabled={levelL < 0.05}
+                        onClick={() => {
+                          onUpdateItem(emptyBucket(eq), selectedParentTentId);
+                          onLogJournalEntry?.({
+                            title: `🪣 Emptied ${eq.name}`,
+                            message: `Poured out ${levelL.toFixed(1)} L of condensate from the collection bucket.`,
+                            type: 'action',
+                            category: 'care'
+                          });
+                        }}
+                        className="w-full py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-cyan-950/50 border-cyan-800 text-cyan-200 hover:bg-cyan-900/60"
+                      >
+                        {levelL < 0.05 ? 'Bucket Empty' : 'Empty Bucket'}
+                      </button>
+                    )}
+                    {!eq.drainHoseConnected && (
+                    <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400 pt-1">
+                      <label htmlFor={`cap-${eq.id}`}>Bucket capacity (max {maxCapacityL.toFixed(1)} L to fit this unit)</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          id={`cap-${eq.id}`}
+                          type="number"
+                          min="0.5"
+                          step="0.5"
+                          max={maxCapacityL.toFixed(1)}
+                          value={Number(capacityL.toFixed(1))}
+                          onChange={e => {
+                            const value = parseFloat(e.target.value);
+                            if (isNaN(value) || value <= 0) return;
+                            const capped = Math.min(maxCapacityL, value);
+                            onUpdateItem({ ...eq, bucketCapacityL: capped, bucketLevelL: Math.min(capped, getBucketLevelL(eq)) }, selectedParentTentId);
+                          }}
+                          className="w-16 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right font-mono text-zinc-200 focus:outline-none focus:border-cyan-500"
+                        />
+                        <span>L</span>
+                      </div>
+                    </div>
+                    )}
+                    <span className="text-[10px] text-zinc-500 block">
+                      Can pull up to {maxLph.toFixed(2)} L/h at {Math.round(rh)}% RH and {Math.round(tempF)}°F (rated at 65°F / 60% RH; less in drier or cooler air).
+                    </span>
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 pt-1">
+                      <input
+                        type="checkbox"
+                        checked={!!eq.drainHoseConnected}
+                        onChange={e => onUpdateItem({ ...eq, drainHoseConnected: e.target.checked, bucketLevelL: e.target.checked ? 0 : eq.bucketLevelL }, selectedParentTentId)}
+                        className="accent-cyan-500"
+                      />
+                      <span>Continuous drain hose</span>
+                    </label>
+                    <span className="text-[10px] text-zinc-500 block">
+                      {eq.drainHoseConnected
+                        ? `Condensate runs straight to a drain (${fillLph.toFixed(2)} L/h right now), so the unit never stops for a full bucket.`
+                        : 'When the bucket fills, the float switch shuts the unit off until it is emptied. Drier air collects less water.'}
+                    </span>
                   </div>
                 );
               })()}
@@ -4459,6 +4595,114 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* 6. INLINE FAN DUCT SIZE */}
+              {eq.type === 'exhaust_fan' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                  <div className="flex justify-between text-xs text-zinc-300">
+                    <span>Duct / Port Size</span>
+                    <span className="font-mono font-bold text-sky-400">{eq.flowRateCfm ?? INLINE_FAN_SPECS[eq.ductSizeIn || 6].cfm} CFM</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {INLINE_FAN_DUCT_SIZES.map(size => (
+                      <button
+                        key={size}
+                        type="button"
+                        onClick={() => {
+                          const spec = INLINE_FAN_SPECS[size];
+                          onUpdateItem({
+                            ...eq,
+                            ductSizeIn: size,
+                            flowRateCfm: spec.cfm,
+                            powerWatts: spec.watts,
+                            dimensions: { ...spec.dimensions }
+                          }, selectedParentTentId);
+                        }}
+                        className={`py-1.5 rounded-lg text-xs font-medium border ${
+                          (eq.ductSizeIn || 6) === size ? 'bg-sky-950 border-sky-500 text-sky-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {size}" duct
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    Air exchange scales with the fan's CFM against the tent's volume.
+                  </span>
+                </div>
+              )}
+
+              {/* 7. HEAT MAT PLACEMENT & THERMOSTAT */}
+              {eq.type === 'heat_mat' && (() => {
+                const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
+                const containerItems = hostTent ? hostTent.items : room.items;
+                const target = getHeatMatTarget(eq, containerItems, hostTent);
+                const options = [
+                  ...(hostTent ? [{ id: hostTent.id, label: describeHeatMatPlacement({ kind: 'tent_floor', tent: hostTent }) }] : []),
+                  ...containerItems.filter(i => i.id !== eq.id && canHeatMatAttachTo(i)).map(i => ({
+                    id: i.id,
+                    label: describeHeatMatPlacement(getHeatMatTarget({ ...eq, attachedToId: i.id }, containerItems, hostTent))
+                  }))
+                ];
+                const hasThermostat = eq.targetTempF !== undefined;
+                return (
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex justify-between text-xs text-zinc-300">
+                      <span>Placed Under / Wrapped Around</span>
+                      <span className="font-mono font-bold text-orange-400">{eq.powerOn ? `${eq.powerWatts}W` : 'Off'}</span>
+                    </div>
+                    <select
+                      value={target ? (target.kind === 'tent_floor' ? target.tent.id : target.item.id) : ''}
+                      onChange={e => {
+                        const next: EquipmentItem = { ...eq };
+                        if (e.target.value) next.attachedToId = e.target.value;
+                        else delete next.attachedToId;
+                        onUpdateItem(next, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-orange-500"
+                    >
+                      {!hostTent && <option value="">Not attached (lying on the floor)</option>}
+                      {options.map(o => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                    <span className="text-[10px] text-zinc-500 block">
+                      {!target
+                        ? 'Not touching anything, so it warms nothing. Put it under a pot or container, or wrap it around a humidifier.'
+                        : target.kind === 'tent_floor'
+                          ? `Lies under the catch tray: every pot and container standing in ${target.tent.name} gets part of its heat.`
+                          : target.wrapped
+                            ? `Heats ${target.item.name}'s reservoir water; how fast depends on the water volume and the mat's wattage.`
+                            : `Warms ${target.item.name}'s ${target.item.category === 'mushroom' ? 'substrate' : 'root zone'} from below.`}
+                    </span>
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 pt-1">
+                      <input
+                        type="checkbox"
+                        checked={hasThermostat}
+                        onChange={e => {
+                          const next: EquipmentItem = { ...eq };
+                          if (e.target.checked) next.targetTempF = 78;
+                          else delete next.targetTempF;
+                          onUpdateItem(next, selectedParentTentId);
+                        }}
+                        className="accent-orange-500"
+                      />
+                      <span>Thermostat controller</span>
+                      {hasThermostat && <span className="ml-auto font-mono font-bold text-orange-400">{eq.targetTempF}°F</span>}
+                    </label>
+                    {hasThermostat && (
+                      <input
+                        type="range"
+                        min="65"
+                        max="100"
+                        value={eq.targetTempF}
+                        onChange={e => onUpdateItem({ ...eq, targetTempF: parseInt(e.target.value) }, selectedParentTentId)}
+                        className="w-full accent-orange-500 cursor-pointer"
+                      />
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}

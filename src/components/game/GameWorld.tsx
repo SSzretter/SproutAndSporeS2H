@@ -18,7 +18,7 @@ import { TentInspectorModal } from './TentInspectorModal';
 import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
-import { migrateHumidifierDucting } from '../../utils/humidifierDucting';
+import { migrateEquipmentLinks, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, emptyBucket } from '../../utils/equipmentLinks';
 import { 
   Volume2, 
   VolumeX, 
@@ -41,7 +41,8 @@ import {
   X,
   Box,
   Home,
-  Sliders
+  Sliders,
+  Gauge
 } from 'lucide-react';
 
 // Walking speed of the cultivator: ~6 ft/s at 60 ticks per second
@@ -102,6 +103,53 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   // Sound state
   const [isMuted, setIsMuted] = useState(() => soundEffects.isMuted());
+
+  // Controls help: shown for a few seconds on entry, then collapses to a chip. Hovering peeks at it;
+  // clicking the chip or pressing [H] pins it open (remembered per browser).
+  const [controlsIntro, setControlsIntro] = useState(true);
+  const [controlsHover, setControlsHover] = useState(false);
+  const [controlsPinned, setControlsPinned] = useState(() => {
+    try {
+      return localStorage.getItem('sprout_spore_controls_pinned') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const toggleControlsPinned = () => {
+    setControlsIntro(false);
+    setControlsPinned(prev => {
+      try {
+        localStorage.setItem('sprout_spore_controls_pinned', String(!prev));
+      } catch {
+        // Not persisted; the toggle still works for this session
+      }
+      return !prev;
+    });
+  };
+  useEffect(() => {
+    const timer = setTimeout(() => setControlsIntro(false), 6000);
+    return () => clearTimeout(timer);
+  }, []);
+  const controlsExpanded = controlsPinned || controlsHover || controlsIntro;
+
+  // Live climate readouts over each tent (remembered per browser; storage may be unavailable)
+  const [showTentStats, setShowTentStats] = useState(() => {
+    try {
+      return localStorage.getItem('sprout_spore_show_tent_stats') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const toggleTentStats = () => {
+    setShowTentStats(prev => {
+      try {
+        localStorage.setItem('sprout_spore_show_tent_stats', String(!prev));
+      } catch {
+        // Not persisted; the toggle still works for this session
+      }
+      return !prev;
+    });
+  };
   const toggleMute = () => {
     const next = soundEffects.toggleMute();
     setIsMuted(next);
@@ -165,8 +213,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         const rooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
         const nextRooms = rooms.map(rm => {
           if (!rm.tents.some(t => t.id === tentId)) return rm;
-          // Unlink any humidifier hoses that fed the removed tent
-          return migrateHumidifierDucting({
+          // Unlink any hoses that fed the removed tent
+          return migrateEquipmentLinks({
             ...rm,
             tents: rm.tents.filter(t => t.id !== tentId)
           });
@@ -369,6 +417,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       // [I] to toggle Player Harvest Inventory
       if (e.key.toLowerCase() === 'i') {
         setIsInventoryOpen(prev => !prev);
+      }
+
+      // [H] to pin / unpin the controls help
+      if (e.key.toLowerCase() === 'h') {
+        toggleControlsPinned();
       }
     };
 
@@ -790,6 +843,61 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       return;
     }
     soundEffects.playClick();
+    // The watering can tops up a humidifier's reservoir
+    if (item.category === 'equipment' && item.type === 'humidifier' && activeTool === 'water') {
+      const capacityL = getReservoirLiters(item);
+      const addedL = capacityL - (isReservoirEmpty(item) ? 0 : getReservoirLevelL(item));
+      if (addedL < 0.05) {
+        addFloatingText('Reservoir already full 💧', x, y, '#94a3b8');
+        return;
+      }
+      soundEffects.playWater();
+      onUpdateState(prev => {
+        const host = tentId ? currentRoom.tents.find(t => t.id === tentId) : undefined;
+        const ambientF = host ? host.climate.tempF : currentRoom.climate.tempF;
+        const next = updateCropInSimulation(prev, item.id, tentId, it => refillReservoir(it as EquipmentItem, ambientF));
+        next.journal.push({
+          id: `j-${Date.now()}`,
+          time: next.simTime,
+          type: 'action',
+          category: 'care',
+          title: `💧 Refilled ${item.name}`,
+          message: `Topped up the reservoir with ${addedL.toFixed(1)} L of fresh tap water (${capacityL.toFixed(1)} L tank).`
+        });
+        broadcastSimulationState(next);
+        return next;
+      });
+      addFloatingText(`+${addedL.toFixed(1)} L Reservoir Refilled 💧`, x, y, '#38bdf8');
+      return;
+    }
+    // ...and empties a dehumidifier's collection bucket
+    if (item.category === 'equipment' && item.type === 'dehumidifier' && activeTool === 'water') {
+      if (item.drainHoseConnected) {
+        addFloatingText('Drains through its hose — no bucket to empty', x, y, '#94a3b8');
+        return;
+      }
+      const pouredL = getBucketLevelL(item);
+      if (pouredL < 0.05) {
+        addFloatingText('Bucket already empty 🪣', x, y, '#94a3b8');
+        return;
+      }
+      soundEffects.playWater();
+      onUpdateState(prev => {
+        const next = updateCropInSimulation(prev, item.id, tentId, it => emptyBucket(it as EquipmentItem));
+        next.journal.push({
+          id: `j-${Date.now()}`,
+          time: next.simTime,
+          type: 'action',
+          category: 'care',
+          title: `🪣 Emptied ${item.name}`,
+          message: `Poured out ${pouredL.toFixed(1)} L of condensate from the collection bucket.`
+        });
+        broadcastSimulationState(next);
+        return next;
+      });
+      addFloatingText(`-${pouredL.toFixed(1)} L Bucket Emptied 🪣`, x, y, '#38bdf8');
+      return;
+    }
     if (item.category === 'equipment' && activeTool !== 'inspect') {
       const eq = item as EquipmentItem;
       onUpdateState(prev => {
@@ -860,6 +968,16 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       return `${item.name} (${item.stage}) [Click to Inspect & Care]`;
     }
     if (item.category === 'equipment') {
+      if (item.type === 'humidifier') {
+        const water = isReservoirEmpty(item) ? '💧 EMPTY' : `💧 ${Math.round((getReservoirLevelL(item) / getReservoirLiters(item)) * 100)}%`;
+        return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${water}) [Water Can to Refill • Inspect to Edit]`;
+      }
+      if (item.type === 'dehumidifier') {
+        const bucket = item.drainHoseConnected ? 'drain hose'
+          : isBucketFull(item) ? '🪣 FULL'
+          : `🪣 ${Math.round((getBucketLevelL(item) / getBucketCapacityL(item)) * 100)}%`;
+        return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${bucket}) [Water Can to Empty • Inspect to Edit]`;
+      }
       return `⚙️ ${item.name} (${item.powerOn ? 'ON' : 'OFF'} • ${item.powerWatts}W) [Inspect to Edit • Click to Toggle]`;
     }
     return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Edit]`;
@@ -1016,6 +1134,20 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
         {/* Right: Sound, Player Inventory, Dual-Screen Popout */}
         <div className="flex items-center gap-2">
+          {/* Tent climate readouts toggle */}
+          <button
+            onClick={toggleTentStats}
+            className={`p-2 rounded-lg border text-xs flex items-center gap-1.5 transition-colors ${
+              showTentStats
+                ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-400'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+            }`}
+            title={showTentStats ? 'Hide live tent climate readouts' : 'Show live tent climate readouts (temp, RH, VPD, CO₂)'}
+          >
+            <Gauge className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Tent Stats</span>
+          </button>
+
           {/* Audio toggle */}
           <button
             onClick={toggleMute}
@@ -1073,6 +1205,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           onClickTent={handleSceneClickTent}
           onClickDoor={handleSceneClickDoor}
           onClickFloor={handleSceneClickFloor}
+          tempUnit={state.tempUnit}
+          showTentStats={showTentStats}
         />
 
         {/* Hover Tooltip Overlay */}
@@ -1086,24 +1220,50 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           </div>
         )}
 
-        {/* Proximity Action Prompt badge */}
-        <div className="absolute top-4 left-6 z-10 bg-zinc-900/85 backdrop-blur border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 shadow-md">
-          <div className="font-bold text-zinc-200 flex items-center gap-1.5 mb-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Cultivator Controls</span>
-          </div>
-          <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
-            <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
-            <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Interact with objects</div>
-            <div><span className="text-zinc-200 font-semibold">[Right Drag]</span> Rotate camera</div>
-            <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Pan camera (re-centers when you walk)</div>
-            <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Zoom</div>
-            <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
-            <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
-            <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>
-            <div><span className="text-zinc-200 font-semibold">[1 - 6]</span> Switch Hotbar Tool</div>
-            <div className="pt-0.5 text-emerald-400"><span className="text-zinc-200 font-semibold">[Grid]</span> 1 Square = 1 Foot (1:1 Scale)</div>
-          </div>
+        {/* Controls help: collapses to a chip so it doesn't cover the world */}
+        <div
+          className="absolute top-4 left-6 z-10"
+          onMouseEnter={() => setControlsHover(true)}
+          onMouseLeave={() => setControlsHover(false)}
+        >
+          {controlsExpanded ? (
+            <div className="bg-zinc-900/85 backdrop-blur border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 shadow-md">
+              <button
+                type="button"
+                onClick={toggleControlsPinned}
+                className="w-full font-bold text-zinc-200 flex items-center gap-1.5 mb-1"
+                title={controlsPinned ? 'Unpin (collapse when the mouse leaves) [H]' : 'Pin open [H]'}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Cultivator Controls</span>
+                <span className="ml-auto pl-3 text-[10px] font-mono text-zinc-500">{controlsPinned ? 'pinned · H' : 'click to pin · H'}</span>
+              </button>
+              <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
+                <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
+                <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Interact with objects</div>
+                <div><span className="text-zinc-200 font-semibold">[Right Drag]</span> Rotate camera</div>
+                <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Pan camera (re-centers when you walk)</div>
+                <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Zoom</div>
+                <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
+                <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
+                <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>
+                <div><span className="text-zinc-200 font-semibold">[1 - 6]</span> Switch Hotbar Tool</div>
+                <div><span className="text-zinc-200 font-semibold">[H]</span> Pin / hide this help</div>
+                <div className="pt-0.5 text-emerald-400"><span className="text-zinc-200 font-semibold">[Grid]</span> 1 Square = 1 Foot (1:1 Scale)</div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleControlsPinned}
+              className="flex items-center gap-1.5 bg-zinc-900/70 backdrop-blur border border-zinc-800 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-zinc-400 hover:text-zinc-200 shadow-md transition-colors"
+              title="Show controls (hover to peek, click to pin) [H]"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span>Controls</span>
+              <span className="font-mono text-zinc-600">H</span>
+            </button>
+          )}
         </div>
 
         {/* Dual Screen Real-Time Sync Indicator */}

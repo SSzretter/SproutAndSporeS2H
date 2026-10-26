@@ -1,4 +1,5 @@
 import { Dimensions, Position3D, Item, Tent, Room, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem } from '../types/sim';
+import { getAttachedPosition } from './equipmentLinks';
 
 /**
  * Returns realistic physical dimensions (L × W × H in feet) for any object
@@ -327,4 +328,98 @@ export function getDefaultSpatialPosition(
     y: Number(y.toFixed(1)),
     z: 0 // Plants sit on floor/stand
   };
+}
+
+/** An occupied volume in a container: footprint centered at (x, y), from z up to z + h (feet). */
+interface OccupiedBox {
+  x: number;
+  y: number;
+  z: number;
+  length: number;
+  width: number;
+  height: number;
+}
+
+// Clearance kept between neighbouring items' footprints when auto-placing
+const PLACEMENT_GAP_FT = 0.1;
+// Resolution of the free-space search grid
+const PLACEMENT_STEP_FT = 0.25;
+
+function itemBox(item: Item): OccupiedBox | null {
+  if (!item.position) return null;
+  return { x: item.position.x, y: item.position.y, z: item.position.z || 0, ...item.dimensions };
+}
+
+/**
+ * Finds a spot for a new item where its footprint (and height span) doesn't overlap anything
+ * already in its container. Tent items avoid the tent's other items; room / garden items avoid
+ * the room's floor items and its tents. Starts from the item's own default position and, if that
+ * is taken, moves to the nearest free spot that fits inside the walls. Elevation (z) is kept, so
+ * a ceiling light only conflicts with other ceiling gear, not with the plants below it.
+ * If the container is full, the item goes where it overlaps the least.
+ */
+export function placeItemInFreeSpace<T extends Item>(item: T, room: Room, tent?: Tent): T {
+  const container = tent ? tent.dimensions : room.dimensions;
+  const existing = tent ? tent.items : room.items;
+  const dims = item.dimensions;
+
+  // A heat mat attached to something lives under / around it rather than in its own spot
+  const attachedPos = getAttachedPosition(item, existing, tent);
+  if (attachedPos) return { ...item, position: attachedPos };
+
+  const obstacles: OccupiedBox[] = existing
+    .filter(other => other.id !== item.id && !getAttachedPosition(other, existing, tent))
+    .map(itemBox)
+    .filter((box): box is OccupiedBox => box !== null);
+  if (!tent) {
+    // Tents are solid obstacles for anything placed on the room floor (position = back-left corner)
+    for (const t of room.tents) {
+      const pos = t.position || { x: 0, y: 0, z: 0 };
+      obstacles.push({
+        x: pos.x + t.dimensions.length / 2,
+        y: pos.y + t.dimensions.width / 2,
+        z: pos.z || 0,
+        ...t.dimensions
+      });
+    }
+  }
+
+  const preferred = clampItemPosition(
+    item.position || getDefaultSpatialPosition(item.category, container, existing.length, item.category === 'equipment' ? item.type : undefined),
+    dims,
+    container
+  );
+  const z = preferred.z;
+
+  // Footprint area (sq ft, gap included) shared with obstacles whose height span overlaps the item's
+  const overlapArea = (x: number, y: number) => obstacles.reduce((sum, o) => {
+    if (z >= o.z + o.height || o.z >= z + dims.height) return sum;
+    const ox = (dims.length + o.length) / 2 + PLACEMENT_GAP_FT - Math.abs(x - o.x);
+    const oy = (dims.width + o.width) / 2 + PLACEMENT_GAP_FT - Math.abs(y - o.y);
+    return ox > 0 && oy > 0 ? sum + ox * oy : sum;
+  }, 0);
+
+  if (overlapArea(preferred.x, preferred.y) === 0) return { ...item, position: preferred };
+
+  // Scan every spot where the footprint fits inside the walls; take the free one nearest the preferred spot
+  const axis = (size: number, max: number) => {
+    const half = size / 2;
+    if (half * 2 >= max) return [max / 2];
+    const values: number[] = [];
+    for (let v = half; v <= max - half + 1e-6; v += PLACEMENT_STEP_FT) values.push(roundFt(v));
+    return values;
+  };
+  // Prefer no overlap, then the least overlap; among equals, the spot nearest the preferred one
+  let best = { x: preferred.x, y: preferred.y, overlap: overlapArea(preferred.x, preferred.y), dist: 0 };
+  for (const x of axis(dims.length, container.length)) {
+    for (const y of axis(dims.width, container.width)) {
+      const overlap = overlapArea(x, y);
+      const dist = Math.hypot(x - preferred.x, y - preferred.y);
+      if (overlap < best.overlap - 1e-6 || (Math.abs(overlap - best.overlap) <= 1e-6 && dist < best.dist)) {
+        best = { x, y, overlap, dist };
+      }
+    }
+  }
+
+  return { ...item, position: { x: best.x, y: best.y, z } };
 }
