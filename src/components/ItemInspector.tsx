@@ -36,8 +36,12 @@ import {
   Layers,
   Power,
   Move,
-  MapPin
+  MapPin,
+  Dna,
+  FlaskConical,
+  Play
 } from 'lucide-react';
+import { CropGrowth3DViewer } from './game3d/CropGrowth3DViewer';
 import { 
   Room, 
   Tent, 
@@ -61,6 +65,7 @@ import { clampItemPosition } from '../utils/spatial';
 import { getDuctTargetTent, DEFAULT_RESERVOIR_SETPOINT_F, HOSE_DELIVERY_EFFICIENCY } from '../utils/humidifierDucting';
 import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory, ReservoirConditioning } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
+import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 
 interface ItemInspectorProps {
   room: Room;
@@ -119,6 +124,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteRoomConfirm, setShowDeleteRoomConfirm] = useState(false);
   const [quickItemToDelete, setQuickItemToDelete] = useState<{ id: string; name: string; kind: 'tent' | 'item'; parentTentId?: string | null } | null>(null);
+  const [show3dGrowthTimelapse, setShow3dGrowthTimelapse] = useState(false);
 
   // Find currently selected tent if any
   let currentTent: Tent | undefined = undefined;
@@ -750,14 +756,14 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                   iconBg = 'bg-emerald-950/50 border-emerald-800/60 text-emerald-300';
                   tagColor = 'bg-emerald-950 text-emerald-300 border border-emerald-800';
                   tagLabel = `Plant (${pl.stage})`;
-                  details = `Health: ${pl.health}% · Soil: ${pl.soilMoisture.toFixed(0)}%`;
+                  details = `Health: ${pl.health}% · Soil: ${pl.soilMoisture.toFixed(0)}%${pl.traits ? ` · 🧬 ${pl.traits.viabilityPct}% Viable (${pl.traits.growthRateMultiplier}x)` : ''}`;
                 } else if (isMushroom) {
                   const m = it as MushroomItem;
                   icon = <Sprout className="w-5 h-5 text-amber-400" />;
                   iconBg = 'bg-amber-950/50 border-amber-800/60 text-amber-300';
                   tagColor = 'bg-amber-950 text-amber-300 border border-amber-800';
                   tagLabel = `Mushroom (${m.stage})`;
-                  details = `Health: ${m.health}% · Substrate: ${m.substrateMoisture.toFixed(0)}%`;
+                  details = `Health: ${m.health}% · Substrate: ${m.substrateMoisture.toFixed(0)}%${m.traits ? ` · 🍄 ${m.traits.viabilityPct}% Viable (${m.traits.colonizationVigor}x)` : ''}`;
                 } else {
                   const eq = it as EquipmentItem;
                   if (eq.type === 'grow_light') icon = <Sun className="w-5 h-5 text-yellow-400" />;
@@ -1425,8 +1431,14 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-zinc-400 mb-2">
-                        {item.species} · {item.strainName}
+                      <div className="text-[11px] text-zinc-400 mb-2 flex items-center justify-between">
+                        <span>{item.species} · {item.strainName}</span>
+                        {item.traits && (
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-950/70 text-purple-300 border border-purple-800/60 flex items-center gap-1">
+                            <Dna className="w-2.5 h-2.5 text-purple-400" />
+                            {item.traits.viabilityPct}% · {item.traits.growthRateMultiplier.toFixed(2)}x
+                          </span>
+                        )}
                       </div>
 
                       <div className="space-y-1.5 text-[11px]">
@@ -1510,8 +1522,14 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-zinc-400 mb-2">
-                        {item.species} · Flush #{item.flushCount}
+                      <div className="text-[11px] text-zinc-400 mb-2 flex items-center justify-between">
+                        <span>{item.species} · Flush #{item.flushCount}</span>
+                        {item.traits && (
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-950/70 text-amber-300 border border-amber-800/60 flex items-center gap-1">
+                            <Dna className="w-2.5 h-2.5 text-amber-400" />
+                            {item.traits.viabilityPct}% · {item.traits.colonizationVigor.toFixed(2)}x
+                          </span>
+                        )}
                       </div>
 
                       <div className="space-y-1.5 text-[11px]">
@@ -2228,6 +2246,15 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShow3dGrowthTimelapse(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition-all shadow-md shadow-emerald-950/50 cursor-pointer"
+                      title="Watch interactive 3D lifecycle growth timelapse matching 3D game view"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current text-emerald-200" />
+                      <span>Watch Lifecycle Growth</span>
+                    </button>
                     <span className="text-xs font-mono uppercase px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">
                       {plant.stage.replace('_', ' ')} ({plant.stageProgress.toFixed(0)}%)
                     </span>
@@ -2393,7 +2420,281 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 </div>
               </div>
 
-              {/* 2. Key Dates & Botanical Lifecycle Timeline Card */}
+              {/* 2. Seed / Cutting Genetics & Phenotypic Traits Card */}
+              {(() => {
+                const traits = plant.traits || generateSeedTraits(plant.species, plant.strainName, plant.propagationType);
+                const tierInfo = getGeneticTier(traits.germinationVigor, traits.viabilityPct, traits.yieldMultiplier);
+
+                return (
+                  <div className="bg-gradient-to-r from-purple-950/30 via-zinc-950 to-zinc-950 border border-purple-800/60 rounded-xl p-4 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between border-b border-purple-900/40 pb-3 gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400">
+                          <Dna className="w-5 h-5 animate-pulse" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-bold text-purple-200">
+                              {isSeed ? 'Seed Genetics & Phenotypic Trait Variability' : 'Clone Lineage & Genetic Trait Profile'}
+                            </h4>
+                            <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold border ${tierInfo.badgeColor}`}>
+                              Tier {tierInfo.tier} · {tierInfo.label}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-purple-300/70 font-mono">
+                            Lineage: <span className="text-zinc-200">{traits.generation}</span> · Batch: <span className="text-zinc-200">{traits.seedId}</span> · Grade: <span className="text-zinc-200">{traits.seedGrade}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Viability & Germination Status Banner */}
+                      <div className="flex items-center gap-2">
+                        {traits.germinationOutcome === 'failed' ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-950 text-rose-300 border border-rose-700 text-xs font-bold">
+                            <span>❌ Failed to Germinate</span>
+                          </div>
+                        ) : traits.germinationOutcome === 'dormant' ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-950 text-amber-300 border border-amber-700 text-xs font-bold animate-pulse">
+                            <span>⚠️ Dormant Embryo</span>
+                          </div>
+                        ) : plant.stage === 'germination' ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-950 text-teal-300 border border-teal-700 text-xs font-bold">
+                            <span>🌱 Cracking Seed Coat ({traits.viabilityPct}% Viable)</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-700 text-xs font-bold">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Viable Embryo Sprouted</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Failure Alert if any */}
+                    {traits.germinationOutcome === 'failed' && (
+                      <div className="p-3 bg-rose-950/40 border border-rose-800 rounded-xl text-xs text-rose-300 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="font-bold block text-rose-200">Embryo Viability Loss:</span>
+                          <span>{traits.failureReason || 'Seed lacked sufficient vigor or rotted under adverse root conditions.'}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newTraits = generateSeedTraits(plant.species, plant.strainName, plant.propagationType, 'Certified High-Viability');
+                            onUpdateItem({
+                              ...plant,
+                              stage: 'germination',
+                              stageProgress: 0,
+                              currentStageDays: 0,
+                              soilMoisture: 75,
+                              rootTempF: 78,
+                              health: 98,
+                              traits: newTraits
+                            }, selectedParentTentId);
+                            onLogJournalEntry?.({
+                              title: `🌱 Re-Seeded Container: ${plant.name}`,
+                              message: `Planted fresh viable seed (Batch #${newTraits.seedId}, ${newTraits.viabilityPct}% viability).`,
+                              type: 'action',
+                              category: 'care'
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-950/40 transition-colors"
+                        >
+                          🌱 Re-Seed Pot (Plant Fresh Seed)
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Viability Gauge & Breakdown */}
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                          <Activity className="w-3.5 h-3.5 text-purple-400" />
+                          Seed Embryo Viability Potential
+                        </span>
+                        <span className="font-mono font-bold text-purple-300">
+                          {traits.viabilityPct}% Viability Rating
+                        </span>
+                      </div>
+                      <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full rounded-full transition-all ${
+                            traits.viabilityPct >= 90 ? 'bg-gradient-to-r from-emerald-500 to-teal-400' :
+                            traits.viabilityPct >= 75 ? 'bg-gradient-to-r from-teal-500 to-amber-400' :
+                            'bg-gradient-to-r from-amber-500 to-rose-500'
+                          }`}
+                          style={{ width: `${traits.viabilityPct}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono text-zinc-400">
+                        <span>Commercial standard: 85%</span>
+                        <span>{traits.viabilityPct >= 92 ? 'High-vigor certified germination' : traits.viabilityPct >= 75 ? 'Standard natural batch variability' : 'Marginal seed viability - warmth & care needed'}</span>
+                      </div>
+                    </div>
+
+                    {/* Genetic Trait Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 text-xs">
+                      {/* Germination Vigor */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[10px] text-zinc-400 font-medium block">Emergence Vigor</span>
+                        <div className={`font-mono font-bold text-sm ${traits.germinationVigor >= 1.15 ? 'text-emerald-400' : traits.germinationVigor >= 0.95 ? 'text-teal-300' : 'text-amber-400'}`}>
+                          {traits.germinationVigor.toFixed(2)}x
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {traits.germinationVigor >= 1 ? `+${Math.round((traits.germinationVigor - 1) * 100)}% fast sprout` : `${Math.round((traits.germinationVigor - 1) * 100)}% slower sprout`}
+                        </span>
+                      </div>
+
+                      {/* Growth Rate */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[10px] text-zinc-400 font-medium block">Growth Rate Pace</span>
+                        <div className={`font-mono font-bold text-sm ${traits.growthRateMultiplier >= 1.15 ? 'text-emerald-400' : traits.growthRateMultiplier >= 0.95 ? 'text-teal-300' : 'text-amber-400'}`}>
+                          {traits.growthRateMultiplier.toFixed(2)}x
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {traits.growthRateMultiplier >= 1 ? `+${Math.round((traits.growthRateMultiplier - 1) * 100)}% daily veg` : `${Math.round((traits.growthRateMultiplier - 1) * 100)}% compact veg`}
+                        </span>
+                      </div>
+
+                      {/* Yield Multiplier */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[10px] text-zinc-400 font-medium block">Yield Capacity</span>
+                        <div className={`font-mono font-bold text-sm ${traits.yieldMultiplier >= 1.15 ? 'text-emerald-400' : traits.yieldMultiplier >= 0.95 ? 'text-teal-300' : 'text-amber-400'}`}>
+                          {traits.yieldMultiplier.toFixed(2)}x
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {traits.yieldMultiplier >= 1 ? `+${Math.round((traits.yieldMultiplier - 1) * 100)}% flower mass` : 'Standard harvest mass'}
+                        </span>
+                      </div>
+
+                      {/* Mold & Pest Defense */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[10px] text-zinc-400 font-medium block">Stress &amp; Mold</span>
+                        <div className={`font-mono font-bold text-sm uppercase ${
+                          traits.pestMoldResistance === 'resilient' ? 'text-emerald-400' :
+                          traits.pestMoldResistance === 'hardy' ? 'text-teal-300' :
+                          traits.pestMoldResistance === 'moderate' ? 'text-zinc-300' : 'text-rose-400'
+                        }`}>
+                          {traits.pestMoldResistance}
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {traits.pestMoldResistance === 'resilient' ? 'High pathogen armor' : traits.pestMoldResistance === 'hardy' ? 'Good tolerance' : 'Sensitive to rot'}
+                        </span>
+                      </div>
+
+                      {/* Terpene / Secondary Metabolite Potential */}
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[10px] text-zinc-400 font-medium block">Resin / Terpenes</span>
+                        <div className={`font-mono font-bold text-sm ${traits.terpeneResinPotential >= 1.15 ? 'text-purple-300' : 'text-zinc-200'}`}>
+                          {traits.terpeneResinPotential.toFixed(2)}x
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block">
+                          {plant.species === 'Hops' ? 'Alpha acids bonus' : plant.species === 'Chili Pepper' ? 'Capsaicin heat punch' : 'Trichome resin density'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Phenotypic Expression Box */}
+                    <div className="p-3 bg-purple-950/20 border border-purple-800/40 rounded-xl flex items-start gap-3">
+                      <div className="p-2 rounded-lg bg-purple-900/40 text-purple-300 shrink-0">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div className="text-xs space-y-1">
+                        <span className="font-bold text-purple-200 block">
+                          Unique Phenotype: {traits.phenotypeName}
+                        </span>
+                        <p className="text-zinc-400 text-[11px] leading-relaxed">
+                          Just as in nature, this individual seed exhibits distinct genetic variance from other seeds in the batch. 
+                          It carries a <strong className="text-zinc-200">{traits.growthRateMultiplier}x</strong> growth pace, 
+                          <strong className="text-zinc-200"> {traits.pestMoldResistance}</strong> pathogen resistance, and 
+                          <strong className="text-zinc-200"> {traits.terpeneResinPotential}x</strong> secondary metabolite accumulation potential.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Cultivator Interventions for Seeds */}
+                    {plant.stage === 'germination' && (
+                      <div className="pt-2 border-t border-purple-900/30 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-purple-300 text-[11px] font-semibold">Cultivator Seed Care:</span>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updatedTraits: SeedGeneticTraits = {
+                              ...traits,
+                              viabilityPct: Math.min(99, traits.viabilityPct + 12),
+                              germinationVigor: parseFloat((traits.germinationVigor + 0.10).toFixed(2)),
+                              germinationOutcome: 'in_progress'
+                            };
+                            onUpdateItem({
+                              ...plant,
+                              soilMoisture: Math.min(85, plant.soilMoisture + 15),
+                              traits: updatedTraits
+                            }, selectedParentTentId);
+                            onLogJournalEntry?.({
+                              title: `🧪 Kelp & Peroxide Soak: ${plant.name}`,
+                              message: `Applied dilute 1% H2O2 & cold-water kelp extract drench. Softened seed coat (+12% viability) and stimulated embryo awakening!`,
+                              type: 'action',
+                              category: 'care'
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700/60 transition-colors flex items-center gap-1.5"
+                        >
+                          <FlaskConical className="w-3.5 h-3.5 text-purple-300" />
+                          <span>Kelp &amp; Peroxide Seed Soak (+12% Viability)</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onUpdateItem({
+                              ...plant,
+                              rootTempF: 82.0
+                            }, selectedParentTentId);
+                            onLogJournalEntry?.({
+                              title: `🌡️ Applied Bottom Heat Mat: ${plant.name}`,
+                              message: `Warmed substrate root zone to 82°F to break seed dormancy and accelerate radicle emergence.`,
+                              type: 'action',
+                              category: 'care'
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-800/60 transition-colors flex items-center gap-1.5"
+                        >
+                          <Thermometer className="w-3.5 h-3.5 text-amber-300" />
+                          <span>Set Bottom Heat (82°F Optimal)</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newTraits = generateSeedTraits(plant.species, plant.strainName, plant.propagationType, 'Certified High-Viability');
+                            onUpdateItem({
+                              ...plant,
+                              stageProgress: 0,
+                              currentStageDays: 0,
+                              health: 98,
+                              soilMoisture: 78,
+                              rootTempF: 78,
+                              traits: newTraits
+                            }, selectedParentTentId);
+                            onLogJournalEntry?.({
+                              title: `🌱 Re-Seeded: ${plant.name}`,
+                              message: `Planted fresh viable seed (Batch #${newTraits.seedId}, ${newTraits.viabilityPct}% viability).`,
+                              type: 'action',
+                              category: 'care'
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors"
+                        >
+                          Roll Fresh Seed Batch
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* 3. Key Dates & Botanical Lifecycle Timeline Card */}
               <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-4 space-y-4">
                 <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
                   <div className="flex items-center gap-2">
@@ -2487,7 +2788,17 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
 
                 {/* Quick Stage Override Controls */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-zinc-850 text-xs">
-                  <span className="text-zinc-400 text-[11px]">Manual Lifecycle Stage Controls:</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-400 text-[11px]">Manual Lifecycle Stage Controls:</span>
+                    <button
+                      type="button"
+                      onClick={() => setShow3dGrowthTimelapse(true)}
+                      className="px-2.5 py-1 rounded-lg bg-teal-950 hover:bg-teal-900 text-teal-200 border border-teal-800 text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
+                    >
+                      <Play className="w-3 h-3 fill-current text-teal-300" />
+                      <span>Watch Growth 3D</span>
+                    </button>
+                  </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {[
                       { id: isSeed ? 'germination' : 'rooting', label: isSeed ? 'Germinate' : 'Root' },
@@ -3013,9 +3324,20 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 <Sprout className="w-5 h-5 text-amber-400" />
                 <h4 className="text-sm font-bold text-zinc-100">Mycology Substrate, Respiration &amp; FAE</h4>
               </div>
-              <span className="text-xs font-mono uppercase px-2.5 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 font-semibold">
-                Stage: {currentItem.stage} ({currentItem.stageProgress.toFixed(0)}%)
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShow3dGrowthTimelapse(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-white text-xs font-bold transition-all shadow-md shadow-amber-950/50 cursor-pointer"
+                  title="Watch interactive 3D lifecycle growth timelapse matching 3D game view"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current text-amber-200" />
+                  <span>Watch Lifecycle Growth</span>
+                </button>
+                <span className="text-xs font-mono uppercase px-2.5 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 font-semibold">
+                  Stage: {currentItem.stage} ({currentItem.stageProgress.toFixed(0)}%)
+                </span>
+              </div>
             </div>
 
             {/* Meters Grid */}
@@ -3126,6 +3448,204 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
                 <span>Harvest Flush ({currentItem.yieldPotentialGrams.toFixed(0)}g)</span>
               </button>
             </div>
+
+            {/* Spore Genetics & Inoculant Trait Profile Card */}
+            {(() => {
+              const sporeTraits = currentItem.traits || generateSporeTraits(currentItem.species, currentItem.strainName);
+              const sporeTier = getGeneticTier(sporeTraits.colonizationVigor, sporeTraits.viabilityPct, sporeTraits.flushYieldMultiplier);
+
+              return (
+                <div className="bg-gradient-to-r from-amber-950/30 via-zinc-950 to-zinc-950 border border-amber-800/60 rounded-xl p-4 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between border-b border-amber-900/40 pb-3 gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                        <Dna className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-bold text-amber-200">
+                            Spore Inoculant Genetics &amp; Hyphal Vigor
+                          </h4>
+                          <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold border ${sporeTier.badgeColor}`}>
+                            Tier {sporeTier.tier} · {sporeTier.label}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-amber-300/70 font-mono">
+                          Inoculant: <span className="text-zinc-200">{sporeTraits.inoculantType}</span> · Batch: <span className="text-zinc-200">{sporeTraits.sporeBatchId}</span> · Grade: <span className="text-zinc-200">{sporeTraits.inoculantGrade}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {sporeTraits.sporeViabilityOutcome === 'failed' ? (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-950 text-rose-300 border border-rose-700 text-xs font-bold">
+                          <span>❌ Inoculant Stalled / Contaminated</span>
+                        </div>
+                      ) : currentItem.stage === 'colonizing' ? (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-950 text-teal-300 border border-teal-700 text-xs font-bold">
+                          <span>🍄 Anastomosing Mycelium ({sporeTraits.viabilityPct}% Viable)</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-700 text-xs font-bold">
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Fully Colonized &amp; Fruiting</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Viability Gauge */}
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                        <Activity className="w-3.5 h-3.5 text-amber-400" />
+                        Spore Germination Viability Rating
+                      </span>
+                      <span className="font-mono font-bold text-amber-300">
+                        {sporeTraits.viabilityPct}% Spore Viability
+                      </span>
+                    </div>
+                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full rounded-full transition-all ${
+                          sporeTraits.viabilityPct >= 90 ? 'bg-gradient-to-r from-emerald-500 to-teal-400' :
+                          sporeTraits.viabilityPct >= 75 ? 'bg-gradient-to-r from-teal-500 to-amber-400' :
+                          'bg-gradient-to-r from-amber-500 to-rose-500'
+                        }`}
+                        style={{ width: `${sporeTraits.viabilityPct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Genetic Traits Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 text-xs">
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] text-zinc-400 font-medium block">Colonization Vigor</span>
+                      <div className={`font-mono font-bold text-sm ${sporeTraits.colonizationVigor >= 1.15 ? 'text-emerald-400' : 'text-zinc-200'}`}>
+                        {sporeTraits.colonizationVigor.toFixed(2)}x
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        Substrate run speed
+                      </span>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] text-zinc-400 font-medium block">Pinning Density</span>
+                      <div className="font-mono font-bold text-sm text-amber-300 uppercase">
+                        {sporeTraits.pinningDensity}
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        Primordia cluster count
+                      </span>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] text-zinc-400 font-medium block">Flush Yield Multiplier</span>
+                      <div className={`font-mono font-bold text-sm ${sporeTraits.flushYieldMultiplier >= 1.15 ? 'text-emerald-400' : 'text-zinc-200'}`}>
+                        {sporeTraits.flushYieldMultiplier.toFixed(2)}x
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        Fruiting body biomass
+                      </span>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] text-zinc-400 font-medium block">Contam Defense</span>
+                      <div className={`font-mono font-bold text-sm uppercase ${
+                        sporeTraits.contaminationResistance === 'impervious' ? 'text-emerald-400' :
+                        sporeTraits.contaminationResistance === 'aggressive' ? 'text-teal-300' : 'text-amber-400'
+                      }`}>
+                        {sporeTraits.contaminationResistance}
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        Mold &amp; trichoderma defense
+                      </span>
+                    </div>
+
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] text-zinc-400 font-medium block">CO₂ Tolerance</span>
+                      <div className="font-mono font-bold text-sm text-zinc-200">
+                        {sporeTraits.co2Tolerance.toFixed(2)}x
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        FAE elasticity floor
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Phenotype Description */}
+                  <div className="p-3 bg-amber-950/20 border border-amber-800/40 rounded-xl flex items-start gap-3">
+                    <div className="p-2 rounded-lg bg-amber-900/40 text-amber-300 shrink-0">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div className="text-xs space-y-1">
+                      <span className="font-bold text-amber-200 block">
+                        Mycelial Phenotype: {sporeTraits.phenotypeName}
+                      </span>
+                      <p className="text-zinc-400 text-[11px] leading-relaxed">
+                        Spore inoculation delivers natural genetic variability. This isolate displays 
+                        <strong className="text-zinc-200"> {sporeTraits.colonizationVigor}x</strong> hyphal network expansion and 
+                        <strong className="text-zinc-200"> {sporeTraits.pinningDensity}</strong> cluster formation.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Inoculant Actions */}
+                  <div className="pt-2 border-t border-amber-900/30 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-amber-300 text-[11px] font-semibold">Mycology Interventions:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated: SporeGeneticTraits = {
+                          ...sporeTraits,
+                          colonizationVigor: parseFloat((sporeTraits.colonizationVigor + 0.12).toFixed(2)),
+                          sporeViabilityOutcome: 'germinated'
+                        };
+                        onUpdateItem({
+                          ...currentItem,
+                          traits: updated,
+                          health: Math.min(100, currentItem.health + 8)
+                        }, selectedParentTentId);
+                        onLogJournalEntry?.({
+                          title: `🧪 Injected Liquid Culture: ${currentItem.name}`,
+                          message: `Dosed substrate with vigorous isolated mycelium liquid culture booster (+12% vigor).`,
+                          type: 'action',
+                          category: 'care'
+                        });
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 text-amber-200 border border-amber-700/60 transition-colors flex items-center gap-1.5"
+                    >
+                      <FlaskConical className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Liquid Culture Booster (+12% Vigor)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const fresh = generateSporeTraits(currentItem.species, currentItem.strainName, 'Isolated Commercial LC');
+                        onUpdateItem({
+                          ...currentItem,
+                          stageProgress: 0,
+                          health: 98,
+                          substrateMoisture: 88,
+                          myceliumColonization: 15,
+                          traits: fresh
+                        }, selectedParentTentId);
+                        onLogJournalEntry?.({
+                          title: `🍄 Re-Inoculated: ${currentItem.name}`,
+                          message: `Inoculated fresh isolated spore culture (Batch #${fresh.sporeBatchId}, ${fresh.viabilityPct}% viability).`,
+                          type: 'action',
+                          category: 'care'
+                        });
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors"
+                    >
+                      Re-Inoculate Fresh Spores
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -4217,6 +4737,30 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
               </div>
             </div>
           </div>
+        )}
+
+        {/* 3D Crop Growth Timelapse Modal */}
+        {show3dGrowthTimelapse && currentItem && (currentItem.category === 'plant' || currentItem.category === 'mushroom') && (
+          <CropGrowth3DViewer
+            crop={currentItem as PlantItem | MushroomItem}
+            isOpen={show3dGrowthTimelapse}
+            onClose={() => setShow3dGrowthTimelapse(false)}
+            onApplyStage={(stage, progress) => {
+              if (currentItem!.category === 'plant') {
+                onUpdateItem({
+                  ...currentItem!,
+                  stage: stage as PlantStage,
+                  stageProgress: Math.round(progress)
+                }, selectedParentTentId);
+              } else {
+                onUpdateItem({
+                  ...currentItem!,
+                  stage: stage as MushroomItem['stage'],
+                  stageProgress: Math.round(progress)
+                }, selectedParentTentId);
+              }
+            }}
+          />
         )}
       </div>
     );

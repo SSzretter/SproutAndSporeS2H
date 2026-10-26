@@ -2,6 +2,7 @@ import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, Per
 import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar, getPlantTargetSize, getContainerSizeFactor } from './plantLifecycle';
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
 import { getDuctTargetTent, getDuctedHumidifiersForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, HOSE_DELIVERY_EFFICIENCY } from './humidifierDucting';
+import { generateSeedTraits, generateSporeTraits } from './genetics';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -1096,6 +1097,14 @@ function simulateCropItem(params: {
       }
     }
 
+    // Ensure seed/cutting genetic traits exist
+    if (!plant.traits) {
+      plant.traits = generateSeedTraits(plant.species, plant.strainName, plant.propagationType);
+      if (plant.stage !== 'germination' && plant.stage !== 'rooting') {
+        plant.traits.germinationOutcome = 'germinated';
+      }
+    }
+
     // A. Root Zone Temperature Simulation
     let targetRootTemp = enclosureClimate.tempF * 0.75 + 16.0;
     if (heatMatActive) {
@@ -1215,6 +1224,44 @@ function simulateCropItem(params: {
 
     // D. Growth Progress & Cultivar Milestone Progression
     if (plant.health > 25 && !plant.isHarvested) {
+      // Evaluate Germination Viability and Failure Risk for seeds
+      if (plant.stage === 'germination') {
+        const traits = plant.traits;
+        if (traits) {
+          traits.daysInGermination = parseFloat(((traits.daysInGermination || 0) + elapsedDays).toFixed(2));
+          const expectedGermDays = plant.germinationDaysExpected || 5;
+
+          // If germination is taking longer than expected under sub-optimal conditions:
+          if (traits.daysInGermination > expectedGermDays * 2.0 && plant.stageProgress < 65) {
+            let effectiveViability = traits.viabilityPct;
+            const isChilled = (plant.rootTempF || 70) < 68;
+            const isMoistureExtreme = plant.soilMoisture < 25 || plant.soilMoisture > 92;
+
+            if (plant.rootTempF >= 78 && plant.rootTempF <= 86) effectiveViability += 10; // Heat mat boost!
+            if (isChilled) effectiveViability -= 25;
+            if (isMoistureExtreme) effectiveViability -= 25;
+
+            if (effectiveViability < 55 && traits.germinationOutcome !== 'failed') {
+              traits.germinationOutcome = 'failed';
+              traits.failureReason = isChilled 
+                ? 'Embryo failed to emerge due to cold root zone (<68°F) and low seed viability.'
+                : isMoistureExtreme
+                  ? 'Seed rotted / suffered damping-off from improper moisture balance.'
+                  : 'Low viability seed coat failed to crack.';
+              events.push({
+                type: 'warning',
+                category: 'crop',
+                tentName,
+                title: `⚠️ Germination Stalled: ${plant.name}`,
+                message: `${traits.failureReason} Open properties dialog to inspect traits or re-seed.`
+              });
+            } else if (traits.germinationOutcome !== 'failed') {
+              traits.germinationOutcome = 'dormant';
+            }
+          }
+        }
+      }
+
       let co2Multiplier = 1.0;
       if (isDay && enclosureClimate.lightPPFD > 500) {
         if (enclosureClimate.co2Ppm >= 1000 && enclosureClimate.co2Ppm <= 1500) {
@@ -1244,8 +1291,20 @@ function simulateCropItem(params: {
         }
       }
 
+      // Genetic vigor multipliers:
+      const germinationVigor = plant.traits?.germinationVigor || 1.0;
+      const growthRateMultiplier = plant.traits?.growthRateMultiplier || 1.0;
+      const stageSpeedMultiplier = plant.stage === 'germination' ? germinationVigor : growthRateMultiplier;
+
       const baseDailyPercent = 100 / Math.max(1, expectedDays);
-      const progressDelta = baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * co2Multiplier;
+      
+      // If seed has failed to germinate, progress is 0
+      const isFailedGerm = plant.stage === 'germination' && plant.traits?.germinationOutcome === 'failed';
+      const progressDelta = isFailedGerm ? 0 : (
+        baseDailyPercent * elapsedDays * stageSuitability.overallScore * (plant.health / 100) * 
+        (isDay || plant.stage === 'germination' || plant.stage === 'rooting' ? 1.0 : 0.4) * 
+        co2Multiplier * stageSpeedMultiplier
+      );
       plant.stageProgress = Math.min(100, plant.stageProgress + progressDelta);
 
       if (plant.stageProgress >= 100 && plant.stage !== 'ready') {
@@ -1256,6 +1315,9 @@ function simulateCropItem(params: {
         plant.stage = nextStage;
 
         if (previousStage === 'germination') {
+          if (plant.traits) {
+            plant.traits.germinationOutcome = 'germinated';
+          }
           plant.keyDates.sproutedDate = currentSimTime;
           plant.keyDates.seedlingDate = currentSimTime;
           events.push({
@@ -1263,9 +1325,12 @@ function simulateCropItem(params: {
             category: 'crop',
             tentName,
             title: `🌱 Seed Sprouted: ${plant.name}`,
-            message: `${plant.name} has successfully germinated and emerged! Entered Seedling stage.`
+            message: `${plant.name} has successfully cracked its seed coat and emerged! Vigorous seedling stage initiated.`
           });
         } else if (previousStage === 'rooting') {
+          if (plant.traits) {
+            plant.traits.germinationOutcome = 'germinated';
+          }
           plant.keyDates.rootedDate = currentSimTime;
           plant.keyDates.seedlingDate = currentSimTime;
           events.push({
@@ -1330,16 +1395,26 @@ function simulateCropItem(params: {
       plant.heightInches = Math.max(plant.heightInches, plant.heightInches + (target.heightInches - plant.heightInches) * approach);
       plant.canopyWidthInches = Math.max(plant.canopyWidthInches, plant.canopyWidthInches + (target.canopyWidthInches - plant.canopyWidthInches) * approach);
 
-      // Yield scaling
+      // Yield scaling with genetic multiplier
       if (plant.stage === 'flowering' || plant.stage === 'ripening') {
-        const maxYield = plant.species === 'Hops' ? 450 : 380;
-        plant.yieldPotentialGrams = Math.min(maxYield, plant.yieldPotentialGrams + 0.22 * progressDelta);
+        const yieldMult = plant.traits?.yieldMultiplier || 1.0;
+        const maxYield = (plant.species === 'Hops' ? 450 : 380) * yieldMult;
+        plant.yieldPotentialGrams = Math.min(maxYield, plant.yieldPotentialGrams + 0.22 * progressDelta * yieldMult);
       }
     }
 
     return syncItemGeometry(plant);
   } else if (item.category === 'mushroom') {
     const shroom = { ...item } as MushroomItem;
+
+    // Ensure mushroom spore genetic traits exist
+    if (!shroom.traits) {
+      shroom.traits = generateSporeTraits(shroom.species, shroom.strainName);
+      if (shroom.stage !== 'colonizing') {
+        shroom.traits.sporeViabilityOutcome = 'germinated';
+      }
+    }
+
     let healthDelta = 0;
     if (enclosureClimate.rh < 70) {
       healthDelta -= 0.35 * (elapsedMinutes / 60);
@@ -1348,7 +1423,8 @@ function simulateCropItem(params: {
     }
 
     if (shroom.stage === 'fruiting' || shroom.stage === 'pinning') {
-      if (enclosureClimate.co2Ppm > 1300) {
+      const co2Limit = 1300 * (shroom.traits?.co2Tolerance || 1.0);
+      if (enclosureClimate.co2Ppm > co2Limit) {
         healthDelta -= 0.15 * (elapsedMinutes / 60);
       }
     }
@@ -1359,24 +1435,46 @@ function simulateCropItem(params: {
       healthDelta -= 0.25 * (elapsedMinutes / 60);
     }
 
+    // Contamination resistance buffering
+    if (healthDelta < 0 && shroom.traits?.contaminationResistance === 'impervious') {
+      healthDelta *= 0.5;
+    } else if (healthDelta < 0 && shroom.traits?.contaminationResistance === 'vulnerable') {
+      healthDelta *= 1.35;
+    }
+
     shroom.health = Math.max(0, Math.min(100, parseFloat((shroom.health + healthDelta).toFixed(1))));
 
-    if (shroom.health > 35 && !shroom.isHarvested) {
-      const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24));
+    // Colonization tracking
+    if (shroom.stage === 'colonizing') {
+      shroom.traits.daysInColonization = parseFloat(((shroom.traits.daysInColonization || 0) + (elapsedMinutes / (60 * 24))).toFixed(2));
+      if (shroom.substrateMoisture < 25 && shroom.traits.viabilityPct < 70) {
+        shroom.traits.sporeViabilityOutcome = 'failed';
+        shroom.traits.failureReason = 'Substrate dried out and spores failed to produce hyphae.';
+      }
+    }
+
+    if (shroom.health > 35 && !shroom.isHarvested && shroom.traits?.sporeViabilityOutcome !== 'failed') {
+      const vigorMult = shroom.traits?.colonizationVigor || 1.0;
+      const shroomProgressRate = (shroom.health / 100) * (elapsedMinutes / (60 * 24)) * vigorMult;
       shroom.ageDays = parseFloat((shroom.ageDays + elapsedMinutes / (60 * 24)).toFixed(2));
       shroom.stageProgress = Math.min(100, shroom.stageProgress + shroomProgressRate * 14);
+
+      if (shroom.stage === 'colonizing') {
+        shroom.myceliumColonization = Math.min(100, parseFloat((shroom.myceliumColonization + shroomProgressRate * 15).toFixed(1)));
+      }
 
       if (shroom.stageProgress >= 100) {
         shroom.stageProgress = 0;
         const prevShroomStage = shroom.stage;
         if (prevShroomStage === 'colonizing') {
           shroom.stage = 'pinning';
+          shroom.traits.sporeViabilityOutcome = 'germinated';
           events.push({
             type: 'info',
             category: 'crop',
             tentName,
             title: `🍄 Primordia Pinning: ${shroom.name}`,
-            message: `Tiny pinhead primordia are emerging from the colonized substrate! Maintain high RH.`
+            message: `Tiny pinhead primordia (${shroom.traits.pinningDensity} density) emerging from colonized substrate! Maintain high RH.`
           });
         } else if (prevShroomStage === 'pinning') {
           shroom.stage = 'fruiting';
@@ -1409,7 +1507,8 @@ function simulateCropItem(params: {
       }
 
       if (shroom.stage === 'fruiting' || shroom.stage === 'mature') {
-        shroom.yieldPotentialGrams = Math.min(480, shroom.yieldPotentialGrams + 0.3 * (elapsedMinutes / 60));
+        const flushMult = shroom.traits?.flushYieldMultiplier || 1.0;
+        shroom.yieldPotentialGrams = Math.min(480 * flushMult, shroom.yieldPotentialGrams + 0.3 * (elapsedMinutes / 60) * flushMult);
       }
     }
 

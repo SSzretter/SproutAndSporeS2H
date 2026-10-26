@@ -1,6 +1,7 @@
 /**
  * Simulation type definitions for Sprout & Spore Grow Simulator
  */
+export type { SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 
 export interface Dimensions {
   length: number; // in feet (or unit)
@@ -190,6 +191,7 @@ export interface PlantItem {
   lastFedTime?: number;
   alphaAcidsPct?: number; // Specific to Hops brewing potential (e.g. 4.5% - 14.0%)
   scovilleHeatUnits?: number; // Capsaicin pungency for Chili Peppers (e.g. 2,500 - 2,200,000 SHU)
+  traits?: import('../utils/genetics').SeedGeneticTraits; // Genetic variability, viability, vigor, and phenotype traits
 }
 
 export type MushroomSpecies = 'Golden Oyster' | 'Lion\'s Mane' | 'Shiitake' | 'Reishi' | 'Medicinal';
@@ -217,6 +219,7 @@ export interface MushroomItem {
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
   lastMistedTime?: number;
+  traits?: import('../utils/genetics').SporeGeneticTraits; // Spore genetics, viability, pinning density, and colonizing vigor
 }
 
 export type EquipmentType = 

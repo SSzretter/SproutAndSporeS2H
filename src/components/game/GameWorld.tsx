@@ -14,7 +14,6 @@ import {
 import { GameScene, HoverTarget, FloatingText, Doorway, PlayerState } from '../game3d/GameScene';
 import { itemWorldPosition, tentWorldOrigin, Vec3 } from '../game3d/coords';
 import { soundEffects } from './AudioEffects';
-import { PlantVisualizerModal } from './PlantVisualizerModal';
 import { TentInspectorModal } from './TentInspectorModal';
 import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
@@ -110,12 +109,6 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   // Selected tool hotbar
   const [activeTool, setActiveTool] = useState<ToolType>('inspect');
-
-  // Currently inspected crop in modal
-  const [inspectedCrop, setInspectedCrop] = useState<{
-    item: PlantItem | MushroomItem;
-    parentTentId?: string;
-  } | null>(null);
 
   // Player cultivator avatar state (room-floor feet)
   const playerRef = useRef<PlayerState>({
@@ -343,10 +336,6 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           setInGameInspectorTarget(null);
           return;
         }
-        if (inspectedCrop) {
-          setInspectedCrop(null);
-          return;
-        }
         if (isInventoryOpen) {
           setIsInventoryOpen(false);
           return;
@@ -354,7 +343,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       }
 
       // If an inspection modal is open, avoid hotkey / movement interference
-      if (inGameInspectorTarget || inspectedCrop || isInventoryOpen) return;
+      if (inGameInspectorTarget || isInventoryOpen) return;
 
       keysPressed[e.key.toLowerCase()] = true;
 
@@ -394,7 +383,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     const moveInterval = setInterval(() => {
       const p = playerRef.current;
 
-      if (inGameInspectorTarget || inspectedCrop || isInventoryOpen) {
+      if (inGameInspectorTarget || isInventoryOpen) {
         p.isMoving = false;
         return;
       }
@@ -476,7 +465,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       window.removeEventListener('keyup', handleKeyUp);
       clearInterval(moveInterval);
     };
-  }, [currentRoom, inGameInspectorTarget, inspectedCrop, isInventoryOpen]);
+  }, [currentRoom, inGameInspectorTarget, isInventoryOpen]);
 
   // Proximity action: find nearest interactable crop (within reach of its footprint) or tent
   const triggerProximityAction = () => {
@@ -546,7 +535,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
     if (activeTool === 'inspect') {
       soundEffects.playClick();
-      setInspectedCrop({ item: crop, parentTentId: tentId });
+      setInGameInspectorTarget({ type: 'item', id: crop.id, parentTentId: tentId || null });
     } else if (activeTool === 'water') {
       soundEffects.playWater();
       onUpdateState(prev => {
@@ -796,7 +785,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   // ---- 3D scene interactions ----
   const handleSceneClickItem = (item: Item, tentId: string | undefined, worldPos: Vec3) => {
     const [x, , y] = worldPos;
-    if (item.category === 'plant' || item.category === 'mushroom') {
+    if ((item.category === 'plant' || item.category === 'mushroom') && activeTool !== 'inspect') {
       applyToolToCrop(item, tentId, x, y);
       return;
     }
@@ -1216,50 +1205,6 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           </button>
         </div>
       </footer>
-
-      {/* Plant Visualizer & Growth Timelapse Modal */}
-      {inspectedCrop && (
-        <PlantVisualizerModal
-          item={inspectedCrop.item}
-          enclosureClimate={currentRoom.climate}
-          isOpen={true}
-          onClose={() => setInspectedCrop(null)}
-          onOpenFullInspector={() => {
-            const cropId = inspectedCrop.item.id;
-            const parentTentId = inspectedCrop.parentTentId;
-            setInspectedCrop(null);
-            setInGameInspectorTarget({
-              type: 'item',
-              id: cropId,
-              parentTentId: parentTentId || null
-            });
-          }}
-          onWater={(crop) => applyToolToCrop(crop, inspectedCrop.parentTentId)}
-          onFeed={(plant) => applyToolToCrop(plant, inspectedCrop.parentTentId)}
-          onPrune={(plant) => {
-            soundEffects.playSnip();
-            onUpdateState(prev => {
-              const next = updateCropInSimulation(prev, plant.id, inspectedCrop.parentTentId, (item) => {
-                if (item.category === 'plant') {
-                  return {
-                    ...item,
-                    health: Math.min(100, item.health + 4),
-                    yieldPotentialGrams: Math.min(420, (item.yieldPotentialGrams || 120) + 15)
-                  };
-                }
-                return item;
-              });
-              broadcastSimulationState(next);
-              return next;
-            });
-            addFloatingText('+Pruned Main Canopy ✂', playerRef.current.x, playerRef.current.y, '#34d399');
-          }}
-          onHarvest={(crop) => {
-            applyToolToCrop(crop, inspectedCrop.parentTentId);
-            setInspectedCrop(null);
-          }}
-        />
-      )}
 
       {/* 3D Mode Pro Inspector Modal: Tent & Internal Items Manager */}
       {inGameInspectorTarget && (

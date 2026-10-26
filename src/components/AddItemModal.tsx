@@ -20,7 +20,10 @@ import {
   Activity,
   Heart,
   Clock,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Dna,
+  Dice5,
+  RefreshCw
 } from 'lucide-react';
 import { 
   Room, 
@@ -49,6 +52,7 @@ import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
 import { DEFAULT_RESERVOIR_SETPOINT_F } from '../utils/humidifierDucting';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
+import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 
 interface AddItemModalProps {
   room: Room;
@@ -117,6 +121,17 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [flowerDays, setFlowerDays] = useState(60);
   const [ripenDays, setRipenDays] = useState(10);
   const [showAdvancedDurations, setShowAdvancedDurations] = useState(false);
+
+  // Seed & Spore Genetics State
+  const [seedGrade, setSeedGrade] = useState<'Certified High-Viability' | 'Standard Breeder Pack' | 'Exotic Wildcraft'>('Certified High-Viability');
+  const [seedTraits, setSeedTraits] = useState<SeedGeneticTraits>(() =>
+    generateSeedTraits('Cannabis', 'Gorilla Glue #4', 'seed', 'Certified High-Viability')
+  );
+
+  const [sporeGrade, setSporeGrade] = useState<'Isolated Commercial LC' | 'Multi-Spore Syringe' | 'Wild Spore Print'>('Isolated Commercial LC');
+  const [sporeTraits, setSporeTraits] = useState<SporeGeneticTraits>(() =>
+    generateSporeTraits('Lion\'s Mane', 'Lion\'s Mane', 'Isolated Commercial LC')
+  );
 
   // Soil & Hydroponic Customization State
   const [systemType, setSystemType] = useState<CultivationSystemType>('soil_container');
@@ -331,6 +346,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       reservoirTempF: (systemType === 'dwc' || systemType === 'ebb_and_flow') ? 68.0 : undefined,
       alphaAcidsPct: isHop && hopData ? parseFloat(hopData.alphaAcids) || 7.5 : undefined,
       scovilleHeatUnits: isPepper && pepperData ? pepperData.scovilleHeatUnits : undefined,
+      traits: { ...seedTraits, germinationOutcome: plantStage === 'germination' || plantStage === 'rooting' ? 'in_progress' : 'germinated' },
     };
     onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -361,7 +377,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       isHarvested: false,
       containerType: mushroomContainer,
       dimensions: getDefaultItemDimensions({ category: 'mushroom', containerType: mushroomContainer }),
-      position: getDefaultSpatialPosition('mushroom', targetDims, count)
+      position: getDefaultSpatialPosition('mushroom', targetDims, count),
+      traits: sporeTraits
     };
     onAddItem(newMushroom, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -981,6 +998,99 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               </div>
             </div>
 
+            {/* Seed Genetics & Trait Variability Panel */}
+            {propagationType === 'seed' ? (
+              (() => {
+                const tierInfo = getGeneticTier(seedTraits.germinationVigor, seedTraits.viabilityPct, seedTraits.yieldMultiplier);
+                return (
+                  <div className="border border-emerald-900/60 bg-emerald-950/20 rounded-xl p-3 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                          <Dna className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                            Seed Genetics &amp; Phenotypic Variability
+                            <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${tierInfo.badgeColor}`}>
+                              Tier {tierInfo.tier} · {tierInfo.label}
+                            </span>
+                          </h4>
+                          <p className="text-[10px] text-zinc-400">Real seeds exhibit natural viability rates, growth vigor, and unique expression.</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSeedTraits(generateSeedTraits(plantSpecies, plantStrain, 'seed', seedGrade))}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[11px] font-medium transition-colors"
+                        title="Roll another seed from this lineage"
+                      >
+                        <RefreshCw className="w-3 h-3 text-emerald-400" />
+                        <span>Roll Pheno</span>
+                      </button>
+                    </div>
+
+                    {/* Seed Grade Selection */}
+                    <div>
+                      <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Breeder Grade / Seed Source</label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(['Certified High-Viability', 'Standard Breeder Pack', 'Exotic Wildcraft'] as const).map(grade => (
+                          <button
+                            key={grade}
+                            type="button"
+                            onClick={() => {
+                              setSeedGrade(grade);
+                              setSeedTraits(generateSeedTraits(plantSpecies, plantStrain, 'seed', grade));
+                            }}
+                            className={`p-1.5 rounded-lg text-left border transition-all ${
+                              seedGrade === grade
+                                ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200'
+                                : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            <div className="font-semibold text-[10px] truncate">{grade}</div>
+                            <div className="text-[9px] text-zinc-500">
+                              {grade === 'Certified High-Viability' ? '96%+ Viable' : grade === 'Standard Breeder Pack' ? '85-92% Viable' : '70-85% Viable'}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Live Trait Radar Card */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-zinc-950/60 border border-zinc-800/80 rounded-lg p-2 text-[11px]">
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Viability</span>
+                        <span className="font-mono font-bold text-emerald-400">{seedTraits.viabilityPct}%</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Germ Vigor</span>
+                        <span className="font-mono font-bold text-teal-400">{seedTraits.germinationVigor.toFixed(2)}x</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Growth Rate</span>
+                        <span className="font-mono font-bold text-sky-400">{seedTraits.growthRateMultiplier.toFixed(2)}x</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Yield Potential</span>
+                        <span className="font-mono font-bold text-amber-400">{seedTraits.yieldMultiplier.toFixed(2)}x</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 bg-zinc-900/40 rounded px-2 py-1">
+                      <span className="text-emerald-400 font-semibold">Phenotype:</span>
+                      <span className="truncate italic">"{seedTraits.phenotypeName}"</span>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="border border-teal-900/40 bg-teal-950/20 rounded-xl p-2.5 flex items-center gap-2 text-xs text-teal-300">
+                <span className="text-base">✂️</span>
+                <span><strong>Asexual Clone:</strong> Genetically uniform duplicate of donor mother plant (1.00x fixed baseline vigor).</span>
+              </div>
+            )}
+
             {/* Starting Lifecycle Stage */}
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -1389,6 +1499,84 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   <option value="fruiting_block">Sawdust Fruiting Block</option>
                   <option value="grow_bag">Filtered Unicorn Grow Bag</option>
                 </select>
+              </div>
+            </div>
+
+            {/* Spore Genetics & Inoculant Culture Variability */}
+            <div className="border border-amber-900/60 bg-amber-950/20 rounded-xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                    <Dna className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                      Spore Inoculant Genetics &amp; Culture Vigor
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">MSS spores vary naturally in colonization speed, contam defense, and pinning flush capacity.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSporeTraits(generateSporeTraits(mushroomSpecies, mushroomName, sporeGrade))}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[11px] font-medium transition-colors"
+                  title="Roll another isolate culture"
+                >
+                  <RefreshCw className="w-3 h-3 text-amber-400" />
+                  <span>Roll Isolate</span>
+                </button>
+              </div>
+
+              {/* Inoculant Grade Selection */}
+              <div>
+                <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Inoculant Source / Isolate Grade</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(['Isolated Commercial LC', 'Multi-Spore Syringe', 'Wild Spore Print'] as const).map(grade => (
+                    <button
+                      key={grade}
+                      type="button"
+                      onClick={() => {
+                        setSporeGrade(grade);
+                        setSporeTraits(generateSporeTraits(mushroomSpecies, mushroomName, grade));
+                      }}
+                      className={`p-1.5 rounded-lg text-left border transition-all ${
+                        sporeGrade === grade
+                          ? 'bg-amber-950/80 border-amber-500 text-amber-200'
+                          : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <div className="font-semibold text-[10px] truncate">{grade}</div>
+                      <div className="text-[9px] text-zinc-500">
+                        {grade === 'Isolated Commercial LC' ? '98% Viable / Pure' : grade === 'Multi-Spore Syringe' ? '86% Viable / Varied' : '78% Viable / Wild'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Live Trait Radar Card */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-zinc-950/60 border border-zinc-800/80 rounded-lg p-2 text-[11px]">
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Spore Viability</span>
+                  <span className="font-mono font-bold text-amber-400">{sporeTraits.viabilityPct}%</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Colonization</span>
+                  <span className="font-mono font-bold text-yellow-400">{sporeTraits.colonizationVigor.toFixed(2)}x</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Flush Capacity</span>
+                  <span className="font-mono font-bold text-orange-400">{sporeTraits.flushYieldMultiplier.toFixed(2)}x</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Contam Defense</span>
+                  <span className="font-mono font-bold text-emerald-400 capitalize">{sporeTraits.contaminationResistance}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 bg-zinc-900/40 rounded px-2 py-1">
+                <span className="text-amber-400 font-semibold">Culture Strain:</span>
+                <span className="truncate italic">"{sporeTraits.phenotypeName}"</span>
               </div>
             </div>
 
