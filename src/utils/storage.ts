@@ -4,6 +4,7 @@ import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry }
 import { migrateEquipmentLinks } from './equipmentLinks';
 import { createHvacRegister, migrateRoomClimateControl } from './roomThermal';
 import { ensurePersonNpcFields } from './npcWorker';
+import { ensureRoomDoorLinks } from './roomDoorways';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -479,6 +480,8 @@ export function loadSimulation(): SimulationState {
         state.activeRoomId = state.rooms[0].id;
       }
     }
+    state.rooms = ensureRoomDoorLinks(state.rooms);
+    state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     if (!state.room.constructionStandard) {
       state.room.constructionStandard = 'colonial_2005';

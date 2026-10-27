@@ -416,6 +416,15 @@ export type GardenLayoutConfig =
   | 'patio_container_deck'   // Sunny deck with fabric smart pots, terracotta, & DWC tubs
   | 'greenhouse_polytunnel'; // High-tunnel hoop house solar greenhouse
 
+export type WallSide = 'left' | 'right' | 'back' | 'front';
+
+export interface RoomDoorLinks {
+  left?: string;   // target roomId
+  right?: string;  // target roomId
+  back?: string;   // target roomId
+  front?: string;  // target roomId
+}
+
 export interface Room {
   id: string;
   name: string;
@@ -423,6 +432,7 @@ export interface Room {
   climate: Climate;
   tents: Tent[];
   items: Item[]; // Items placed directly in the room (outside tents)
+  doors?: RoomDoorLinks; // Connected room IDs per wall (unconnected walls offer green Add Room portals)
   environmentType?: RoomEnvironmentType; // 'indoor' | 'outdoor_garden' | 'greenhouse'
   gardenConfig?: GardenLayoutConfig;
   gardenBedCount?: number;

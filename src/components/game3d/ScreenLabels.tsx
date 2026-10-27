@@ -11,7 +11,7 @@ import { Vec3 } from './coords';
  * React 19 errors on when the canvas unmounts.)
  */
 
-export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float' | 'issueCritical' | 'issueWarning' | 'npc';
+export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'doorAdd' | 'badge' | 'float' | 'issueCritical' | 'issueWarning' | 'npc';
 
 export interface WorldLabel {
   id: string;
@@ -74,7 +74,8 @@ export function LabelProjector({ labels, registry }: { labels: WorldLabel[]; reg
 const VARIANT_CLASSES: Record<LabelVariant, string> = {
   tent: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-zinc-900/85 border-zinc-700 text-zinc-200',
   tentActive: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-emerald-950/90 border-emerald-600 text-emerald-200',
-  door: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-zinc-900/90 border-zinc-700 text-zinc-100',
+  door: 'px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap bg-rose-950/90 border-rose-600 text-rose-100 shadow-md',
+  doorAdd: 'px-2 py-0.5 rounded border text-[11px] font-bold whitespace-nowrap bg-emerald-950/90 border-emerald-500 text-emerald-200 shadow-lg animate-pulse',
   badge: 'w-6 h-6 rounded-full bg-amber-400 text-black text-xs font-bold flex items-center justify-center shadow-lg animate-bounce',
   issueCritical: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-rose-600/95 border-rose-300 text-white shadow-lg animate-pulse',
   issueWarning: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-amber-400/95 border-amber-200 text-zinc-950 shadow-lg',

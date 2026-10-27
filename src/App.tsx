@@ -30,6 +30,8 @@ import { GrowJournal } from './components/GrowJournal';
 import { LocationModal } from './components/LocationModal';
 import { AddRoomModal } from './components/AddRoomModal';
 import { broadcastSimulationState, subscribeToSimulationSync } from './utils/syncChannel';
+import { WallSide } from './types/sim';
+import { connectRooms, findFirstFreeWall, getWallDisplayName } from './utils/roomDoorways';
 
 // The 3D game view (three.js) is only downloaded when the game view is opened
 const GameWorld = lazy(() => import('./components/game/GameWorld').then(m => ({ default: m.GameWorld })));
@@ -39,6 +41,12 @@ export default function App() {
   const [lastSavedAt, setLastSavedAt] = useState<number>(Date.now());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAddRoomModalOpen, setIsAddRoomModalOpen] = useState(false);
+  const [addRoomSourceWall, setAddRoomSourceWall] = useState<WallSide | null>(null);
+
+  const handleOpenAddRoom = useCallback((wall?: WallSide) => {
+    setAddRoomSourceWall(wall || null);
+    setIsAddRoomModalOpen(true);
+  }, []);
   const [addModalTentId, setAddModalTentId] = useState<string | null>(null);
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
@@ -639,21 +647,30 @@ export default function App() {
 
   // Add Room
   const handleAddRoom = useCallback((addedRoom: Room) => {
-    const newRoom: Room = {
+    const rawNewRoom: Room = {
       ...addedRoom,
       items: addedRoom.items.map(syncItemGeometry),
       tents: addedRoom.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
     };
     setState(prev => {
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
-      const updatedRooms = [...currentRooms, newRoom];
+      const activeR = currentRooms.find(r => r.id === (prev.activeRoomId || prev.room.id)) || currentRooms[0];
+      
+      let wallToConnect = addRoomSourceWall;
+      if (!wallToConnect) {
+        wallToConnect = findFirstFreeWall(activeR, currentRooms) || 'right';
+      }
+
+      const { updatedSource, updatedTarget } = connectRooms(activeR, rawNewRoom, wallToConnect);
+      const updatedRooms = currentRooms.map(r => r.id === updatedSource.id ? updatedSource : r).concat([updatedTarget]);
+
       const nextState: SimulationState = {
         ...prev,
         rooms: updatedRooms,
-        activeRoomId: newRoom.id,
-        room: newRoom,
+        activeRoomId: updatedTarget.id,
+        room: updatedTarget,
         selectedType: 'room',
-        selectedId: newRoom.id,
+        selectedId: updatedTarget.id,
         selectedParentTentId: null,
         journal: [
           ...prev.journal,
@@ -661,8 +678,9 @@ export default function App() {
             id: `j-${Date.now()}`,
             time: prev.simTime,
             type: 'action',
-            title: 'Room Constructed',
-            message: `Added new room "${newRoom.name}" (${newRoom.dimensions.length}′×${newRoom.dimensions.width}′×${newRoom.dimensions.height}′) to facility.`
+            category: 'general',
+            title: `🚪 New Room Built: ${updatedTarget.name}`,
+            message: `Connected ${updatedTarget.name} through the ${getWallDisplayName(wallToConnect)} of ${updatedSource.name}.`
           }
         ]
       };
@@ -670,7 +688,8 @@ export default function App() {
       return nextState;
     });
     setIsAddRoomModalOpen(false);
-  }, []);
+    setAddRoomSourceWall(null);
+  }, [addRoomSourceWall]);
 
   // Delete Room
   const handleDeleteRoom = useCallback((roomId: string) => {
@@ -957,7 +976,7 @@ export default function App() {
               setAddModalTentId(tentId || null);
               setIsAddModalOpen(true);
             }}
-            onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+            onOpenAddRoom={handleOpenAddRoom}
             onOpenHarvestModal={() => setIsHarvestModalOpen(true)}
             onSwitchToDashboard={() => {
               window.location.hash = '';
@@ -1018,7 +1037,7 @@ export default function App() {
               onSelectRoom={handleSelectRoom}
               onSelectTent={handleSelectTent}
               onSelectActiveRoom={handleSelectActiveRoom}
-              onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+              onOpenAddRoom={handleOpenAddRoom}
               onDeleteRoom={handleDeleteRoom}
               onOpenAddTent={() => {
                 setAddModalTentId(null);
@@ -1071,7 +1090,7 @@ export default function App() {
                 onSelectTent={handleSelectTent}
                 onSelectItem={handleSelectItem}
                 onSelectActiveRoom={handleSelectActiveRoom}
-                onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+                onOpenAddRoom={handleOpenAddRoom}
                 onDeleteTent={handleDeleteTent}
                 onDeleteItem={handleDeleteItem}
               />
@@ -1095,7 +1114,7 @@ export default function App() {
               onDeleteItem={handleDeleteItem}
               onDeleteTent={handleDeleteTent}
               onDeleteRoom={handleDeleteRoom}
-              onOpenAddRoom={() => setIsAddRoomModalOpen(true)}
+              onOpenAddRoom={handleOpenAddRoom}
               onOpenLocationModal={() => setIsLocationModalOpen(true)}
               onOpenAddItem={(tentId) => {
                 setAddModalTentId(tentId || null);
@@ -1133,10 +1152,15 @@ export default function App() {
       {/* Add Room Modal */}
       <AddRoomModal
         isOpen={isAddRoomModalOpen}
-        onClose={() => setIsAddRoomModalOpen(false)}
+        onClose={() => {
+          setIsAddRoomModalOpen(false);
+          setAddRoomSourceWall(null);
+        }}
         onAddRoom={handleAddRoom}
         outdoorCo2Ppm={state.outside.co2Ppm || state.outdoorLocation.customCo2Ppm || 420}
         outsideClimate={state.outside}
+        sourceWall={addRoomSourceWall}
+        sourceRoomName={activeRoom.name}
       />
 
       {/* Location / Zip Code Modal */}

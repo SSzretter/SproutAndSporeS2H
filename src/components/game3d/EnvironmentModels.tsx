@@ -140,11 +140,8 @@ function pointerHitsItem(e: ThreeEvent<MouseEvent | PointerEvent>): boolean {
   });
 }
 
-export interface Doorway {
-  roomId: string; // target room id or 'ADD_ROOM'
-  label: string;
-  side: 'left' | 'right';
-}
+export type { Doorway } from '../../utils/roomDoorways';
+import { Doorway } from '../../utils/roomDoorways';
 
 export function DoorwayModel({
   door,
@@ -158,19 +155,85 @@ export function DoorwayModel({
   onHover: (door: Doorway | null, e?: ThreeEvent<PointerEvent>) => void;
 }) {
   const { length: L, width: W } = room.dimensions;
-  const x = door.side === 'left' ? 0.02 : L - 0.02;
   const isAdd = door.roomId === 'ADD_ROOM';
+
+  let position: Vec3;
+  let rotation: [number, number, number];
+
+  if (door.side === 'left') {
+    position = [0.04, 0, W / 2];
+    rotation = [0, Math.PI / 2, 0];
+  } else if (door.side === 'right') {
+    position = [L - 0.04, 0, W / 2];
+    rotation = [0, -Math.PI / 2, 0];
+  } else if (door.side === 'back') {
+    position = [L / 2, 0, 0.04];
+    rotation = [0, 0, 0];
+  } else {
+    // 'front'
+    position = [L / 2, 0, W - 0.04];
+    rotation = [0, Math.PI, 0];
+  }
+
   return (
-    <group position={[x, 0, W / 2]} rotation={[0, Math.PI / 2, 0]}>
+    <group position={position} rotation={rotation}>
+      {/* Outer Door Frame */}
+      <mesh position={[0, 3.5, 0]}>
+        <boxGeometry args={[3.4, 7.2, 0.22]} />
+        <meshStandardMaterial 
+          color={isAdd ? '#064e3b' : '#3f3f46'} 
+          emissive={isAdd ? '#047857' : '#000000'}
+          emissiveIntensity={isAdd ? 0.25 : 0}
+          roughness={0.6} 
+        />
+      </mesh>
+
+      {/* Door Panel (Interactive Click Target) */}
       <mesh
-        position={[0, 3.5, 0]}
+        position={[0, 3.5, 0.02]}
         onClick={e => { if (e.delta > 5) return; e.stopPropagation(); onClick(door); }}
         onPointerOver={e => { e.stopPropagation(); onHover(door, e); }}
         onPointerOut={() => onHover(null)}
       >
-        <boxGeometry args={[3, 7, 0.2]} />
-        <meshStandardMaterial color={isAdd ? '#064e3b' : '#78350f'} emissive={isAdd ? '#10b981' : '#000000'} emissiveIntensity={isAdd ? 0.25 : 0} roughness={0.7} />
+        <boxGeometry args={[3.0, 7.0, 0.16]} />
+        <meshStandardMaterial 
+          color={isAdd ? '#047857' : '#991b1b'} 
+          emissive={isAdd ? '#10b981' : '#7f1d1d'} 
+          emissiveIntensity={isAdd ? 0.35 : 0.18} 
+          roughness={0.5} 
+        />
       </mesh>
+
+      {/* Visual Door Styling Details */}
+      {isAdd ? (
+        // Glowing Add Room portal sign (+)
+        <group position={[0, 3.8, 0.11]}>
+          <mesh>
+            <boxGeometry args={[0.28, 1.2, 0.05]} />
+            <meshStandardMaterial color="#6ee7b7" emissive="#34d399" emissiveIntensity={0.8} />
+          </mesh>
+          <mesh>
+            <boxGeometry args={[1.2, 0.28, 0.05]} />
+            <meshStandardMaterial color="#6ee7b7" emissive="#34d399" emissiveIntensity={0.8} />
+          </mesh>
+        </group>
+      ) : (
+        // Red return & passage door with recessed panels and brass handle
+        <group position={[0, 0, 0.11]}>
+          <mesh position={[0, 5.0, 0]}>
+            <boxGeometry args={[2.2, 2.5, 0.04]} />
+            <meshStandardMaterial color="#7f1d1d" roughness={0.4} />
+          </mesh>
+          <mesh position={[0, 2.0, 0]}>
+            <boxGeometry args={[2.2, 2.5, 0.04]} />
+            <meshStandardMaterial color="#7f1d1d" roughness={0.4} />
+          </mesh>
+          <mesh position={[1.1, 3.3, 0.05]}>
+            <cylinderGeometry args={[0.06, 0.06, 0.38, 8]} />
+            <meshStandardMaterial color="#fbbf24" metalness={0.8} roughness={0.2} />
+          </mesh>
+        </group>
+      )}
     </group>
   );
 }

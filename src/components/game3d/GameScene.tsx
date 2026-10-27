@@ -315,8 +315,28 @@ function buildWorldLabels(
     });
   }
   for (const door of doorways) {
-    const x = door.side === 'left' ? 0 : room.dimensions.length;
-    labels.push({ id: `door-${door.side}`, position: [x, 7.4, room.dimensions.width / 2], text: door.label, variant: 'door' });
+    let x: number;
+    let z: number;
+    if (door.side === 'left') {
+      x = 0;
+      z = room.dimensions.width / 2;
+    } else if (door.side === 'right') {
+      x = room.dimensions.length;
+      z = room.dimensions.width / 2;
+    } else if (door.side === 'back') {
+      x = room.dimensions.length / 2;
+      z = 0;
+    } else {
+      x = room.dimensions.length / 2;
+      z = room.dimensions.width;
+    }
+    const isAdd = door.roomId === 'ADD_ROOM';
+    labels.push({ 
+      id: `door-${door.side}`, 
+      position: [x, 7.4, z], 
+      text: door.label, 
+      variant: isAdd ? 'doorAdd' : 'door' 
+    });
   }
   const addBadges = (items: Item[], tent?: Tent) => {
     for (const item of items) {

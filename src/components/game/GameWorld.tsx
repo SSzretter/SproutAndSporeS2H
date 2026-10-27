@@ -12,6 +12,8 @@ import {
   JournalCategory
 } from '../../types/sim';
 import { GameScene, HoverTarget, FloatingText, Doorway, PlayerState } from '../game3d/GameScene';
+import { WallSide } from '../../types/sim';
+import { resolveRoomDoorways, getDoorSpawnPoint, getOppositeWall, getWallDisplayName } from '../../utils/roomDoorways';
 import { itemWorldPosition, tentWorldOrigin, Vec3 } from '../game3d/coords';
 import { soundEffects } from './AudioEffects';
 import { TentInspectorModal } from './TentInspectorModal';
@@ -55,17 +57,17 @@ const REACH_FT = 3;
 const DOOR_HALF_WIDTH_FT = 1.5;
 
 /** Where the cultivator appears when entering a room: front-center of the floor. */
-function getSpawnPoint(room: Room) {
+function getSpawnPoint(room: Room): { x: number; y: number; targetX: number; targetY: number; facing: number } {
   const x = room.dimensions.length / 2;
   const y = room.dimensions.width * 0.75;
-  return { x, y, targetX: x, targetY: y };
+  return { x, y, targetX: x, targetY: y, facing: Math.PI };
 }
 
 interface GameWorldProps {
   state: SimulationState;
   onUpdateState: (updater: (prev: SimulationState) => SimulationState) => void;
   onOpenAddItem: (tentId?: string) => void;
-  onOpenAddRoom: () => void;
+  onOpenAddRoom: (sourceWall?: WallSide) => void;
   onOpenHarvestModal: () => void;
   onSwitchToDashboard: () => void;
   onUpdateRoom?: (room: Room) => void;
@@ -101,6 +103,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
+  const lastDoorTravelTimeRef = useRef<number>(0);
   const cameraYawRef = useRef(0);
 
   // Sound state
@@ -345,7 +348,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   }, [currentRoom]);
 
   // Travel to room helper
-  const handleTravelToRoom = (roomId: string) => {
+  const handleTravelToRoom = (roomId: string, fromWall?: WallSide) => {
     soundEffects.playDoor();
     onUpdateState(prev => {
       const targetRoom = (prev.rooms && prev.rooms.find(r => r.id === roomId)) || prev.room;
@@ -361,16 +364,26 @@ export const GameWorld: React.FC<GameWorldProps> = ({
             type: 'action',
             category: 'general',
             title: 'Cultivator Traveled Rooms',
-            message: `Walked through facility corridor into ${targetRoom.name}.`
+            message: `Walked through facility door into ${targetRoom.name}.`
           }
         ]
       };
       broadcastSimulationState(nextState);
       return nextState;
     });
-    // Enter the new room at its front-center
+    // Enter the new room at its corresponding return door threshold
     const targetRoom = allRooms.find(r => r.id === roomId);
-    if (targetRoom) Object.assign(playerRef.current, getSpawnPoint(targetRoom));
+    if (targetRoom) {
+      const spawn = fromWall 
+        ? getDoorSpawnPoint(targetRoom, getOppositeWall(fromWall)) 
+        : getSpawnPoint(targetRoom);
+      playerRef.current.x = spawn.x;
+      playerRef.current.y = spawn.y;
+      playerRef.current.targetX = spawn.x;
+      playerRef.current.targetY = spawn.y;
+      playerRef.current.facing = spawn.facing;
+      lastDoorTravelTimeRef.current = Date.now();
+    }
   };
 
   // Keyboard navigation (WASD / Arrows + Hotkeys 1-6 + E / Space)
@@ -508,10 +521,18 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         soundEffects.playStep();
       }
 
-      // Walking into a doorway travels to the room beyond it
-      const door = getDoorwayAt(p.x, p.y);
-      if (door && door.roomId !== 'ADD_ROOM') {
-        handleTravelToRoom(door.roomId);
+      // Walking into a doorway travels to the room beyond it or opens builder
+      const now = Date.now();
+      if (now - lastDoorTravelTimeRef.current > 1200) {
+        const door = getDoorwayAt(p.x, p.y);
+        if (door) {
+          lastDoorTravelTimeRef.current = now;
+          if (door.roomId === 'ADD_ROOM') {
+            onOpenAddRoom(door.side);
+          } else {
+            handleTravelToRoom(door.roomId, door.side);
+          }
+        }
       }
     }, 1000 / 60);
 
@@ -868,9 +889,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   const handleSceneClickDoor = (door: Doorway) => {
     if (door.roomId === 'ADD_ROOM') {
-      onOpenAddRoom();
+      onOpenAddRoom(door.side);
     } else {
-      handleTravelToRoom(door.roomId);
+      handleTravelToRoom(door.roomId, door.side);
     }
   };
 
@@ -930,17 +951,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   // Doorways to other rooms on the left/right walls (or an Add Room portal)
   const getRoomDoorways = (): Doorway[] => {
-    const otherRooms = allRooms.filter(r => r.id !== currentRoom.id);
-    const doors: Doorway[] = [];
-    if (otherRooms.length > 0) {
-      doors.push({ roomId: otherRooms[0].id, label: `🚪 ${otherRooms[0].name}`, side: 'left' });
-    }
-    if (otherRooms.length > 1) {
-      doors.push({ roomId: otherRooms[1].id, label: `🚪 ${otherRooms[1].name}`, side: 'right' });
-    } else {
-      doors.push({ roomId: 'ADD_ROOM', label: '➕ New Room', side: 'right' });
-    }
-    return doors;
+    return resolveRoomDoorways(currentRoom, allRooms);
   };
 
   // Is a point inside any tent's footprint (padded by the cultivator's body radius)?
@@ -954,9 +965,27 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   const getDoorwayAt = (x: number, y: number): Doorway | null => {
     const { length: L, width: W } = currentRoom.dimensions;
-    if (Math.abs(y - W / 2) > DOOR_HALF_WIDTH_FT) return null;
-    const side = x <= 0.7 ? 'left' : x >= L - 0.7 ? 'right' : null;
-    return side ? getRoomDoorways().find(d => d.side === side) || null : null;
+    const doors = getRoomDoorways();
+    const thresh = 1.3;
+    const span = 2.0;
+
+    // Left wall
+    if (x <= thresh && Math.abs(y - W / 2) <= span) {
+      return doors.find(d => d.side === 'left') || null;
+    }
+    // Right wall
+    if (x >= L - thresh && Math.abs(y - W / 2) <= span) {
+      return doors.find(d => d.side === 'right') || null;
+    }
+    // Back wall
+    if (y <= thresh && Math.abs(x - L / 2) <= span) {
+      return doors.find(d => d.side === 'back') || null;
+    }
+    // Front wall
+    if (y >= W - thresh && Math.abs(x - L / 2) <= span) {
+      return doors.find(d => d.side === 'front') || null;
+    }
+    return null;
   };
 
   // Clean expired floating texts

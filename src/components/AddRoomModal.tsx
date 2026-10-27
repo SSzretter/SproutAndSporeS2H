@@ -23,12 +23,17 @@ import { Room, ConstructionStandard, Dimensions, Climate, RoomEnvironmentType, G
 import { calculateVPD } from '../utils/physics';
 import { createHvacRegister } from '../utils/roomThermal';
 
+import { WallSide } from '../types/sim';
+import { getWallDisplayName } from '../utils/roomDoorways';
+
 interface AddRoomModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAddRoom: (room: Room) => void;
   outdoorCo2Ppm?: number;
   outsideClimate?: OutsideConditions;
+  sourceWall?: WallSide | null;
+  sourceRoomName?: string;
 }
 
 interface RoomPreset {
@@ -189,7 +194,9 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
   onClose,
   onAddRoom,
   outdoorCo2Ppm = 420,
-  outsideClimate
+  outsideClimate,
+  sourceWall,
+  sourceRoomName
 }) => {
   const [activeCategory, setActiveCategory] = useState<'indoor' | 'outdoor'>('outdoor');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('preset-hop-yard');
@@ -488,6 +495,21 @@ export const AddRoomModal: React.FC<AddRoomModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Doorway Connection Context Banner */}
+        {sourceWall && (
+          <div className="p-3 bg-emerald-950/50 border border-emerald-700/60 rounded-xl flex items-center justify-between text-xs text-emerald-200">
+            <div className="flex items-center gap-2">
+              <span className="text-base">🚪</span>
+              <span>
+                Attaching new room to the <strong className="text-emerald-300 font-semibold">{getWallDisplayName(sourceWall)}</strong> of <strong className="text-emerald-300 font-semibold">{sourceRoomName || 'Current Room'}</strong>.
+              </span>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-900/80 border border-emerald-600 text-emerald-300 whitespace-nowrap">
+              Return Door Auto-Linked
+            </span>
+          </div>
+        )}
 
         {/* Category Tabs: Outdoor Gardens vs Indoor Rooms */}
         <div className="flex items-center gap-2 border-b border-zinc-800 pb-2">
