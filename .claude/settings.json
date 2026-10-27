@@ -4,7 +4,8 @@
             "Read(dist/**)",
             "Read(build/**)",
             "Read(node_modules/**)",
-            "Read(.env*)"
+            "Read(.env*)",
+            "Read(package-lock.json)"
         ]
     }
 }
