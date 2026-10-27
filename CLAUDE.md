@@ -43,5 +43,6 @@ This repo is shared between Claude Code (desktop) and Google AI Studio (via GitH
   - Catalogs: `tentCatalog.ts`, `equipmentCatalog.ts`, with presets inline in `AddItemModal.tsx` / `AddRoomModal.tsx`.
 
 ## Notes
-- Some files are very large: `ItemInspector.tsx`, `AddItemModal.tsx` (~2.1k lines), `physics.ts` (~1.7k), `GameWorld.tsx` (~1.5k). Grep for the relevant handler and read slices instead of whole files.
+- `ItemInspector.tsx` is a thin shell; its room/tent/item panels and per-equipment cards live in `src/components/inspector/`. Edit the card you need there.
+- Some files are still very large: `AddItemModal.tsx` (~2.1k lines), `physics.ts` (~1.7k), `GameWorld.tsx` (~1.5k). Grep for the relevant handler and read slices instead of whole files.
 - Temperature math is Fahrenheit-first (`tempF`), with `tempC` derived. `state.tempUnit` only affects display.
