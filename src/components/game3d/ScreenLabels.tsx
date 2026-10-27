@@ -11,12 +11,13 @@ import { Vec3 } from './coords';
  * React 19 errors on when the canvas unmounts.)
  */
 
-export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float' | 'issueCritical' | 'issueWarning';
+export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'badge' | 'float' | 'issueCritical' | 'issueWarning' | 'npc';
 
 export interface WorldLabel {
   id: string;
   position: Vec3;
   text: string;
+  subText?: string;
   variant: LabelVariant;
   color?: string; // float labels
   stats?: LabelStat[]; // live readings shown under a tent's name
@@ -77,6 +78,7 @@ const VARIANT_CLASSES: Record<LabelVariant, string> = {
   badge: 'w-6 h-6 rounded-full bg-amber-400 text-black text-xs font-bold flex items-center justify-center shadow-lg animate-bounce',
   issueCritical: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-rose-600/95 border-rose-300 text-white shadow-lg animate-pulse',
   issueWarning: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-amber-400/95 border-amber-200 text-zinc-950 shadow-lg',
+  npc: 'px-2 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-zinc-950/90 border-zinc-700 text-zinc-100 shadow-md backdrop-blur-sm',
   float: 'text-xs font-bold whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]'
 };
 
@@ -118,6 +120,17 @@ export function LabelLayer({ labels, registry }: { labels: WorldLabel[]; registr
         >
           {label.variant === 'float' ? (
             <FloatText text={label.text} color={label.color} />
+          ) : label.variant === 'npc' ? (
+            <div className="flex flex-col items-center gap-0.5 pointer-events-none select-none">
+              <div className="px-2 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-zinc-950/90 border-zinc-700 text-zinc-100 shadow-lg flex items-center gap-1">
+                {label.text}
+              </div>
+              {label.subText && (
+                <div className="px-1.5 py-0.5 rounded bg-black/80 border border-zinc-800 text-[9px] font-mono text-zinc-300 whitespace-nowrap max-w-[150px] truncate shadow">
+                  {label.subText}
+                </div>
+              )}
+            </div>
           ) : label.stats ? (
             <div className="flex flex-col items-center gap-0.5">
               <div className={VARIANT_CLASSES[label.variant]}>{label.text}</div>

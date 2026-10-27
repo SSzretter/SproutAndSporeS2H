@@ -3,7 +3,8 @@ import { Canvas, useFrame, useThree, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
-import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem } from '../../types/sim';
+import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem, PersonItem } from '../../types/sim';
+import { ROLE_METADATA } from '../../utils/npcWorker';
 import { tentWorldOrigin, itemWorldPosition, isCeilingMounted, Vec3 } from './coords';
 import { PlantModel } from './PlantModel';
 import { MushroomModel } from './MushroomModel';
@@ -338,6 +339,29 @@ function buildWorldLabels(
   };
   room.tents.forEach(t => addBadges(t.items, t));
   addBadges(room.items);
+
+  // Add 3D Overhead Labels for NPCs (Residents & Workers)
+  const addPersonLabels = (items: Item[], tent?: Tent) => {
+    for (const item of items) {
+      if (item.category !== 'person') continue;
+      const person = item as PersonItem;
+      const [x, y, z] = itemWorldPosition(item, room, tent);
+      const top = y + (item.dimensions?.height || 5.8) + 0.6;
+      const role = person.role || 'resident';
+      const meta = ROLE_METADATA[role] || ROLE_METADATA.resident;
+      const roleIcon = meta.badge.split(' ')[0];
+      labels.push({
+        id: `npc-${item.id}`,
+        position: [x, top, z],
+        text: `${roleIcon} ${person.name.split(' ')[0]}`,
+        subText: person.currentAction || meta.title,
+        variant: 'npc'
+      });
+    }
+  };
+  room.tents.forEach(t => addPersonLabels(t.items, t));
+  addPersonLabels(room.items);
+
   for (const ft of floatingTexts) {
     labels.push({ id: ft.id, position: [ft.x, 4.5, ft.y], text: ft.text, variant: 'float', color: ft.color });
   }

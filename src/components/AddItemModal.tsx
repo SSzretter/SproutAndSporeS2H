@@ -34,6 +34,7 @@ import {
   EquipmentItem, 
   PersonItem,
   PersonActivity,
+  PersonRole,
   PetItem,
   PetType,
   PlantSpecies, 
@@ -47,6 +48,7 @@ import {
   GrowingMedium,
   NutrientProgram
 } from '../types/sim';
+import { ROLE_METADATA, getDefaultNpcInventory, getDefaultWorkerSettings } from '../utils/npcWorker';
 import { calculateVPD } from '../utils/physics';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
@@ -160,7 +162,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [eqMatTargetId, setEqMatTargetId] = useState(''); // Heat mat: tent floor tray or the item it sits under / wraps
 
   // Person Form State
-  const [personName, setPersonName] = useState('Grower / Cultivator');
+  const [personName, setPersonName] = useState('Grower Alex');
+  const [personRole, setPersonRole] = useState<PersonRole>('grower');
   const [personActivity, setPersonActivity] = useState<PersonActivity>('normal');
 
   // Pet Form State
@@ -484,17 +487,37 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
       : room.items.length;
 
+    const meta = ROLE_METADATA[personRole] || ROLE_METADATA.resident;
+    const now = simTime || Date.now();
+
     const newPerson: PersonItem = {
       id: `person-${Date.now()}`,
-      name: personName.trim() || 'Cultivator',
+      name: personName.trim() || meta.badge.split(' ').slice(1).join(' '),
       category: 'person',
+      role: personRole,
+      customTitle: meta.title,
       activity: personActivity,
       co2RateLitersPerHour: spec.co2,
       heatOutputWatts: spec.watts,
       moistureLitersPerDay: spec.moisture,
       dimensions: getDefaultItemDimensions({ category: 'person' }),
       position: getDefaultSpatialPosition('person', targetDims, count),
-      notes: `Biological occupant (${spec.label}) exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W metabolic heat.`
+      currentAction: personRole === 'resident' ? 'Resting in facility space' : 'On standby for duties',
+      shirtColor: meta.shirtColor,
+      hatColor: meta.hatColor,
+      workerSettings: getDefaultWorkerSettings(personRole),
+      inventory: getDefaultNpcInventory(personRole),
+      actionLog: [
+        {
+          id: `act-init-${Date.now()}`,
+          timestamp: now,
+          actionType: 'patrol',
+          title: `Assigned as ${meta.badge}`,
+          details: `Joined facility roster as ${meta.title}. Ready for duties and ambient CO₂ enrichment.`,
+          result: 'info'
+        }
+      ],
+      notes: `${meta.title} (${spec.label}) exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W metabolic heat.`
     };
     onAddItem(newPerson, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
@@ -1849,7 +1872,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           </div>
         )}
 
-        {/* 5. PERSON (HUMAN OCCUPANT) FORM */}
+        {/* 5. PERSON (HUMAN OCCUPANT & NPC WORKER) FORM */}
         {activeTab === 'person' && (
           <div className="space-y-4">
             <div className="p-3 bg-violet-950/40 border border-violet-800/60 rounded-xl flex items-start gap-3">
@@ -1857,28 +1880,66 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 <User className="w-5 h-5" />
               </div>
               <div className="text-xs">
-                <h4 className="font-bold text-zinc-100">Biological Human Respiration</h4>
+                <h4 className="font-bold text-zinc-100">3D Facility Resident &amp; Autonomous Worker</h4>
                 <p className="text-zinc-300 mt-0.5">
-                  Humans exhale between 15 and 50 liters of pure CO₂ per hour and emit ~100W of metabolic warmth.
-                  Adding a person physically enriches room CO₂ without needing bottled gas.
+                  Occupants appear as animated 3D characters in the game view. Residents relax and live on-site, while workers autonomously tend crops, replenish humidifiers, empty dehumidifiers, and harvest ripe yields into their inventory.
                 </p>
+              </div>
+            </div>
+
+            {/* Role Picker Cards */}
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1.5">Select Role &amp; Duties</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {(Object.keys(ROLE_METADATA) as PersonRole[]).map(r => {
+                  const meta = ROLE_METADATA[r];
+                  const isSelected = personRole === r;
+                  return (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => {
+                        setPersonRole(r);
+                        if (personName === 'Grower Alex' || personName === 'Cultivator' || personName === 'Grower / Cultivator') {
+                          setPersonName(r === 'resident' ? 'Resident Sam' : r === 'grower' ? 'Grower Marcus' : r === 'technician' ? 'Tech Elena' : r === 'harvester' ? 'Harvester Kai' : 'Caretaker Morgan');
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        isSelected
+                          ? 'bg-zinc-900 border-violet-500 ring-1 ring-violet-500 shadow-md'
+                          : 'bg-zinc-950/90 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                          <span>{meta.badge.split(' ')[0]}</span>
+                          <span>{meta.badge.split(' ').slice(1).join(' ')}</span>
+                        </span>
+                        {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                      </div>
+                      <p className="text-[10px] text-zinc-400 leading-tight">
+                        {meta.description}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">Person Name / Role</label>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Person Name</label>
                 <input
                   type="text"
                   value={personName}
                   onChange={e => setPersonName(e.target.value)}
-                  placeholder="e.g. Lead Cultivator, Grower Alex"
+                  placeholder="e.g. Grower Marcus, Tech Elena"
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-violet-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">Activity Level</label>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Activity / Exertion Level</label>
                 <select
                   value={personActivity}
                   onChange={e => setPersonActivity(e.target.value as PersonActivity)}
@@ -1895,7 +1956,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
             {/* Respiration & Heat Specs Preview */}
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 space-y-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-violet-400 font-bold block">
-                Live Environmental Dynamics
+                Live Environmental Dynamics &amp; 3D Avatar
               </span>
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">

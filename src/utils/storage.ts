@@ -3,6 +3,7 @@ import { simulateOutsideConditions, calculateVPD } from './physics';
 import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry } from './spatial';
 import { migrateEquipmentLinks } from './equipmentLinks';
 import { createHvacRegister, migrateRoomClimateControl } from './roomThermal';
+import { ensurePersonNpcFields } from './npcWorker';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 
@@ -686,6 +687,18 @@ export function loadSimulation(): SimulationState {
     } else {
       state.harvests = [];
     }
+
+        // Ensure all PersonItem occupants have full NPC role, inventory, and actionLog fields
+    const migratePerson = (item: any) => item.category === 'person' ? ensurePersonNpcFields(item) : item;
+    state.rooms = state.rooms.map(r => ({
+      ...r,
+      items: r.items.map(migratePerson),
+      tents: r.tents.map(t => ({
+        ...t,
+        items: t.items.map(migratePerson)
+      }))
+    }));
+    state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     return state;
   } catch (err) {

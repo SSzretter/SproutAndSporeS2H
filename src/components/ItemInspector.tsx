@@ -65,9 +65,10 @@ import { clampItemPosition } from '../utils/spatial';
 import { getDuctTargetTent, HOSE_DELIVERY_EFFICIENCY, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, getMistWaterUseLph, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, getDehumidifierExtractionLph, emptyBucket, getMaxReservoirLiters, getMaxBucketCapacityL, canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, isHeatMat } from '../utils/equipmentLinks';
 import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
 import { getPortableAcBtu, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F, REGISTER_HEAT_SUPPLY_F } from '../utils/roomThermal';
-import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory } from '../types/sim';
+import { PropagationType, PlantStage, PlantKeyDates, JournalEntry, JournalCategory, HarvestRecord } from '../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS, formatSimDateTime, getPepperCultivar } from '../utils/plantLifecycle';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
+import { NpcDossier } from './NpcDossier';
 
 interface ItemInspectorProps {
   room: Room;
@@ -91,6 +92,7 @@ interface ItemInspectorProps {
   onOpenAddItem: (tentId?: string) => void;
   onHarvestPlant: (plant: PlantItem, tentId?: string) => void;
   onHarvestMushroom: (mushroom: MushroomItem, tentId?: string) => void;
+  onAddHarvestsToFacility?: (harvests: HarvestRecord[]) => void;
   simTime?: number;
   onLogJournalEntry?: (entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => void;
 }
@@ -119,6 +121,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   onOpenAddItem,
   onHarvestPlant,
   onHarvestMushroom,
+  onAddHarvestsToFacility,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
@@ -4838,93 +4841,22 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
         {currentItem.category === 'person' && (() => {
           const person = currentItem as PersonItem;
           return (
-            <div className="bg-zinc-950/80 border border-violet-950 rounded-xl p-4 space-y-4">
-              <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-                <div className="flex items-center gap-2">
-                  <User className="w-5 h-5 text-violet-400" />
-                  <h4 className="text-sm font-bold text-zinc-100">Biological Human Occupant &amp; Respiration</h4>
-                </div>
-                <span className="text-xs font-mono uppercase px-2.5 py-0.5 rounded-full bg-violet-950 text-violet-300 border border-violet-800 font-semibold">
-                  Activity: {person.activity}
-                </span>
-              </div>
-
-              {/* Occupant Respiration Telemetry Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                  <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                    <span>CO₂ Exhalation Rate</span>
-                    <span className="font-mono font-bold text-violet-400">{person.co2RateLitersPerHour} L/hr</span>
-                  </div>
-                  <div className="text-[11px] text-zinc-400">
-                    Adds natural atmospheric carbon dioxide to {parentName} during cellular respiration.
-                  </div>
-                </div>
-
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                  <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                    <span>Metabolic Body Heat</span>
-                    <span className="font-mono font-bold text-amber-400">{person.heatOutputWatts} Watts</span>
-                  </div>
-                  <div className="text-[11px] text-zinc-400">
-                    Thermal radiation contributes sensible heat to the enclosure's energy balance.
-                  </div>
-                </div>
-
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                  <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                    <span>Perspiration &amp; Vapor</span>
-                    <span className="font-mono font-bold text-cyan-400">{person.moistureLitersPerDay} L/day</span>
-                  </div>
-                  <div className="text-[11px] text-zinc-400">
-                    Breath vapor and perspiration adds gentle humidity to indoor air.
-                  </div>
-                </div>
-              </div>
-
-              {/* Activity Level Selector */}
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3.5 space-y-2">
-                <label className="text-xs font-semibold text-zinc-200 block">
-                  Adjust Physical Activity Level:
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {[
-                    { level: 'resting', label: 'Resting / Seated', co2: 15, watts: 75, moisture: 0.8 },
-                    { level: 'normal', label: 'Normal Inspection', co2: 22, watts: 100, moisture: 1.2 },
-                    { level: 'active', label: 'Active Trellising', co2: 32, watts: 140, moisture: 1.8 },
-                    { level: 'exercising', label: 'Heavy Exertion', co2: 50, watts: 210, moisture: 2.5 },
-                  ].map(spec => (
-                    <button
-                      key={spec.level}
-                      type="button"
-                      onClick={() => {
-                        onUpdateItem({
-                          ...person,
-                          activity: spec.level as PersonActivity,
-                          co2RateLitersPerHour: spec.co2,
-                          heatOutputWatts: spec.watts,
-                          moistureLitersPerDay: spec.moisture,
-                          notes: `Biological occupant (${spec.label}) exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W heat.`
-                        }, selectedParentTentId);
-                      }}
-                      className={`p-2 rounded-xl text-xs text-left border transition-all ${
-                        person.activity === spec.level
-                          ? 'bg-violet-950 border-violet-500 text-violet-200 ring-1 ring-violet-500'
-                          : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                      }`}
-                    >
-                      <span className="font-semibold block">{spec.label}</span>
-                      <span className="font-mono text-[10px] text-zinc-400 block mt-0.5">{spec.co2} L/h · {spec.watts}W</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <div className="space-y-4">
+              <NpcDossier
+                person={person}
+                room={room}
+                selectedParentTentId={selectedParentTentId}
+                onUpdatePerson={(updated) => onUpdateItem(updated, selectedParentTentId)}
+                onUpdateRoom={onUpdateRoom}
+                onAddHarvestsToFacility={onAddHarvestsToFacility}
+                simTime={simTime || Date.now()}
+              />
 
               {/* Removal Button Banner */}
               <div className="flex items-center justify-between p-3.5 bg-rose-950/20 border border-rose-900/40 rounded-xl">
                 <div>
                   <span className="text-xs font-semibold text-rose-300 block">Remove Person from Facility</span>
-                  <span className="text-[11px] text-zinc-400">Biological respiration and body heat emission will immediately stop.</span>
+                  <span className="text-[11px] text-zinc-400">Biological respiration, worker routines, and body heat emission will immediately stop.</span>
                 </div>
                 <button
                   type="button"

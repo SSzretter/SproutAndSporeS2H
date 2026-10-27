@@ -297,17 +297,74 @@ export interface EquipmentItem {
 
 export type PersonActivity = 'resting' | 'normal' | 'active' | 'exercising';
 
+export type PersonRole = 
+  | 'resident'      // Lives on-site, relaxes, roams the facility/living spaces, breathes CO2
+  | 'grower'        // Master Grower: monitors plant health, waters dry pots, applies nutrients, prunes
+  | 'technician'    // Equipment Tech: refills humidifier tanks, empties dehumidifier buckets, balances hardware
+  | 'harvester'     // Harvester / Trimmer: checks crop maturity, harvests ready plants & mushrooms into inventory
+  | 'caretaker';    // General Hand: all-rounder who waters crops, mists mushrooms, maintains equipment, and harvests
+
+export interface NpcInventoryItem {
+  id: string;
+  name: string;
+  type: 'tool' | 'supply' | 'harvest' | 'personal';
+  description?: string;
+  quantity?: number;
+  unit?: string;
+  icon?: string;
+  acquiredAt?: number;
+  harvestRecord?: HarvestRecord; // Attached full harvest record if this is a harvested crop
+}
+
+export interface NpcInventory {
+  items: NpcInventoryItem[];
+  maxSlots?: number;
+}
+
+export interface NpcActionLogEntry {
+  id: string;
+  timestamp: number;
+  actionType: 'water' | 'feed' | 'mist' | 'refill_humidifier' | 'empty_dehumidifier' | 'adjust_equipment' | 'harvest' | 'inspect' | 'rest' | 'patrol';
+  title: string;
+  details: string;
+  targetName?: string;
+  targetId?: string;
+  locationName?: string;
+  result?: 'success' | 'info' | 'warning';
+}
+
+export interface NpcWorkerSettings {
+  autoWork: boolean; // default true for worker roles, false for resident
+  waterThresholdPct?: number; // e.g. 45% soil moisture
+  mistThresholdPct?: number; // e.g. 45% substrate moisture
+  refillHumidifierBelowL?: number; // e.g. 1.5 L
+  emptyDehumidifierAbovePct?: number; // e.g. 80%
+  autoHarvestCrops?: boolean; // whether to harvest ready crops
+  workCadenceMinutes?: number; // frequency of autonomous rounds
+}
+
 export interface PersonItem {
   id: string;
   name: string;
   category: 'person';
   activity: PersonActivity;
+  role: PersonRole;
+  customTitle?: string;
+  workerSettings?: NpcWorkerSettings;
+  currentAction?: string;
+  currentActionTimer?: number;
+  currentActionTargetId?: string;
+  actionLog?: NpcActionLogEntry[];
+  inventory?: NpcInventory;
   co2RateLitersPerHour: number; // e.g. resting: 15 L/h, normal: 22 L/h, active: 32 L/h, exercising: 50 L/h
   heatOutputWatts: number; // metabolic heat: 75W - 200W
   moistureLitersPerDay: number; // respiration/perspiration: 0.8L - 2.5L/day
   dimensions: Dimensions;
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
+  shirtColor?: string;
+  hatColor?: string;
+  hairColor?: string;
 }
 
 export type PetType = 'dog_large' | 'dog_medium' | 'dog_small' | 'cat';

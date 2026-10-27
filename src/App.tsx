@@ -15,6 +15,7 @@ import {
 } from './types/sim';
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
+import { simulateNpcRoomTick } from './utils/npcWorker';
 import { syncItemGeometry, placeItemInFreeSpace } from './utils/spatial';
 import { migrateEquipmentLinks } from './utils/equipmentLinks';
 import { getPlantStageStartSize } from './utils/plantLifecycle';
@@ -130,10 +131,17 @@ export default function App() {
           newSimTime,
           elapsedMinutes
         );
+        // Autonomous worker routines & resident behaviors
+        const { updatedRoom: npcRoom, journalEvents: npcEvents } = simulateNpcRoomTick(
+          simRoom,
+          newSimTime,
+          elapsedMinutes
+        );
+        const combinedEvents = [...(events || []), ...npcEvents];
         if (rm.id === (cur.activeRoomId || cur.room.id)) {
-          activeRoomEvents = events;
+          activeRoomEvents = combinedEvents;
         }
-        return simRoom;
+        return npcRoom;
       });
 
       const updatedActiveRoom = updatedRooms.find(r => r.id === (cur.activeRoomId || cur.room.id)) || updatedRooms[0];
@@ -146,9 +154,10 @@ export default function App() {
           time: newSimTime,
           type: e.type,
           category: e.category || 'crop',
-          tentName: e.tentName,
+          tentName: (e as any).tentName,
           title: e.title,
-          message: e.message
+          message: e.message,
+          author: (e as any).author
         }));
         updatedJournal = [...updatedJournal, ...newEntries];
       }
@@ -196,20 +205,27 @@ export default function App() {
           newSimTime,
           elapsedMinutes
         );
-        if (events && events.length > 0) {
-          events.forEach(e => {
+        const { updatedRoom: npcRoom, journalEvents: npcEvents } = simulateNpcRoomTick(
+          simRoom,
+          newSimTime,
+          elapsedMinutes
+        );
+        const combinedEvents = [...(events || []), ...npcEvents];
+        if (combinedEvents && combinedEvents.length > 0) {
+          combinedEvents.forEach(e => {
             skipEvents.push({
               id: `j-${Date.now()}-${Math.random()}`,
               time: newSimTime,
               type: e.type,
               category: e.category || 'crop',
-              tentName: e.tentName || rm.name,
+              tentName: (e as any).tentName || rm.name,
               title: e.title,
-              message: e.message
+              message: e.message,
+              author: (e as any).author
             });
           });
         }
-        return simRoom;
+        return npcRoom;
       });
       const updatedActiveRoom = updatedRooms.find(r => r.id === (prev.activeRoomId || prev.room.id)) || updatedRooms[0];
 
@@ -877,6 +893,18 @@ export default function App() {
     });
   }, [state.simTime, state.room, state.rooms, state.activeRoomId, handleUpdateItem]);
 
+  // Add batches of harvests from NPC worker inventories into master facility storage
+  const handleAddHarvestsToFacility = useCallback((harvests: HarvestRecord[]) => {
+    setState(prev => {
+      const nextState: SimulationState = {
+        ...prev,
+        harvests: [...harvests, ...prev.harvests]
+      };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, []);
+
   // Add custom or care journal entry
   const handleAddJournalEntry = useCallback((entry: { title: string; message: string; type: JournalEntry['type']; category?: JournalCategory }) => {
     setState(prev => {
@@ -1075,6 +1103,7 @@ export default function App() {
               }}
               onHarvestPlant={handleHarvestPlant}
               onHarvestMushroom={handleHarvestMushroom}
+              onAddHarvestsToFacility={handleAddHarvestsToFacility}
               simTime={state.simTime}
               onLogJournalEntry={handleAddJournalEntry}
             />

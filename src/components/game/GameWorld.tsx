@@ -840,80 +840,16 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   // ---- 3D scene interactions ----
   const handleSceneClickItem = (item: Item, tentId: string | undefined, worldPos: Vec3) => {
     const [x, , y] = worldPos;
+    // For farming crop actions (watering/feeding/misting/harvesting plants & mushrooms with hotbar tools)
     if ((item.category === 'plant' || item.category === 'mushroom') && activeTool !== 'inspect') {
       applyToolToCrop(item, tentId, x, y);
       return;
     }
+
     soundEffects.playClick();
-    // The watering can tops up a humidifier's reservoir
-    if (item.category === 'equipment' && item.type === 'humidifier' && activeTool === 'water') {
-      const capacityL = getReservoirLiters(item);
-      const addedL = capacityL - (isReservoirEmpty(item) ? 0 : getReservoirLevelL(item));
-      if (addedL < 0.05) {
-        addFloatingText('Reservoir already full 💧', x, y, '#94a3b8');
-        return;
-      }
-      soundEffects.playWater();
-      onUpdateState(prev => {
-        const host = tentId ? currentRoom.tents.find(t => t.id === tentId) : undefined;
-        const ambientF = host ? host.climate.tempF : currentRoom.climate.tempF;
-        const next = updateCropInSimulation(prev, item.id, tentId, it => refillReservoir(it as EquipmentItem, ambientF));
-        next.journal.push({
-          id: `j-${Date.now()}`,
-          time: next.simTime,
-          type: 'action',
-          category: 'care',
-          title: `💧 Refilled ${item.name}`,
-          message: `Topped up the reservoir with ${addedL.toFixed(1)} L of fresh tap water (${capacityL.toFixed(1)} L tank).`
-        });
-        broadcastSimulationState(next);
-        return next;
-      });
-      addFloatingText(`+${addedL.toFixed(1)} L Reservoir Refilled 💧`, x, y, '#38bdf8');
-      return;
-    }
-    // ...and empties a dehumidifier's collection bucket
-    if (item.category === 'equipment' && item.type === 'dehumidifier' && activeTool === 'water') {
-      if (item.drainHoseConnected) {
-        addFloatingText('Drains through its hose — no bucket to empty', x, y, '#94a3b8');
-        return;
-      }
-      const pouredL = getBucketLevelL(item);
-      if (pouredL < 0.05) {
-        addFloatingText('Bucket already empty 🪣', x, y, '#94a3b8');
-        return;
-      }
-      soundEffects.playWater();
-      onUpdateState(prev => {
-        const next = updateCropInSimulation(prev, item.id, tentId, it => emptyBucket(it as EquipmentItem));
-        next.journal.push({
-          id: `j-${Date.now()}`,
-          time: next.simTime,
-          type: 'action',
-          category: 'care',
-          title: `🪣 Emptied ${item.name}`,
-          message: `Poured out ${pouredL.toFixed(1)} L of condensate from the collection bucket.`
-        });
-        broadcastSimulationState(next);
-        return next;
-      });
-      addFloatingText(`-${pouredL.toFixed(1)} L Bucket Emptied 🪣`, x, y, '#38bdf8');
-      return;
-    }
-    if (item.category === 'equipment' && activeTool !== 'inspect') {
-      const eq = item as EquipmentItem;
-      onUpdateState(prev => {
-        const next = updateCropInSimulation(prev, eq.id, tentId, (it) => ({
-          ...it,
-          powerOn: !(it as EquipmentItem).powerOn
-        }));
-        broadcastSimulationState(next);
-        return next;
-      });
-      addFloatingText(`${eq.name}: ${!eq.powerOn ? 'ON ⚡' : 'Standby / OFF'}`, x, y, !eq.powerOn ? '#34d399' : '#94a3b8');
-      return;
-    }
-    // Equipment (with the Inspect tool), people and pets open the inspector
+
+    // Normal left-click on equipment (humidifiers, dehumidifiers, fans, lights, etc.), people, pets, or crops
+    // opens their detailed properties/edit panel so the user can inspect and control all settings in the panel
     setInGameInspectorTarget({ type: 'item', id: item.id, parentTentId: tentId || null });
   };
 
@@ -978,18 +914,18 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       const status = `${statusIcon} ${activity?.label ?? 'Off'}`;
       if (item.type === 'humidifier') {
         const water = isReservoirEmpty(item) ? '💧 EMPTY' : `💧 ${Math.round((getReservoirLevelL(item) / getReservoirLiters(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${status} • ${water}) [Water Can to Refill • Inspect to Edit]`;
+        return `⚙️ ${item.name} (${status} • ${water}) [Click to Open Controls & Properties]`;
       }
       if (item.type === 'dehumidifier') {
         const bucket = item.drainHoseConnected ? 'drain hose'
           : isBucketFull(item) ? '🪣 FULL'
           : `🪣 ${Math.round((getBucketLevelL(item) / getBucketCapacityL(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${status} • ${bucket}) [Water Can to Empty • Inspect to Edit]`;
+        return `⚙️ ${item.name} (${status} • ${bucket}) [Click to Open Controls & Properties]`;
       }
       const vent = item.type === 'exhaust_fan' ? ` • → ${item.exhaustTo === 'outdoors' ? 'outdoors' : 'room'}` : '';
-      return `⚙️ ${item.name} (${status} • ${item.powerWatts}W${vent}) [Inspect to Edit • Click to Toggle]`;
+      return `⚙️ ${item.name} (${status} • ${item.powerWatts}W${vent}) [Click to Open Controls & Properties]`;
     }
-    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Edit]`;
+    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Open Dossier & Controls]`;
   })();
 
   // Doorways to other rooms on the left/right walls (or an Add Room portal)
@@ -1507,6 +1443,16 @@ export const GameWorld: React.FC<GameWorldProps> = ({
                 onDeleteItem={handleDeleteItemFromGame}
                 onDeleteRoom={handleDeleteRoomFromGame}
                 onOpenAddRoom={onOpenAddRoom}
+                onAddHarvestsToFacility={(harvests) => {
+                  onUpdateState(prev => {
+                    const next: SimulationState = {
+                      ...prev,
+                      harvests: [...harvests, ...prev.harvests]
+                    };
+                    broadcastSimulationState(next);
+                    return next;
+                  });
+                }}
                 onOpenAddItem={(tentId) => {
                   setInGameInspectorTarget(null);
                   onOpenAddItem(tentId);

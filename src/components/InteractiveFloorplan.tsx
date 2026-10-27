@@ -29,6 +29,7 @@ import {
   PersonItem, 
   PetItem 
 } from '../types/sim';
+import { ROLE_METADATA } from '../utils/npcWorker';
 
 interface InteractiveFloorplanProps {
   room: Room;
@@ -133,13 +134,30 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
   };
 
   const renderPersonGraphic = (person: PersonItem) => {
+    const roleMeta = ROLE_METADATA[person.role || 'resident'] || ROLE_METADATA.resident;
+    const roleIcon = roleMeta.badge.split(' ')[0];
+    const isWorking = person.role !== 'resident';
     return (
-      <div className="relative flex flex-col items-center group/person">
-        <div className="w-8 h-8 rounded-full bg-violet-950/70 border border-violet-500/80 text-violet-300 flex items-center justify-center transition-transform group-hover/person:scale-110 shadow-sm">
-          <User className="w-4 h-4 text-violet-300" />
-          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-violet-400 border border-zinc-900" title={`+${person.co2RateLitersPerHour} L/h CO₂`} />
+      <div 
+        className="relative flex flex-col items-center group/person"
+        title={`${person.name} (${roleMeta.title})\nStatus: ${person.currentAction || 'Idle'}\nCO₂: +${person.co2RateLitersPerHour} L/h | Heat: ${person.heatOutputWatts}W`}
+      >
+        <div 
+          className="w-8 h-8 rounded-full border flex items-center justify-center transition-transform group-hover/person:scale-110 shadow-sm relative"
+          style={{ 
+            backgroundColor: `${person.shirtColor || roleMeta.shirtColor}33`, 
+            borderColor: person.shirtColor || roleMeta.shirtColor 
+          }}
+        >
+          <User className="w-4 h-4" style={{ color: person.shirtColor || '#c084fc' }} />
+          <span className="absolute -top-1.5 -right-1.5 text-[11px]" title={roleMeta.title}>
+            {roleIcon}
+          </span>
+          {isWorking && (
+            <span className="absolute -bottom-0.5 -left-0.5 w-2 h-2 rounded-full bg-emerald-400 border border-zinc-950" title="Active Worker" />
+          )}
         </div>
-        <span className="text-[10px] font-medium text-violet-200 truncate max-w-[64px] text-center mt-1">
+        <span className="text-[10px] font-medium text-zinc-200 truncate max-w-[70px] text-center mt-1">
           {person.name.split(' ')[0]}
         </span>
       </div>
