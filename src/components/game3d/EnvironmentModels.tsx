@@ -141,7 +141,7 @@ function pointerHitsItem(e: ThreeEvent<MouseEvent | PointerEvent>): boolean {
 }
 
 export type { Doorway } from '../../utils/roomDoorways';
-import { Doorway } from '../../utils/roomDoorways';
+import { Doorway, OUTSIDE_DOOR_ID } from '../../utils/roomDoorways';
 
 export function DoorwayModel({
   door,
@@ -156,6 +156,7 @@ export function DoorwayModel({
 }) {
   const { length: L, width: W } = room.dimensions;
   const isAdd = door.roomId === 'ADD_ROOM';
+  const isOutside = door.roomId === OUTSIDE_DOOR_ID;
 
   let position: Vec3;
   let rotation: [number, number, number];
@@ -197,9 +198,9 @@ export function DoorwayModel({
       >
         <boxGeometry args={[3.0, 7.0, 0.16]} />
         <meshStandardMaterial 
-          color={isAdd ? '#047857' : '#991b1b'} 
-          emissive={isAdd ? '#10b981' : '#7f1d1d'} 
-          emissiveIntensity={isAdd ? 0.35 : 0.18} 
+          color={isAdd ? '#047857' : isOutside ? '#e7e5e4' : '#991b1b'} 
+          emissive={isAdd ? '#10b981' : isOutside ? '#000000' : '#7f1d1d'} 
+          emissiveIntensity={isAdd ? 0.35 : isOutside ? 0 : 0.18} 
           roughness={0.5} 
         />
       </mesh>
@@ -215,6 +216,22 @@ export function DoorwayModel({
           <mesh>
             <boxGeometry args={[1.2, 0.28, 0.05]} />
             <meshStandardMaterial color="#6ee7b7" emissive="#34d399" emissiveIntensity={0.8} />
+          </mesh>
+        </group>
+      ) : isOutside ? (
+        // White exterior door with a daylight window and a brass handle
+        <group position={[0, 0, 0.11]}>
+          <mesh position={[0, 5.2, 0]}>
+            <boxGeometry args={[2.0, 1.8, 0.04]} />
+            <meshStandardMaterial color="#bae6fd" emissive="#7dd3fc" emissiveIntensity={0.35} roughness={0.1} metalness={0.2} />
+          </mesh>
+          <mesh position={[0, 2.0, 0]}>
+            <boxGeometry args={[2.2, 2.5, 0.04]} />
+            <meshStandardMaterial color="#d6d3d1" roughness={0.5} />
+          </mesh>
+          <mesh position={[1.1, 3.3, 0.05]}>
+            <cylinderGeometry args={[0.06, 0.06, 0.38, 8]} />
+            <meshStandardMaterial color="#fbbf24" metalness={0.8} roughness={0.2} />
           </mesh>
         </group>
       ) : (

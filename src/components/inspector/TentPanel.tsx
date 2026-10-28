@@ -3,6 +3,7 @@ import { Home, Check, Trash2, ArrowLeft, Edit3, Sliders, ChevronRight, Move } fr
 import { Room, Tent, Item, Dimensions } from '../../types/sim';
 import { VpdBadge } from '../VpdBadge';
 import { TENT_CATALOG } from '../../utils/tentCatalog';
+import { getTentEnvelope, TENT_FABRIC_OPTIONS } from '../../utils/tentEnvelope';
 import { TentExhaustFanCard } from './TentExhaustFanCard';
 import { TentItemsSection } from './TentItemsSection';
 import type { TentSectionProps } from './types';
@@ -157,9 +158,16 @@ export const TentPanel: React.FC<TentSectionProps> = (props) => {
 
             {/* Hardware Specs Chips */}
             <div className="flex flex-wrap items-center gap-2 pt-1 text-[10px] font-mono text-zinc-400">
-              <span className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 text-zinc-300">
-                {currentTent.mylarRating || '1680D Mylar'}
-              </span>
+              <select
+                aria-label="Tent fabric"
+                value={currentTent.mylarRating || '600D Mylar'}
+                onChange={e => onUpdateTent({ ...currentTent, mylarRating: e.target.value })}
+                className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 text-zinc-300 focus:outline-none focus:border-emerald-500"
+              >
+                {[...new Set([currentTent.mylarRating || '600D Mylar', ...TENT_FABRIC_OPTIONS])].map(f => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
               <span className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 text-zinc-300">
                 {currentTent.poleDiameter || '22mm Steel Frame'}
               </span>
@@ -167,6 +175,15 @@ export const TentPanel: React.FC<TentSectionProps> = (props) => {
                 {currentTent.ventPorts || 'Dual Cinch Ports'}
               </span>
             </div>
+            {(() => {
+              const env = getTentEnvelope(currentTent);
+              return (
+                <p className="text-[10px] text-zinc-500 leading-snug">
+                  Heat loss: U {env.uValue.toFixed(2)} BTU/h·ft²·°F ({env.label}), {env.leakAch} air changes/h with the fan off.
+                  Liner and seals matter far more than fabric weight.
+                </p>
+              );
+            })()}
           </div>
 
           {/* Editable Dimensions: L x W x H */}

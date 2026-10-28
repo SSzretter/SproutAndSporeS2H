@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getTentEnvelope } from '../../utils/tentEnvelope';
 import { 
   X, 
   Box, 
@@ -234,6 +235,9 @@ export const TentInspectorModal: React.FC<TentInspectorModalProps> = ({
             </span>
             <span className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 text-zinc-400">
               {tent.ventPorts || 'Dual Cinch Ports'}
+            </span>
+            <span className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 text-zinc-400" title={getTentEnvelope(tent).label}>
+              U {getTentEnvelope(tent).uValue.toFixed(2)} · {getTentEnvelope(tent).leakAch} ACH leak
             </span>
           </div>
         </div>

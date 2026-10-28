@@ -13,7 +13,7 @@ import {
 } from '../../types/sim';
 import { GameScene, HoverTarget, FloatingText, Doorway, PlayerState } from '../game3d/GameScene';
 import { WallSide } from '../../types/sim';
-import { resolveRoomDoorways, getDoorSpawnPoint, getOppositeWall, getWallDisplayName } from '../../utils/roomDoorways';
+import { OUTSIDE_DOOR_ID, resolveRoomDoorways, getDoorSpawnPoint, getOppositeWall, getWallDisplayName } from '../../utils/roomDoorways';
 import { itemWorldPosition, tentWorldOrigin, Vec3 } from '../game3d/coords';
 import { soundEffects } from './AudioEffects';
 import { TentInspectorModal } from './TentInspectorModal';
@@ -416,7 +416,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       if (e.key === '3') setActiveTool('harvest');
       if (e.key === '4') setActiveTool('feed');
       if (e.key === '5') setActiveTool('mist');
-      if (e.key === '6') setActiveTool('build');
+      // Place is a one-shot action: open the Add dialog and stay on Inspect, so later clicks inspect again
+      if (e.key === '6') { setActiveTool('inspect'); onOpenAddItem(); }
 
       // Interaction key [E] or [Space]
       if (e.key.toLowerCase() === 'e' || e.key === ' ') {
@@ -525,7 +526,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       const now = Date.now();
       if (now - lastDoorTravelTimeRef.current > 1200) {
         const door = getDoorwayAt(p.x, p.y);
-        if (door) {
+        if (door && door.roomId !== OUTSIDE_DOOR_ID) {
           lastDoorTravelTimeRef.current = now;
           if (door.roomId === 'ADD_ROOM') {
             onOpenAddRoom(door.side);
@@ -888,7 +889,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   };
 
   const handleSceneClickDoor = (door: Doorway) => {
-    if (door.roomId === 'ADD_ROOM') {
+    if (door.roomId === OUTSIDE_DOOR_ID) {
+      const p = playerRef.current;
+      addFloatingText('🌳 Door to the outside', p.x, p.y, '#bae6fd');
+    } else if (door.roomId === 'ADD_ROOM') {
       onOpenAddRoom(door.side);
     } else {
       handleTravelToRoom(door.roomId, door.side);
@@ -919,6 +923,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     if (!hoverTarget) return null;
     if (hoverTarget.kind === 'tent') return `${hoverTarget.tent.name} [Click to Edit Tent & Items]`;
     if (hoverTarget.kind === 'door') {
+      if (hoverTarget.door.roomId === OUTSIDE_DOOR_ID) return '🌳 Exterior door to the outside';
       return hoverTarget.door.roomId === 'ADD_ROOM' ? '➕ Add a New Room [Click]' : `${hoverTarget.door.label} [Click or Walk Through]`;
     }
     // Read the live item so the tooltip reflects changes made while hovering (e.g. power toggled)
@@ -1366,7 +1371,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           <button
             onClick={() => {
               soundEffects.playClick();
-              setActiveTool('build');
+              setActiveTool('inspect');
               onOpenAddItem();
             }}
             className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${

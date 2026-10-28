@@ -3,6 +3,7 @@ import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIO
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
 import { getDuctTargetTent, getDuctedEquipmentForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, getRootZoneHeat, applyRootZoneHeat, HOSE_DELIVERY_EFFICIENCY, RootZoneHeat, isReservoirEmpty, getOutdoorVentedCfm, getOutdoorFanShare, isDehumidifier, isBucketFull, getReservoirLevelL, getBucketLevelL, getBucketCapacityL, getMistWaterUseLph, getDehumidifierExtractionLph, absoluteHumidityGm3, shareEnclosureWater, CUBIC_METRES_PER_CUBIC_FOOT, MIST_EVAPORATION_EFFICIENCY } from './equipmentLinks';
 import { INLINE_FAN_SPECS } from './equipmentCatalog';
+import { getTentEnvelope } from './tentEnvelope';
 import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomClimateUnit, stepRoomTemperature, RoomClimateUnitState, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F } from './roomThermal';
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
@@ -875,27 +876,31 @@ export function simulateEnvironmentTick(
       }
     });
 
-    // 1. Heat addition from grow lights
-    // Heaters the tent controller switched on add their heat alongside the lights
-    const tentHeaterWatts = arbitratedItems.reduce((sum, i) => i.category === 'equipment' && i.type === 'heater'
-      ? sum + (i.powerWatts || 0) * ((i.effectiveSetting ?? 0) / 100) : sum, 0);
-    const lightHeatDelta = ((totalHeatWatts + tentHeaterWatts) / Math.max(40, tentVolCuFt)) * 0.022 * (elapsedMinutes / 5);
-    tTempF += lightHeatDelta;
-
-    // 2. Heat conduction through Mylar tent fabric with Host Room air:
-    const tentSurfaceArea = 2 * (tent.dimensions.length * tent.dimensions.height + tent.dimensions.width * tent.dimensions.height) + tentAreaSqFt;
-    const fabricConductionRate = (1.4 * tentSurfaceArea * (roomTempF - tTempF)) / (tentVolCuFt * 1.08);
-    tTempF += (fabricConductionRate * (elapsedMinutes / 60)) * 0.25;
-
-    // 3. Ventilation & Air Exchange with Host Lung Room:
-    // Use arbitrated effectiveFanSpeed (respects humidifier lockout & auto triggers!)
-    // A 6" fan (~400 CFM) on a 4x4 tent (~107 cu ft) is the reference; bigger fans or smaller tents exchange faster
+    // Ventilation & air exchange with the host room (arbitrated effectiveFanSpeed respects
+    // humidifier lockouts & auto triggers). A 6" fan (~400 CFM) on a 4x4 tent (~107 cu ft) is the
+    // reference for the moisture / CO2 exchange below; bigger fans or smaller tents exchange faster.
     const fanCfm = tent.items.reduce((sum, i) => i.category === 'equipment' && i.type === 'exhaust_fan'
       ? sum + (i.flowRateCfm || INLINE_FAN_SPECS[i.ductSizeIn || 6].cfm) : sum, 0);
     const cfmFactor = fanCfm > 0 ? Math.max(0.25, Math.min(3, (fanCfm / tentVolCuFt) / (402 / 107))) : 1;
     const fanFraction = (effectiveFanSpeed / 100) * cfmFactor;
     const airExchangeFraction = Math.min(0.95, 1 - Math.exp(-Math.max(0.04, fanFraction * 0.45) * elapsedMinutes));
-    tTempF += (roomTempF - tTempF) * airExchangeFraction;
+
+    // Tent heat balance (BTU/h, °F). Everything running inside (lights, heaters, fans, a dehumidifier's
+    // condensation heat, minus a humidifier's evaporative cooling) heats the tent air; it loses heat to
+    // the room through the mylar walls, roof and floor and with the air the fan (or passive leakage)
+    // swaps out. Solved exactly over the step, so the tent settles at room + gains / losses.
+    const tentGainBtuh = arbitratedItems.reduce((sum, i) => sum + getItemHeatWatts(i, hour), 0) * 3.412;
+    const tentShellSqFt = 2 * (tent.dimensions.length + tent.dimensions.width) * tent.dimensions.height + 2 * tentAreaSqFt;
+    // Shell U-value and passive leakage come from the tent's construction (fabric, liner, seal quality)
+    const envelope = getTentEnvelope(tent);
+    // Real airflow: the fan's rated CFM at its output, derated ~30% for carbon filter and ducting,
+    // plus passive leakage through zips and vents
+    const exchangeCfm = fanCfm * (effectiveFanSpeed / 100) * 0.7 + tentVolCuFt * envelope.leakAch / 60;
+    const tentLossUa = envelope.uValue * tentShellSqFt + 1.08 * exchangeCfm;
+    // Heat capacity: the air plus what it's in contact with (frame, fabric, trays, pots), ~1 BTU/°F per ft² of floor
+    const tentCapacity = tentVolCuFt * 0.018 + tentAreaSqFt * 1.0;
+    const tentEquilibriumF = roomTempF + tentGainBtuh / tentLossUa;
+    tTempF = tentEquilibriumF + (tTempF - tentEquilibriumF) * Math.exp(-(tentLossUa / tentCapacity) * (elapsedMinutes / 60));
 
     // Relative Humidity dynamics:
     const tentVolM3 = tentVolCuFt * CUBIC_METRES_PER_CUBIC_FOOT;
@@ -908,7 +913,6 @@ export function simulateEnvironmentTick(
       if (tRH < steadyStateRH) {
         const humidifyFraction = 1 - Math.exp(-Math.max(0.4, activeHumidifierCapacity * 0.6) * elapsedMinutes);
         tRH = tRH + (steadyStateRH - tRH) * humidifyFraction;
-        tTempF -= activeHumidifierCoolingPerCapacity * (elapsedMinutes / 5) * activeHumidifierCapacity;
       } else if (tRH > activeHumidifierTarget) {
         tRH += (roomRH - tRH) * airExchangeFraction;
       }
@@ -916,7 +920,6 @@ export function simulateEnvironmentTick(
       if (tRH > activeDehumidifierTarget) {
         const dehumFraction = 1 - Math.exp(-Math.max(0.25, activeDehumidifierCapacity * 0.4) * elapsedMinutes);
         tRH = tRH + (activeDehumidifierTarget - tRH) * dehumFraction;
-        tTempF += 0.06 * (elapsedMinutes / 5) * activeDehumidifierCapacity; // Compressor heat
       } else {
         tRH += (roomRH - tRH) * airExchangeFraction;
       }

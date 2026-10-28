@@ -23,6 +23,21 @@ Plant stage requirements, durations, stage transitions and cultivar profiles (ho
 
 Moisture is tracked as absolute humidity, so RH moves with temperature.
 
+**Tent temperature** (tent loop in `physics.ts`) is its own heat balance, solved exactly each step.
+- **Gains:** `getItemHeatWatts` of everything inside the tent: lights, heaters, a dehumidifier's condensation heat, minus a humidifier's evaporative cooling.
+- **Losses** to the room:
+  - the shell (walls, roof, floor) at the tent's U-value;
+  - exchanged air at `1.08 × CFM`, where CFM is the fan's rated CFM × output × 0.7 for filter/duct losses, plus passive leakage.
+- **Construction:** the U-value and leakage come from `getTentEnvelope` (`tentEnvelope.ts`), which reads `mylarRating` and the brand:
+  - reflective liner vs bare fabric;
+  - a small denier effect;
+  - seal quality: premium brands or 2000D leak 1.5 ACH, budget 210D leaks 4.5 ACH;
+  - insulated thermal tents at U 0.4.
+
+  The dashboard tent panel lets you change the fabric.
+- **Equilibrium:** the tent settles at room + gains / losses, with a time constant of a few minutes. For example, 375 W in an 8×4 tent gives about +5°F.
+- **Not the same exchange as moisture/CO2:** those still use the older `airExchangeFraction`.
+
 Tent exhaust carries its vapour and CO2 into the room. Mushrooms respire CO2 by mass (`getMushroomCo2Lph`), and the tent settles at a level above the room set by production over airflow.
 
 Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-minute changes are tiny. `migrateRoomClimateControl` converts the old `hvacMode` into a visible register once. A/Cs and registers are room-only; the Add form enforces it.

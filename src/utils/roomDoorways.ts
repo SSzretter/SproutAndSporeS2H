@@ -1,13 +1,19 @@
 import { Room, WallSide, RoomDoorLinks } from '../types/sim';
 
 export interface Doorway {
-  roomId: string; // target room id or 'ADD_ROOM'
+  roomId: string; // target room id, 'ADD_ROOM' or OUTSIDE_DOOR_ID
   label: string;
   side: WallSide;
   isReturn?: boolean;
 }
 
 export const ALL_WALL_SIDES: WallSide[] = ['left', 'right', 'back', 'front'];
+
+/** Every room keeps one exterior door to the outdoors, on a wall that isn't linked to another room. */
+export const OUTSIDE_DOOR_ID = 'OUTSIDE';
+// The hub layout links other rooms right, back, then left, so the left wall stays free longest.
+// New rooms are only ever added through green Add Room walls, so the exterior door never moves.
+const OUTSIDE_DOOR_PREFERENCE: WallSide[] = ['left', 'back', 'right', 'front']; // front last: it stands between the camera and the room
 
 /**
  * Returns the complementary opposite wall side for return passages:
@@ -91,8 +97,17 @@ export function resolveRoomDoorways(currentRoom: Room, allRooms: Room[]): Doorwa
   const migratedRooms = ensureRoomDoorLinks(allRooms);
   const active = migratedRooms.find(r => r.id === currentRoom.id) || currentRoom;
   const doors = active.doors || {};
+  const isLinked = (side: WallSide) => {
+    const id = doors[side];
+    return !!id && migratedRooms.some(r => r.id === id && r.id !== active.id);
+  };
+  // Every room has a way outside: its first unlinked wall gets an exterior door instead of an Add Room portal
+  const outsideSide = OUTSIDE_DOOR_PREFERENCE.find(side => !isLinked(side));
 
   return ALL_WALL_SIDES.map(side => {
+    if (side === outsideSide) {
+      return { roomId: OUTSIDE_DOOR_ID, label: '🌳 Outside', side, isReturn: false };
+    }
     const linkedRoomId = doors[side];
     if (linkedRoomId) {
       const targetRoom = migratedRooms.find(r => r.id === linkedRoomId);

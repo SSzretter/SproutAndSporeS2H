@@ -50,6 +50,7 @@ import {
 } from '../types/sim';
 import { ROLE_METADATA, getDefaultNpcInventory, getDefaultWorkerSettings } from '../utils/npcWorker';
 import { calculateVPD } from '../utils/physics';
+import { getCompatibleContainers, getCompatibleMedia } from '../utils/cultivationSystems';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
 import { canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
@@ -1372,7 +1373,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                           key={sys.id}
                           type="button"
                           onClick={() => {
-                            setSystemType(sys.id as CultivationSystemType);
+                            const system = sys.id as CultivationSystemType;
+                            setSystemType(system);
+                            // Keep the vessel and substrate only if they work with the new system
+                            const containers = getCompatibleContainers(system);
+                            const media = getCompatibleMedia(system);
+                            if (!containers.includes(containerType)) setContainerType(containers[0]);
+                            if (!media.includes(growingMedium)) setGrowingMedium(media[0]);
                             if (sys.id === 'dwc') {
                               setContainerType('dwc_reservoir_bucket');
                               setGrowingMedium('hydroton_clay_pebbles');
@@ -1412,14 +1419,18 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         onChange={e => setContainerType(e.target.value as ContainerType)}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
                       >
-                        <option value="fabric_pot">Fabric Smart Pot (High Aeration)</option>
-                        <option value="plastic_nursery_pot">Plastic Nursery Pot</option>
-                        <option value="terracotta_pot">Clay Terracotta Pot (Breathable)</option>
-                        <option value="raised_bed_cedar">Cedar Raised Garden Bed</option>
-                        <option value="in_ground_earth">In-Ground Garden Trench</option>
-                        <option value="dwc_reservoir_bucket">5-Gal DWC Aerated Reservoir</option>
-                        <option value="flood_drain_tray">Hydroponic Flood Tray</option>
-                        <option value="aeroponic_chamber">Aeroponic Mist Chamber</option>
+                        {([
+                          ['fabric_pot', 'Fabric Smart Pot (High Aeration)'],
+                          ['plastic_nursery_pot', 'Plastic Nursery Pot'],
+                          ['terracotta_pot', 'Clay Terracotta Pot (Breathable)'],
+                          ['raised_bed_cedar', 'Cedar Raised Garden Bed'],
+                          ['in_ground_earth', 'In-Ground Garden Trench'],
+                          ['dwc_reservoir_bucket', '5-Gal DWC Aerated Reservoir'],
+                          ['flood_drain_tray', 'Hydroponic Flood Tray'],
+                          ['aeroponic_chamber', 'Aeroponic Mist Chamber'],
+                        ] as [ContainerType, string][])
+                          .filter(([v]) => getCompatibleContainers(systemType).includes(v))
+                          .map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                       </select>
                     </div>
 
@@ -1469,13 +1480,17 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         onChange={e => setGrowingMedium(e.target.value as GrowingMedium)}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
                       >
-                        <option value="living_organic_soil">Living Organic Soil (High Microbes &amp; Buffering)</option>
-                        <option value="coco_perlite">70/30 Coco Coir &amp; Perlite (Fast Growth, Fast Drain)</option>
-                        <option value="peat_potting_mix">Peat Moss / Pro-Mix Blend</option>
-                        <option value="native_garden_loam">Native Garden Loam (Outdoor Garden Bed)</option>
-                        <option value="hydroton_clay_pebbles">Expanded Clay Hydroton Pebbles (DWC/Hydro)</option>
-                        <option value="rockwool_cubes">Rockwool Horticultural Matrix</option>
-                        <option value="aeroponic_mist">Aeroponic Oxygenated Mist</option>
+                        {([
+                          ['living_organic_soil', 'Living Organic Soil (High Microbes & Buffering)'],
+                          ['coco_perlite', '70/30 Coco Coir & Perlite (Fast Growth, Fast Drain)'],
+                          ['peat_potting_mix', 'Peat Moss / Pro-Mix Blend'],
+                          ['native_garden_loam', 'Native Garden Loam (Outdoor Garden Bed)'],
+                          ['hydroton_clay_pebbles', 'Expanded Clay Hydroton Pebbles (DWC/Hydro)'],
+                          ['rockwool_cubes', 'Rockwool Horticultural Matrix'],
+                          ['aeroponic_mist', 'Aeroponic Oxygenated Mist'],
+                        ] as [GrowingMedium, string][])
+                          .filter(([v]) => getCompatibleMedia(systemType).includes(v))
+                          .map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                       </select>
                     </div>
 
