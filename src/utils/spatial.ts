@@ -1,5 +1,10 @@
 import { Dimensions, Position3D, Item, Tent, Room, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem } from '../types/sim';
 import { getAttachedPosition } from './equipmentLinks';
+import {
+  createRackTiers, getInsertCellDimensions, getInsertCellVolumeGallons, getRackDimensions, getRackSlotPosition,
+  getRackTiers, GROW_RACK_PRESETS, isGrowRack, isRackedPlant, isValidRackSlot, rackSlotKey, TRAY_INSERTS
+} from './growRacks';
+import { getNutrientCapacityL, getReservoirDimensions, isNutrientReservoir } from './nutrientReservoirs';
 
 /**
  * Returns realistic physical dimensions (L × W × H in feet) for any object
@@ -79,6 +84,12 @@ export function getDefaultItemDimensions(params: {
         return { length: 1.5, width: 1.2, height: 2.4, unit: 'ft' }; // 8,000-12,000 BTU single-hose unit
       case 'hvac_register':
         return { length: 1.0, width: 0.4, height: 0.08, unit: 'ft' }; // 12" x 4" ceiling supply grille
+      case 'nutrient_reservoir':
+        return getReservoirDimensions(102); // 27 gal tote
+      case 'grow_rack': {
+        const preset = GROW_RACK_PRESETS[0]; // 5-tier single-tray seedling rack
+        return getRackDimensions({ rackTiers: createRackTiers(preset), rackTierSpacingFt: preset.tierSpacingFt } as EquipmentItem);
+      }
       default:
         return { length: 1.2, width: 1.0, height: 1.0, unit: 'ft' };
     }
@@ -107,6 +118,8 @@ const roundFt = (v: number) => Math.round(v * 100) / 100;
 export function getDefaultContainerVolumeGallons(containerType?: string): number {
   if (containerType === 'raised_bed_cedar') return 50;
   if (containerType === 'in_ground_earth') return 100;
+  if (containerType === 'tray_cell') return getInsertCellVolumeGallons('cells_72');
+  if (containerType === 'tray_pot') return getInsertCellVolumeGallons('pots_3_5in_18');
   return 5;
 }
 
@@ -116,6 +129,9 @@ export function getDefaultContainerVolumeGallons(containerType?: string): number
  * beds, trays and chambers as boxes.
  */
 export function getPlantContainerDimensions(containerType?: string, volumeGallons?: number): Dimensions {
+  // Rack cells and pots are sized by their insert (racked plants get theirs from syncRackedPlants)
+  if (containerType === 'tray_cell') return getInsertCellDimensions('cells_72');
+  if (containerType === 'tray_pot') return getInsertCellDimensions('pots_3_5in_18');
   const gallons = Math.max(0.25, volumeGallons || getDefaultContainerVolumeGallons(containerType));
   const cuFt = gallons * CUBIC_FT_PER_GALLON;
 
@@ -212,7 +228,54 @@ export function syncItemGeometry<T extends Item>(item: T): T {
     const synced = { ...shroom, containerDimensions };
     return { ...synced, dimensions: computeMushroomDimensions(synced) } as T;
   }
+  if (isGrowRack(item)) {
+    return { ...item, dimensions: getRackDimensions(item) } as T;
+  }
+  if (isNutrientReservoir(item)) {
+    return { ...item, dimensions: getReservoirDimensions(getNutrientCapacityL(item)) } as T;
+  }
   return item;
+}
+
+/**
+ * Keeps plants sown into grow rack trays in their cells: position, cell size, container type and
+ * root volume all follow the rack's shelf and insert. A plant whose rack is gone, whose slot no
+ * longer exists (shelf removed, insert changed) or that shares a slot with another plant is
+ * unlinked and set down on the floor where it stood.
+ */
+export function syncRackedPlants(items: Item[]): Item[] {
+  const racks = new Map(items.filter(isGrowRack).map(r => [r.id, r]));
+  if (racks.size === 0 && !items.some(isRackedPlant)) return items;
+  const taken = new Set<string>();
+  return items.map(item => {
+    if (item.category !== 'plant' || !item.rackSlot) return item;
+    const slot = item.rackSlot;
+    const rack = racks.get(slot.rackId);
+    const key = `${slot.rackId}|${rackSlotKey(slot)}`;
+    if (!rack || !isValidRackSlot(rack, slot) || taken.has(key)) {
+      const { rackSlot: _dropped, ...unlinked } = item;
+      return { ...unlinked, position: unlinked.position ? { ...unlinked.position, z: 0 } : undefined } as PlantItem;
+    }
+    taken.add(key);
+    const insert = getRackTiers(rack)[slot.tier].insert;
+    const synced: PlantItem = {
+      ...item,
+      position: getRackSlotPosition(rack, slot),
+      containerType: TRAY_INSERTS[insert].kind === 'pot' ? 'tray_pot' : 'tray_cell',
+      containerVolumeGallons: getInsertCellVolumeGallons(insert),
+      containerDimensions: getInsertCellDimensions(insert)
+    };
+    return { ...synced, dimensions: computePlantDimensions(synced) };
+  });
+}
+
+/** syncRackedPlants for a room's floor and every tent in it. */
+export function syncRoomRacks(room: Room): Room {
+  return {
+    ...room,
+    items: syncRackedPlants(room.items),
+    tents: room.tents.map(t => ({ ...t, items: syncRackedPlants(t.items) }))
+  };
 }
 
 /**
@@ -378,9 +441,12 @@ export function placeItemInFreeSpace<T extends Item>(item: T, room: Room, tent?:
   // A heat mat attached to something lives under / around it rather than in its own spot
   const attachedPos = getAttachedPosition(item, existing, tent);
   if (attachedPos) return { ...item, position: attachedPos };
+  // A plant sown into a rack tray sits in its cell (syncRackedPlants positions it)
+  if (isRackedPlant(item)) return item;
 
+  // Racked plants are inside their rack's box, which is already an obstacle
   const obstacles: OccupiedBox[] = existing
-    .filter(other => other.id !== item.id && !getAttachedPosition(other, existing, tent))
+    .filter(other => other.id !== item.id && !isRackedPlant(other) && !getAttachedPosition(other, existing, tent))
     .map(itemBox)
     .filter((box): box is OccupiedBox => box !== null);
   if (!tent) {
@@ -434,4 +500,28 @@ export function placeItemInFreeSpace<T extends Item>(item: T, room: Room, tent?:
   }
 
   return { ...item, position: { x: best.x, y: best.y, z } };
+}
+
+/**
+ * Gives a freshly built room's contents their spots: tents without a position get the default
+ * tent layout, then every item without one goes through placeItemInFreeSpace (so a starter tent's
+ * light hangs near its roof, its duct fan sits in the top rear corner, and nothing overlaps).
+ */
+export function placeNewRoomContents(room: Room): Room {
+  let next: Room = {
+    ...room,
+    tents: room.tents.map((t, i) => ({ ...t, position: t.position || getDefaultSpatialPosition('tent', room.dimensions, i), items: [] })),
+    items: []
+  };
+  next = {
+    ...next,
+    tents: next.tents.map((tent, i) => room.tents[i].items.reduce<Tent>(
+      (placed, item) => ({ ...placed, items: [...placed.items, item.position ? item : placeItemInFreeSpace(item, next, placed)] }),
+      tent
+    ))
+  };
+  for (const item of room.items) {
+    next = { ...next, items: [...next.items, item.position ? item : placeItemInFreeSpace(item, next)] };
+  }
+  return next;
 }

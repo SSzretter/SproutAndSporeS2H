@@ -1,6 +1,7 @@
 import { Item } from '../types/sim';
 import { isBucketFull, isReservoirEmpty } from './equipmentLinks';
 import { isLightScheduledOn } from './roomThermal';
+import { isNutrientReservoirEmpty } from './nutrientReservoirs';
 
 /**
  * What a piece of equipment is doing right now, from its live simulation state:
@@ -18,10 +19,18 @@ export interface EquipmentActivityInfo {
 
 export function getEquipmentActivity(item: Item, hour: number): EquipmentActivityInfo | null {
   if (item.category !== 'equipment') return null;
+  if (item.type === 'grow_rack') return null; // Passive shelving: nothing to run
   if (!item.powerOn && item.type !== 'co2_bag') return { activity: 'off', label: 'Off' };
 
   if (item.type === 'humidifier' && isReservoirEmpty(item)) return { activity: 'blocked', label: 'Out of water' };
   if (item.type === 'dehumidifier' && isBucketFull(item)) return { activity: 'blocked', label: 'Bucket full' };
+  if (item.type === 'nutrient_reservoir') {
+    if (isNutrientReservoirEmpty(item)) return { activity: 'blocked', label: 'Reservoir empty' };
+    if (!(item.feedTargets ?? []).length) return { activity: 'idle', label: 'No feed lines' };
+    return (item.effectiveSetting ?? 0) > 0
+      ? { activity: 'running', label: item.pumpMode === 'continuous' ? 'Circulating' : 'Flooding' }
+      : { activity: 'idle', label: 'Between floods' };
+  }
 
   switch (item.type) {
     case 'grow_light':

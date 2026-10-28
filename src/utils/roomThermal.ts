@@ -1,4 +1,5 @@
 import { EquipmentItem, Item, Room } from '../types/sim';
+import { getReservoirHeatWatts } from './nutrientReservoirs';
 
 /**
  * Indoor room heat balance. There is no hidden HVAC: a room's temperature comes from its envelope
@@ -120,6 +121,8 @@ export function getItemHeatWatts(item: Item, hour: number): number {
       return (item.powerWatts || 0) * output - (item.waterFlowLph ?? 0) * 0.85 * LATENT_WATTS_PER_LITRE_HOUR;
     case 'heat_mat':
       return item.powerWatts || 0;
+    case 'nutrient_reservoir':
+      return getReservoirHeatWatts(item);
     case 'oscillating_fan':
       return (item.powerWatts || 0) * ((item.setting ?? 100) / 100);
     case 'portable_ac':

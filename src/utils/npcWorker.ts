@@ -14,6 +14,58 @@ import {
   NpcWorkerSettings,
   HarvestRecord 
 } from '../types/sim';
+import {
+  adjustToTargets, DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getFeedingReservoir, getNutrientCapacityL, getNutrientLevelL,
+  isNutrientReservoir, mixFreshSolution, topOffWithWater
+} from './nutrientReservoirs';
+
+const DAY_MS = 86400000;
+// A reservoir's solution is dosed back to target once it drifts this far
+const RESERVOIR_EC_TOLERANCE = 0.15; // of the target strength
+const RESERVOIR_PH_TOLERANCE = 0.3;
+
+/** What a reservoir needs right now, if anything: a full change, a top-off + dose, or just a dose. */
+export function getReservoirServiceNeed(eq: EquipmentItem, simTime: number, settings: NpcWorkerSettings): 'change' | 'top_off' | 'dose' | null {
+  const changeDays = settings.reservoirChangeDays ?? 14;
+  const lastChange = eq.lastSolutionChangeTime ?? 0;
+  if (simTime - lastChange >= changeDays * DAY_MS) return 'change';
+  if (getNutrientLevelL(eq) / getNutrientCapacityL(eq) < (settings.refillReservoirBelowPct ?? 35) / 100) return 'top_off';
+  const targetEc = eq.nutrientTargetEcPpm ?? DEFAULT_NUTRIENT_EC_PPM;
+  const targetPh = eq.nutrientTargetPh ?? DEFAULT_NUTRIENT_PH;
+  if (Math.abs((eq.nutrientEcPpm ?? targetEc) - targetEc) > targetEc * RESERVOIR_EC_TOLERANCE) return 'dose';
+  if (Math.abs((eq.nutrientPh ?? targetPh) - targetPh) > RESERVOIR_PH_TOLERANCE) return 'dose';
+  return null;
+}
+
+/** Carries out a reservoir service and describes it for the logs. */
+export function serviceReservoir(eq: EquipmentItem, need: 'change' | 'top_off' | 'dose', simTime: number, ambientTempF: number): { eq: EquipmentItem; title: string; details: string; action: string } {
+  const capacity = getNutrientCapacityL(eq);
+  const level = getNutrientLevelL(eq);
+  const ec = eq.nutrientTargetEcPpm ?? DEFAULT_NUTRIENT_EC_PPM;
+  const ph = (eq.nutrientTargetPh ?? DEFAULT_NUTRIENT_PH).toFixed(1);
+  if (need === 'change') {
+    return {
+      eq: mixFreshSolution(eq, simTime),
+      title: `Changed solution in ${eq.name}`,
+      details: `Dumped ${level.toFixed(1)} L of spent solution and mixed ${capacity} L fresh at ${ec} ppm, pH ${ph}.`,
+      action: `Mixing fresh solution in ${eq.name}`
+    };
+  }
+  if (need === 'top_off') {
+    return {
+      eq: adjustToTargets(topOffWithWater(eq, ambientTempF)),
+      title: `Topped off ${eq.name}`,
+      details: `Topped off ${eq.name} from ${level.toFixed(1)} L to ${capacity} L and dosed it back to ${ec} ppm, pH ${ph}.`,
+      action: `Topping off ${eq.name}`
+    };
+  }
+  return {
+    eq: adjustToTargets(eq),
+    title: `Dosed ${eq.name}`,
+    details: `Solution had drifted to ${Math.round(eq.nutrientEcPpm ?? 0)} ppm, pH ${(eq.nutrientPh ?? 0).toFixed(2)}; dosed nutrients and pH back to ${ec} ppm, pH ${ph}.`,
+    action: `Dosing ${eq.name}`
+  };
+}
 
 export interface RoleMeta {
   role: PersonRole;
@@ -54,7 +106,7 @@ export const ROLE_METADATA: Record<PersonRole, RoleMeta> = {
     color: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
     shirtColor: '#d97706',
     hatColor: '#f59e0b',
-    description: 'Hardware specialist: refills low humidifier tanks, empties dehumidifier buckets, and inspects equipment.',
+    description: 'Hardware specialist: refills humidifier tanks, empties dehumidifier buckets, tops off, doses and changes nutrient reservoirs.',
     defaultActivity: 'active'
   },
   harvester: {
@@ -74,7 +126,7 @@ export const ROLE_METADATA: Record<PersonRole, RoleMeta> = {
     color: 'text-blue-400 bg-blue-500/10 border-blue-500/30',
     shirtColor: '#2563eb',
     hatColor: '#1e40af',
-    description: 'All-around worker: waters plants, mists mushrooms, services equipment, and harvests ripe crops.',
+    description: 'All-around worker: waters plants, mists mushrooms, services equipment and nutrient reservoirs, and harvests ripe crops.',
     defaultActivity: 'active'
   }
 };
@@ -278,6 +330,8 @@ export function getDefaultWorkerSettings(role: PersonRole): NpcWorkerSettings {
       mistThresholdPct: 40,
       refillHumidifierBelowL: 1.5,
       emptyDehumidifierAbovePct: 80,
+      refillReservoirBelowPct: 35,
+      reservoirChangeDays: 14,
       autoHarvestCrops: false,
       workCadenceMinutes: 15
     };
@@ -288,6 +342,8 @@ export function getDefaultWorkerSettings(role: PersonRole): NpcWorkerSettings {
     mistThresholdPct: 45,
     refillHumidifierBelowL: 2.0,
     emptyDehumidifierAbovePct: 75,
+    refillReservoirBelowPct: 35,
+    reservoirChangeDays: 14,
     autoHarvestCrops: role === 'harvester' || role === 'caretaker',
     workCadenceMinutes: 5
   };
@@ -307,6 +363,9 @@ export function ensurePersonNpcFields(person: PersonItem): PersonItem {
     cleanAction.startsWith('Watering') ||
     cleanAction.startsWith('Misting') ||
     cleanAction.startsWith('Refilling') ||
+    cleanAction.startsWith('Mixing') ||
+    cleanAction.startsWith('Topping') ||
+    cleanAction.startsWith('Dosing') ||
     cleanAction.startsWith('Feeding') ||
     cleanAction.startsWith('Harvest') ||
     cleanAction.startsWith('Serviced')
@@ -404,6 +463,10 @@ export function simulateNpcRoomTick(
     return list;
   };
 
+  // Plants a nutrient reservoir waters and feeds: workers leave them to it
+  const isReservoirFed = (plant: PlantItem) =>
+    !!getFeedingReservoir(plant, [...nextRoomItems, ...nextTents.flatMap(t => t.items)]);
+
   // Helper to find all mushrooms across room and tents
   const getAllMushrooms = () => {
     const list: Array<{ mushroom: MushroomItem; tent?: Tent; isRoomLevel: boolean }> = [];
@@ -478,6 +541,9 @@ export function simulateNpcRoomTick(
         person.currentAction.startsWith('Emptying') ||
         person.currentAction.startsWith('Watering') ||
         person.currentAction.startsWith('Refilling') ||
+        person.currentAction.startsWith('Mixing') ||
+        person.currentAction.startsWith('Topping') ||
+        person.currentAction.startsWith('Dosing') ||
         person.currentAction.startsWith('Misting') ||
         person.currentAction.startsWith('Feeding') ||
         person.currentAction.startsWith('Harvest') ||
@@ -497,7 +563,7 @@ export function simulateNpcRoomTick(
     // 1. TEND DRY PLANTS (Grower, Caretaker)
     if (!acted && (role === 'grower' || role === 'caretaker')) {
       const waterThreshold = settings.waterThresholdPct ?? 45;
-      const thirsty = getAllPlants().find(p => !p.plant.isHarvested && (p.plant.soilMoisture ?? 50) < waterThreshold);
+      const thirsty = getAllPlants().find(p => !p.plant.isHarvested && (p.plant.soilMoisture ?? 50) < waterThreshold && !isReservoirFed(p.plant));
       if (thirsty) {
         const p = thirsty.plant;
         const prevMoisture = Math.round(p.soilMoisture ?? 0);
@@ -537,7 +603,7 @@ export function simulateNpcRoomTick(
       }
 
       // Check low nutrients
-      const hungry = getAllPlants().find(p => !p.plant.isHarvested && p.plant.nutrientLevel === 'low');
+      const hungry = getAllPlants().find(p => !p.plant.isHarvested && p.plant.nutrientLevel === 'low' && !isReservoirFed(p.plant));
       if (hungry) {
         const p = hungry.plant;
         p.nutrientLevel = 'balanced';
@@ -659,6 +725,43 @@ export function simulateNpcRoomTick(
           currentAction: `Refilling ${eq.name} (${loc})`,
           currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: eq.id,
+          actionLog,
+          inventory
+        };
+      }
+
+      // Nutrient reservoirs: change the solution when it's due, top off + dose when low, dose when it drifts
+      const reservoirJob = getAllEquipment()
+        .filter(e => isNutrientReservoir(e.eq))
+        .map(e => ({ ...e, need: getReservoirServiceNeed(e.eq, simTime, settings) }))
+        .find(e => e.need !== null);
+      if (reservoirJob && reservoirJob.need) {
+        const loc = reservoirJob.tent ? reservoirJob.tent.name : room.name;
+        const done = serviceReservoir(reservoirJob.eq, reservoirJob.need, simTime, (reservoirJob.tent ?? room).climate.tempF);
+        // Updated in place, like the other jobs: the room's item lists are rebuilt around the workers
+        Object.assign(reservoirJob.eq, done.eq);
+        addLog({
+          actionType: 'service_reservoir',
+          title: done.title,
+          details: `${done.details} (${loc})`,
+          targetName: reservoirJob.eq.name,
+          targetId: reservoirJob.eq.id,
+          locationName: loc,
+          result: 'success'
+        });
+        journalEvents.push({
+          type: 'action',
+          category: 'automation',
+          title: `${person.name}: ${done.title}`,
+          message: `${done.details} (${loc})`,
+          author: person.name
+        });
+        acted = true;
+        return {
+          ...person,
+          currentAction: `${done.action} (${loc})`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
+          currentActionTargetId: reservoirJob.eq.id,
           actionLog,
           inventory
         };
@@ -979,7 +1082,10 @@ export function executeNpcDirective(
 
   if (directive === 'water_all') {
     let wateredCount = 0;
+    const allItems = [...nextRoomItems, ...nextTents.flatMap(t => t.items)];
     const waterPlant = (plant: PlantItem) => {
+      // Plants on a nutrient reservoir are watered by its pump
+      if (getFeedingReservoir(plant, allItems)) return;
       if (!plant.isHarvested && (plant.soilMoisture || 0) < 80) {
         plant.soilMoisture = 85;
         plant.lastWateredTime = simTime;
@@ -1039,6 +1145,18 @@ export function executeNpcDirective(
 
   if (directive === 'service_equipment') {
     let servicedCount = 0;
+    const settings = p.workerSettings || getDefaultWorkerSettings(p.role);
+    const serviceReservoirIn = (items: Item[], ambientTempF: number) => {
+      items.forEach((item, i) => {
+        if (!isNutrientReservoir(item)) return;
+        const need = getReservoirServiceNeed(item, simTime, settings) ?? (getNutrientLevelL(item) < getNutrientCapacityL(item) - 0.05 ? 'top_off' : null);
+        if (!need) return;
+        items[i] = serviceReservoir(item, need, simTime, ambientTempF).eq;
+        servicedCount++;
+      });
+    };
+    serviceReservoirIn(nextRoomItems, room.climate.tempF);
+    nextTents.forEach(t => serviceReservoirIn(t.items, t.climate.tempF));
     const serviceEq = (eq: EquipmentItem) => {
       if (eq.type === 'humidifier' && eq.reservoirLevelL !== undefined) {
         eq.reservoirLevelL = eq.reservoirCapacityL || 4.5;
@@ -1073,7 +1191,7 @@ export function executeNpcDirective(
         items: nextRoomItems,
         tents: nextTents
       },
-      message: `${p.name} serviced ${servicedCount} humidifiers and dehumidifiers.`
+      message: `${p.name} serviced ${servicedCount} humidifiers, dehumidifiers and nutrient reservoirs.`
     };
   }
 

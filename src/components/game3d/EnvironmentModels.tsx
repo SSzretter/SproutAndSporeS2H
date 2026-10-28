@@ -260,12 +260,14 @@ export function TentModel({
   origin,
   highlighted,
   onClick,
+  onRightClick,
   onHover
 }: {
   tent: Tent;
   origin: Vec3;
   highlighted: boolean;
   onClick: (tent: Tent) => void;
+  onRightClick: (tent: Tent) => void;
   onHover: (tent: Tent | null, e?: ThreeEvent<PointerEvent>) => void;
 }) {
   const { length: L, width: W, height: H } = tent.dimensions;
@@ -285,6 +287,13 @@ export function TentModel({
       if (e.delta > 5 || pointerHitsItem(e)) return;
       e.stopPropagation();
       onClick(tent);
+    },
+    // Right click (not a camera orbit drag) opens the tent's properties
+    onContextMenu: (e: ThreeEvent<MouseEvent>) => {
+      e.nativeEvent.preventDefault();
+      if (e.delta > 5 || pointerHitsItem(e)) return;
+      e.stopPropagation();
+      onRightClick(tent);
     },
     onPointerMove: (e: ThreeEvent<PointerEvent>) => {
       if (pointerHitsItem(e)) return;

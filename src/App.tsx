@@ -16,7 +16,7 @@ import {
 import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
 import { simulateNpcRoomTick } from './utils/npcWorker';
-import { syncItemGeometry, placeItemInFreeSpace } from './utils/spatial';
+import { syncItemGeometry, placeItemInFreeSpace, syncRoomRacks, placeNewRoomContents } from './utils/spatial';
 import { migrateEquipmentLinks } from './utils/equipmentLinks';
 import { getPlantStageStartSize } from './utils/plantLifecycle';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
@@ -48,6 +48,7 @@ export default function App() {
     setIsAddRoomModalOpen(true);
   }, []);
   const [addModalTentId, setAddModalTentId] = useState<string | null>(null);
+  const [addModalRackId, setAddModalRackId] = useState<string | null>(null); // Sow straight into this grow rack
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'floorplan'>('dashboard');
@@ -434,7 +435,7 @@ export default function App() {
             items: rm.items.map(i => i.id === updatedItem.id ? updatedItem : i)
           };
         }
-      });
+      }).map(rm => (rm.id === targetRoomId ? syncRoomRacks(rm) : rm)); // moving / reshelving a rack carries its plants
 
       const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
 
@@ -463,6 +464,9 @@ export default function App() {
         if (found) targetRoomId = found.id;
       }
 
+      // Removing a grow rack also removes the plants sown in its trays
+      const keep = (i: Item) => i.id !== itemId && !(i.category === 'plant' && i.rackSlot?.rackId === itemId);
+
       const updatedRooms = currentRooms.map(rm => {
         if (rm.id !== targetRoomId) return rm;
 
@@ -473,7 +477,7 @@ export default function App() {
               if (t.id === parentTentId) {
                 return {
                   ...t,
-                  items: t.items.filter(i => i.id !== itemId)
+                  items: t.items.filter(keep)
                 };
               }
               return t;
@@ -482,7 +486,7 @@ export default function App() {
         } else {
           return {
             ...rm,
-            items: rm.items.filter(i => i.id !== itemId)
+            items: rm.items.filter(keep)
           };
         }
       }).map(rm => (rm.id === targetRoomId ? migrateEquipmentLinks(rm) : rm)); // re-home heat mats that were attached to it
@@ -571,9 +575,10 @@ export default function App() {
     });
   }, []);
 
-  // Add Item (Plant, Mushroom, Equipment, Person, or Pet)
-  const handleAddItem = useCallback((addedItem: Item, tentId?: string | null) => {
-    const sizedItem = syncItemGeometry(addedItem);
+  // Add Items (Plant, Mushroom, Equipment, Person, or Pet). Several at once when sowing a rack's trays.
+  const handleAddItems = useCallback((addedItems: Item[], tentId?: string | null) => {
+    if (addedItems.length === 0) return;
+    const sizedItems = addedItems.map(syncItemGeometry);
     setState(prev => {
       const activeRId = prev.activeRoomId || prev.room.id;
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
@@ -590,7 +595,8 @@ export default function App() {
       // Put the new item in open space instead of on top of what's already there
       const targetRoom = currentRooms.find(r => r.id === targetRoomId) || currentRooms[0];
       const targetTent = tentId ? targetRoom.tents.find(t => t.id === tentId) : undefined;
-      const newItem = placeItemInFreeSpace(sizedItem, targetRoom, targetTent);
+      const newItems = sizedItems.map(item => placeItemInFreeSpace(item, targetRoom, targetTent));
+      const newItem = newItems[0];
 
       let destinationName = 'room';
 
@@ -605,7 +611,7 @@ export default function App() {
                 destinationName = t.name;
                 return {
                   ...t,
-                  items: [...t.items, newItem]
+                  items: [...t.items, ...newItems]
                 };
               }
               return t;
@@ -615,10 +621,10 @@ export default function App() {
           destinationName = r.name;
           return {
             ...r,
-            items: [...r.items, newItem]
+            items: [...r.items, ...newItems]
           };
         }
-      });
+      }).map(r => (r.id === targetRoomId ? syncRoomRacks(r) : r)); // seat sown plants in their rack cells
 
       const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
 
@@ -635,8 +641,10 @@ export default function App() {
             id: `j-${Date.now()}`,
             time: prev.simTime,
             type: 'info',
-            title: `Item Added: ${newItem.name}`,
-            message: `${newItem.name} introduced into ${destinationName}.`
+            title: newItems.length > 1 ? `Sowed ${newItems.length} × ${newItem.name.replace(/ \(.*\)$/, '')}` : `Item Added: ${newItem.name}`,
+            message: newItems.length > 1
+              ? `${newItems.length} plants sown into rack trays in ${destinationName}.`
+              : `${newItem.name} introduced into ${destinationName}.`
           }
         ]
       };
@@ -645,13 +653,16 @@ export default function App() {
     });
   }, []);
 
+  const handleAddItem = useCallback((addedItem: Item, tentId?: string | null) => handleAddItems([addedItem], tentId), [handleAddItems]);
+
   // Add Room
   const handleAddRoom = useCallback((addedRoom: Room) => {
-    const rawNewRoom: Room = {
+    // Starter tents and gear come without positions: lay them out (lights up top, not on the floor)
+    const rawNewRoom: Room = placeNewRoomContents({
       ...addedRoom,
       items: addedRoom.items.map(syncItemGeometry),
       tents: addedRoom.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
-    };
+    });
     setState(prev => {
       const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
       const activeR = currentRooms.find(r => r.id === (prev.activeRoomId || prev.room.id)) || currentRooms[0];
@@ -972,8 +983,9 @@ export default function App() {
               broadcastSimulationState(next);
               return next;
             })}
-            onOpenAddItem={(tentId) => {
+            onOpenAddItem={(tentId, rackId) => {
               setAddModalTentId(tentId || null);
+              setAddModalRackId(rackId || null);
               setIsAddModalOpen(true);
             }}
             onOpenAddRoom={handleOpenAddRoom}
@@ -1041,6 +1053,7 @@ export default function App() {
               onDeleteRoom={handleDeleteRoom}
               onOpenAddTent={() => {
                 setAddModalTentId(null);
+                setAddModalRackId(null);
                 setIsAddModalOpen(true);
               }}
               onOpenLocationModal={() => setIsLocationModalOpen(true)}
@@ -1116,8 +1129,9 @@ export default function App() {
               onDeleteRoom={handleDeleteRoom}
               onOpenAddRoom={handleOpenAddRoom}
               onOpenLocationModal={() => setIsLocationModalOpen(true)}
-              onOpenAddItem={(tentId) => {
+              onOpenAddItem={(tentId, rackId) => {
                 setAddModalTentId(tentId || null);
+                setAddModalRackId(rackId || null);
                 setIsAddModalOpen(true);
               }}
               onHarvestPlant={handleHarvestPlant}
@@ -1142,11 +1156,13 @@ export default function App() {
       <AddItemModal
         room={activeRoom}
         targetTentId={addModalTentId}
+        targetRackId={addModalRackId}
         isOpen={isAddModalOpen}
         simTime={state.simTime}
         onClose={() => setIsAddModalOpen(false)}
         onAddTent={handleAddTent}
         onAddItem={handleAddItem}
+        onAddItems={handleAddItems}
       />
 
       {/* Add Room Modal */}

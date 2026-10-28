@@ -2,6 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { EquipmentItem, Room, Tent } from '../../types/sim';
 import { tentWorldOrigin, itemWorldPosition } from './coords';
+import { getRackTiers, getTierShelfHeightFt, isGrowRack, TRAY_1020 } from '../../utils/growRacks';
 
 const MIST_HOSE_RADIUS_FT = 0.07; // ~1.7" flexible mist hose
 const CO2_TUBE_RADIUS_FT = 0.02; // ~1/4" CO2 injection tubing
@@ -106,5 +107,66 @@ export function ExhaustDuctModel({ eq, room, tent }: { eq: EquipmentItem; room: 
         <meshStandardMaterial color="#e4e4e7" roughness={0.6} />
       </mesh>
     </group>
+  );
+}
+
+const FEED_LINE_RADIUS_FT = 0.03; // ~3/4" vinyl feed tubing
+
+/** One feed line: up out of the tank lid, arcing over to where it delivers. */
+function FeedLine({ from, to }: { from: [number, number, number]; to: [number, number, number] }) {
+  const [ax, ay, az] = from;
+  const [bx, by, bz] = to;
+  const geometry = useMemo(() => {
+    const start = new THREE.Vector3(ax, ay, az);
+    const end = new THREE.Vector3(bx, by, bz);
+    const span = start.distanceTo(end);
+    const lift = new THREE.Vector3(ax, ay + 0.3, az);
+    const mid = start.clone().lerp(end, 0.5);
+    mid.y = Math.max(ay, by) + Math.min(1, 0.25 + span * 0.12);
+    const curve = new THREE.CatmullRomCurve3([start, lift, mid, end]);
+    return new THREE.TubeGeometry(curve, Math.max(20, Math.round(span * 10)), FEED_LINE_RADIUS_FT, 6, false);
+  }, [ax, ay, az, bx, by, bz]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <mesh geometry={geometry} raycast={() => null}>
+      <meshStandardMaterial color="#38bdf8" roughness={0.35} transparent opacity={0.8} />
+    </mesh>
+  );
+}
+
+/**
+ * Feed lines from a nutrient reservoir to what it feeds, anywhere in the room: one line per fed rack
+ * shelf (to the shelf's tray at the end of the rack nearest the tank) and one per fed plant (to its pot rim).
+ */
+export function FeedLinesModel({ eq, room, tent }: { eq: EquipmentItem; room: Room; tent?: Tent }) {
+  // Targets can stand anywhere in the room: on its floor or in any tent
+  const located = [
+    ...room.items.map(item => ({ item, host: undefined as Tent | undefined })),
+    ...room.tents.flatMap(t => t.items.map(item => ({ item, host: t as Tent | undefined })))
+  ];
+  const [rx, ry, rz] = itemWorldPosition(eq, room, tent);
+  const from: [number, number, number] = [rx, ry + eq.dimensions.height, rz];
+  const ends: Array<{ key: string; to: [number, number, number] }> = [];
+  for (const target of eq.feedTargets ?? []) {
+    const found = located.find(l => l.item.id === target.id);
+    if (!found) continue;
+    const { item, host } = found;
+    const [x, y, z] = itemWorldPosition(item, room, host);
+    if (isGrowRack(item)) {
+      const shelves = getRackTiers(item).length;
+      const endX = rx < x ? x - item.dimensions.length / 2 + 0.15 : x + item.dimensions.length / 2 - 0.15;
+      for (let tier = 0; tier < shelves; tier++) {
+        if (target.tier !== undefined && target.tier !== tier) continue;
+        ends.push({ key: `${item.id}-${tier}`, to: [endX, y + getTierShelfHeightFt(item, tier) + TRAY_1020.heightFt * 0.8, z] });
+      }
+    } else if (item.category === 'plant') {
+      const potH = item.containerDimensions?.height ?? 0.5;
+      ends.push({ key: item.id, to: [x, y + potH, z] });
+    }
+  }
+  return (
+    <>
+      {ends.map(e => <FeedLine key={e.key} from={from} to={e.to} />)}
+    </>
   );
 }

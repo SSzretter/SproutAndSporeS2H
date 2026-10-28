@@ -16,7 +16,11 @@ export const PlantSoilCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant
               <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
                 <span>Soil &amp; Hydroponic Substrate Dynamics</span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-emerald-300">
-                  {plant.containerVolumeGallons || 5} Gal · {(plant.containerType || 'fabric_pot').replace(/_/g, ' ')}
+                  {(() => {
+                    // Rack cells and small pots read better in cubic inches
+                    const gal = plant.containerVolumeGallons || 5;
+                    return gal < 0.25 ? `${(gal * 231).toFixed(1)} in³` : `${gal} Gal`;
+                  })()} · {(plant.containerType || 'fabric_pot').replace(/_/g, ' ')}
                 </span>
               </h4>
               <p className="text-[11px] text-zinc-400">

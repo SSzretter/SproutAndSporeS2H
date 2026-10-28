@@ -11,6 +11,8 @@ import { PortableAcCard } from './PortableAcCard';
 import { HvacRegisterCard } from './HvacRegisterCard';
 import { InlineFanDuctCard } from './InlineFanDuctCard';
 import { HeatMatCard } from './HeatMatCard';
+import { GrowRackCard } from './GrowRackCard';
+import { NutrientReservoirCard } from './NutrientReservoirCard';
 import type { ItemSectionProps } from './types';
 
 export const EquipmentCard: React.FC<ItemSectionProps> = (props) => {
@@ -20,6 +22,8 @@ export const EquipmentCard: React.FC<ItemSectionProps> = (props) => {
     <>
       {currentItem.category === 'equipment' && (() => {
         const eq = currentItem as EquipmentItem;
+        // A rack is passive shelving: no power or controller, just its shelves and trays
+        if (eq.type === 'grow_rack') return <GrowRackCard {...props} eq={eq} />;
         const currentMode = eq.controlMode || 'auto';
         const triggers = eq.autoTriggers || {};
 
@@ -122,6 +126,8 @@ export const EquipmentCard: React.FC<ItemSectionProps> = (props) => {
             <InlineFanDuctCard {...props} eq={eq} />
 
             <HeatMatCard {...props} eq={eq} />
+
+            <NutrientReservoirCard {...props} eq={eq} />
           </div>
         );
       })()}

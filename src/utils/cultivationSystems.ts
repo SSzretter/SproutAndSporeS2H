@@ -6,7 +6,7 @@ import { CultivationSystemType, ContainerType, GrowingMedium } from '../types/si
  */
 export const SYSTEM_COMPATIBILITY: Record<CultivationSystemType, { containers: ContainerType[]; media: GrowingMedium[] }> = {
   soil_container: {
-    containers: ['fabric_pot', 'plastic_nursery_pot', 'terracotta_pot'],
+    containers: ['fabric_pot', 'plastic_nursery_pot', 'terracotta_pot', 'tray_cell', 'tray_pot'],
     media: ['living_organic_soil', 'coco_perlite', 'peat_potting_mix']
   },
   raised_bed: {
@@ -21,9 +21,10 @@ export const SYSTEM_COMPATIBILITY: Record<CultivationSystemType, { containers: C
     containers: ['dwc_reservoir_bucket'],
     media: ['hydroton_clay_pebbles', 'rockwool_cubes']
   },
-  // Plants sit in the flood tray directly or in plastic pots of inert media on the table
+  // Plants sit in the flood tray directly, in plastic pots of inert media on the table, or in
+  // 1020 tray cells / pots on a grow rack whose trays flood and drain
   ebb_and_flow: {
-    containers: ['flood_drain_tray', 'plastic_nursery_pot'],
+    containers: ['flood_drain_tray', 'plastic_nursery_pot', 'tray_cell', 'tray_pot'],
     media: ['hydroton_clay_pebbles', 'rockwool_cubes', 'coco_perlite']
   },
   // Drippers feed pots or slabs; runoff drains to a tray
@@ -37,7 +38,7 @@ export const SYSTEM_COMPATIBILITY: Record<CultivationSystemType, { containers: C
   },
   // A pot over a reservoir, fed through a wick: needs a medium that wicks well
   wick_system: {
-    containers: ['plastic_nursery_pot', 'terracotta_pot'],
+    containers: ['plastic_nursery_pot', 'terracotta_pot', 'tray_cell', 'tray_pot'],
     media: ['coco_perlite', 'peat_potting_mix']
   }
 };

@@ -6,6 +6,8 @@ import { NpcDossier } from '../NpcDossier';
 import { PlantCard } from './PlantCard';
 import { MushroomCard } from './MushroomCard';
 import { EquipmentCard } from './EquipmentCard';
+import { describeRackSlot, isGrowRack } from '../../utils/growRacks';
+import { placeItemInFreeSpace, syncItemGeometry } from '../../utils/spatial';
 import type { ItemSectionProps } from './types';
 
 export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
@@ -312,6 +314,38 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                 <span className="text-zinc-400">Category:</span>
                 <span className="font-mono capitalize text-zinc-200">{currentItem.category}</span>
               </div>
+              {currentItem.category === 'plant' && currentItem.rackSlot && (() => {
+                const plant = currentItem as PlantItem;
+                const containerItems = currentTent ? currentTent.items : room.items;
+                const rack = containerItems.find(i => i.id === plant.rackSlot!.rackId);
+                if (!rack || !isGrowRack(rack)) return null;
+                return (
+                  <div className="py-1 border-b border-zinc-850 space-y-1.5">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">Grow Rack:</span>
+                      <button
+                        type="button"
+                        onClick={() => props.onSelectItem(rack.id, selectedParentTentId)}
+                        className="text-right text-emerald-400 hover:text-emerald-300"
+                      >
+                        {describeRackSlot(rack, plant.rackSlot!)}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Pot up: lift it out of its cell into a 1-gal pot on the floor, in open space
+                        const { rackSlot: _cell, containerDimensions: _cellSize, position: _pos, ...rest } = plant;
+                        const potted: PlantItem = { ...rest, containerType: 'plastic_nursery_pot', containerVolumeGallons: 1 };
+                        onUpdateItem(placeItemInFreeSpace(syncItemGeometry(potted), room, currentTent), selectedParentTentId);
+                      }}
+                      className="w-full px-2 py-1 rounded-lg bg-emerald-800/70 hover:bg-emerald-700 text-emerald-100 text-[11px] font-semibold"
+                    >
+                      Pot Up into a 1-gal Pot
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -477,6 +511,10 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
             </h3>
             <p className="text-sm text-zinc-400 mt-2">
               Are you sure you want to remove this {currentItem.category} from {parentName}?
+              {isGrowRack(currentItem) && (() => {
+                const sown = (currentTent ? currentTent.items : room.items).filter(i => i.category === 'plant' && i.rackSlot?.rackId === currentItem.id).length;
+                return sown > 0 ? ` The ${sown} plant${sown === 1 ? '' : 's'} in its trays will be removed with it.` : null;
+              })()}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button

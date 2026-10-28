@@ -1,5 +1,6 @@
 import { Climate, Item, MushroomItem, PlantItem } from '../types/sim';
 import { DEFAULT_STAGE_REQUIREMENTS, evaluatePlantStageSuitability } from './plantLifecycle';
+import { getFeedingReservoir, isNutrientReservoirEmpty, LOW_ROOT_OXYGEN_PCT, RESERVOIR_FED_SYSTEMS } from './nutrientReservoirs';
 
 /**
  * Problems a grower should notice on a plant or mushroom, most severe first. Used for the 3D
@@ -127,8 +128,22 @@ function mushroomIssues(shroom: MushroomItem, climate: Climate): CropIssue[] {
  * Issues for a crop in its container (a tent's items, or a room / garden's floor items):
  * the container's climate and light schedule are what the crop experiences.
  */
-export function getCropIssues(item: Item, climate: Climate, containerItems: Item[], outdoor = false): CropIssue[] {
-  const issues = item.category === 'plant' ? plantIssues(item, climate, getPhotoperiodHours(containerItems, outdoor))
+/** Hydro plants that are watered from a reservoir: is one connected, and does it have solution? */
+function feedIssues(plant: PlantItem, roomItems: Item[]): CropIssue[] {
+  if (plant.isHarvested || !plant.systemType || !RESERVOIR_FED_SYSTEMS.includes(plant.systemType)) return [];
+  const reservoir = getFeedingReservoir(plant, roomItems);
+  if (!reservoir) return [{ severity: 'warning', label: 'No reservoir (connect a nutrient reservoir feed line)' }];
+  if (isNutrientReservoirEmpty(reservoir)) return [{ severity: 'critical', label: `Reservoir empty (${reservoir.name})` }];
+  if (!reservoir.powerOn) return [{ severity: 'warning', label: `Pump off (${reservoir.name})` }];
+  if ((plant.aerationOxygenPct ?? 100) < LOW_ROOT_OXYGEN_PCT) {
+    return [{ severity: 'warning', label: `Low root oxygen (${Math.round(plant.aerationOxygenPct ?? 0)}%: add an air stone or cool the water)` }];
+  }
+  return [];
+}
+
+/** roomItems: everything in the room (floor and tents), where a feeding reservoir may stand. */
+export function getCropIssues(item: Item, climate: Climate, containerItems: Item[], outdoor = false, roomItems: Item[] = containerItems): CropIssue[] {
+  const issues = item.category === 'plant' ? [...plantIssues(item, climate, getPhotoperiodHours(containerItems, outdoor)), ...feedIssues(item, roomItems)]
     : item.category === 'mushroom' ? mushroomIssues(item, climate)
     : [];
   return issues.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1));

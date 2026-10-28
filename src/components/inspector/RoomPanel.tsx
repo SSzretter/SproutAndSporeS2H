@@ -3,6 +3,7 @@ import { Home, Sun, Check, Trash2, Edit3, Plus, Sliders, ChevronRight, Sparkles,
 import { Room, Tent, Item, Dimensions } from '../../types/sim';
 import { VpdBadge } from '../VpdBadge';
 import { RoomItemsSection } from './RoomItemsSection';
+import { isRackedPlant } from '../../utils/growRacks';
 import type { InspectorContext } from './types';
 
 export const RoomPanel: React.FC<InspectorContext> = (props) => {
@@ -11,7 +12,8 @@ export const RoomPanel: React.FC<InspectorContext> = (props) => {
     
   const allRoomItems = [
     ...room.tents.map(t => ({ ...t, kind: 'tent' as const })),
-    ...room.items.map(i => ({ ...i, kind: 'item' as const }))
+    // Plants in grow rack trays are listed in their rack's tray map instead
+    ...room.items.filter(i => !isRackedPlant(i)).map(i => ({ ...i, kind: 'item' as const }))
   ];
 
   const filteredItems = allRoomItems.filter(item => {

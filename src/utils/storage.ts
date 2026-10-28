@@ -1,6 +1,6 @@
 import { SimulationState, Room, Tent, PlantItem, MushroomItem, EquipmentItem, OutdoorLocation, Position3D, Item } from '../types/sim';
 import { simulateOutsideConditions, calculateVPD } from './physics';
-import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry } from './spatial';
+import { getDefaultSpatialPosition, getDefaultItemDimensions, syncItemGeometry, syncRoomRacks } from './spatial';
 import { migrateEquipmentLinks } from './equipmentLinks';
 import { createHvacRegister, migrateRoomClimateControl } from './roomThermal';
 import { ensurePersonNpcFields } from './npcWorker';
@@ -676,7 +676,8 @@ export function loadSimulation(): SimulationState {
     }));
 
     // Backfill humidifier reservoir fields and drop dangling hose links (tent deleted / unit moved into a tent)
-    state.rooms = state.rooms.map(rm => migrateEquipmentLinks(migrateRoomClimateControl(rm)));
+    // and re-seat plants in their grow rack cells (unlinking any whose rack or slot is gone)
+    state.rooms = state.rooms.map(rm => syncRoomRacks(migrateEquipmentLinks(migrateRoomClimateControl(rm))));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     // Ensure backwards compatibility for harvest records

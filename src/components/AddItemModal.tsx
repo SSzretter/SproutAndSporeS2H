@@ -46,7 +46,8 @@ import {
   CultivationSystemType,
   ContainerType,
   GrowingMedium,
-  NutrientProgram
+  NutrientProgram,
+  TrayInsertType
 } from '../types/sim';
 import { ROLE_METADATA, getDefaultNpcInventory, getDefaultWorkerSettings } from '../utils/npcWorker';
 import { calculateVPD } from '../utils/physics';
@@ -59,25 +60,36 @@ import { getPortableAcBtu, DEFAULT_REGISTER_CFM } from '../utils/roomThermal';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
 import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
+import {
+  createRackTiers, getFreeRackSlots, getInsertCellCount, getInsertCellDimensions, getInsertCellVolumeGallons, getRackCapacity,
+  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, isGrowRack, TRAY_INSERTS, TRAY_INSERT_TYPES
+} from '../utils/growRacks';
+import {
+  DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getReservoirDimensions, NUTRIENT_RESERVOIR_PRESETS, RESERVOIR_FED_SYSTEMS
+} from '../utils/nutrientReservoirs';
 
 interface AddItemModalProps {
   room: Room;
   targetTentId?: string | null;
+  targetRackId?: string | null; // Open on the Plant tab, sowing into this grow rack
   isOpen: boolean;
   simTime?: number;
   onClose: () => void;
   onAddTent: (tent: Tent) => void;
   onAddItem: (item: Item, tentId?: string | null) => void;
+  onAddItems?: (items: Item[], tentId?: string | null) => void;
 }
 
 export const AddItemModal: React.FC<AddItemModalProps> = ({
   room,
   targetTentId,
+  targetRackId,
   isOpen,
   simTime,
   onClose,
   onAddTent,
   onAddItem,
+  onAddItems,
 }) => {
   const [activeTab, setActiveTab] = useState<'tent' | 'plant' | 'mushroom' | 'equipment' | 'person' | 'pet'>(
     targetTentId ? 'plant' : 'tent'
@@ -94,6 +106,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       setActiveTab(prev => prev === 'tent' ? 'plant' : prev);
     }
   }, [targetTentId, isOpen]);
+
+  // Sowing into a grow rack: which rack, shelf ('all' = every shelf), tray ('all' = every tray), how many
+  const [plantRackId, setPlantRackId] = useState('');
+  const [plantRackTier, setPlantRackTier] = useState<number | 'all'>('all');
+  const [plantRackTray, setPlantRackTray] = useState<number | 'all'>('all');
+  const [plantSowCount, setPlantSowCount] = useState<number | null>(null); // null = fill every free cell
+
+  // Opened from a rack's "Sow Seeds": go straight to planting into it
+  React.useEffect(() => {
+    if (!isOpen || !targetRackId) return;
+    setActiveTab('plant');
+    setPlantRackId(targetRackId);
+    setPlantRackTier('all');
+    setPlantRackTray('all');
+    setPlantSowCount(null);
+  }, [isOpen, targetRackId]);
 
   // Fall back if the chosen tent no longer exists
   React.useEffect(() => {
@@ -161,6 +189,13 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [eqDuctSize, setEqDuctSize] = useState<InlineFanDuctSize>(6); // Inline fan duct / port diameter
   const [eqExhaustTo, setEqExhaustTo] = useState<'room' | 'outdoors'>('room'); // Where an exhaust fan's duct discharges
   const [eqMatTargetId, setEqMatTargetId] = useState(''); // Heat mat: tent floor tray or the item it sits under / wraps
+  const [rackTierCount, setRackTierCount] = useState(GROW_RACK_PRESETS[0].tiers); // Grow rack shelves
+  const [rackTraysPerTier, setRackTraysPerTier] = useState(GROW_RACK_PRESETS[0].traysPerTier);
+  const [rackSpacingFt, setRackSpacingFt] = useState(GROW_RACK_PRESETS[0].tierSpacingFt);
+  const [rackInsert, setRackInsert] = useState<TrayInsertType>(GROW_RACK_PRESETS[0].insert);
+  const [resLiters, setResLiters] = useState(NUTRIENT_RESERVOIR_PRESETS[1].liters); // Nutrient reservoir tank size
+  const [resPumpMode, setResPumpMode] = useState<'flood' | 'continuous'>('flood');
+  const [resFeedIds, setResFeedIds] = useState<string[] | null>(null); // null = every rack and unfed hydro plant here
 
   // Person Form State
   const [personName, setPersonName] = useState('Grower Alex');
@@ -359,6 +394,39 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       scovilleHeatUnits: isPepper && pepperData ? pepperData.scovilleHeatUnits : undefined,
       traits: { ...seedTraits, germinationOutcome: plantStage === 'germination' || plantStage === 'rooting' ? 'in_progress' : 'germinated' },
     };
+
+    // Sown into a rack: one plant per free cell, each its own seed with its own genetics
+    if (sowRack && sowSlots.length > 0) {
+      const germinationOutcome = plantStage === 'germination' || plantStage === 'rooting' ? 'in_progress' : 'germinated';
+      const stamp = Date.now();
+      const sown: PlantItem[] = sowSlots.map((slot, i) => {
+        const insert = getRackTiers(sowRack)[slot.tier].insert;
+        const cellGallons = getInsertCellVolumeGallons(insert);
+        const size = getPlantTargetSize(
+          { species: plantSpecies, stage: plantStage, propagationType, stageProgress: initialProgress } as PlantItem,
+          getContainerSizeFactor(cellGallons)
+        );
+        return {
+          ...newPlant,
+          id: `plant-${stamp}-${i}`,
+          name: `${newPlant.name} (${getRackSlotCode(sowRack, slot)})`,
+          rackSlot: slot,
+          containerType: TRAY_INSERTS[insert].kind === 'pot' ? 'tray_pot' : 'tray_cell',
+          containerVolumeGallons: cellGallons,
+          containerDimensions: getInsertCellDimensions(insert),
+          heightInches: parseFloat(size.heightInches.toFixed(1)),
+          canopyWidthInches: parseFloat(size.canopyWidthInches.toFixed(1)),
+          keyDates: { ...keyDates },
+          traits: { ...(i === 0 ? seedTraits : generateSeedTraits(plantSpecies, plantStrain, propagationType, seedGrade)), germinationOutcome }
+        };
+      });
+      const tentId = selectedDestinationTentId === 'room' ? null : selectedDestinationTentId;
+      if (onAddItems) onAddItems(sown, tentId);
+      else sown.forEach(p => onAddItem(p, tentId));
+      onClose();
+      return;
+    }
+
     onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
     onClose();
   };
@@ -410,6 +478,28 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   ];
   const heatMatPlacement = heatMatOptions.some(o => o.id === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.id ?? '';
 
+  // What a new nutrient reservoir could feed anywhere in this room: racks (every shelf) and hydro plants
+  // not on a rack. By default it takes the ones in its own destination that nothing feeds yet.
+  const roomLocations = [{ id: 'room', name: `${room.name} floor`, items: room.items }, ...room.tents.map(t => ({ id: t.id, name: t.name, items: t.items }))];
+  const roomWideItems = roomLocations.flatMap(l => l.items);
+  const alreadyFed = (id: string) => roomWideItems.some(i => i.category === 'equipment' && i.type === 'nutrient_reservoir' && (i.feedTargets ?? []).some(t => t.id === id));
+  const reservoirFeedOptions = roomLocations.flatMap(l => [
+    ...l.items.filter(isGrowRack).map(r => ({ id: r.id, local: l.id === selectedDestinationTentId, label: `${r.name} (every shelf) · ${l.name}` })),
+    ...l.items
+      .filter((i): i is PlantItem => i.category === 'plant' && !i.rackSlot && !!i.systemType && RESERVOIR_FED_SYSTEMS.includes(i.systemType))
+      .map(p => ({ id: p.id, local: l.id === selectedDestinationTentId, label: `${p.name} (${(p.systemType || '').replace(/_/g, ' ')}) · ${l.name}` }))
+  ]);
+  const reservoirFeedIds = resFeedIds ?? reservoirFeedOptions.filter(o => o.local && !alreadyFed(o.id)).map(o => o.id);
+
+  // Grow racks in the chosen destination, and the free cells the plant form would sow into
+  const destinationRacks = destinationItems.filter(isGrowRack);
+  const sowRack = destinationRacks.find(r => r.id === plantRackId);
+  const sowTiers = sowRack ? getRackTiers(sowRack) : [];
+  const sowTier = plantRackTier !== 'all' && plantRackTier < sowTiers.length ? plantRackTier : undefined;
+  const sowTray = sowTier !== undefined && plantRackTray !== 'all' && plantRackTray < sowTiers[sowTier].trays ? plantRackTray : undefined;
+  const freeSowSlots = sowRack ? getFreeRackSlots(sowRack, destinationItems, sowTier, sowTray) : [];
+  const sowSlots = freeSowSlots.slice(0, plantSowCount === null ? freeSowSlots.length : Math.max(0, Math.min(freeSowSlots.length, plantSowCount)));
+
   // Portable A/Cs and supply registers condition the room itself, not a tent
   const roomOnlyEquipment = eqType === 'portable_ac' || eqType === 'hvac_register';
 
@@ -459,6 +549,30 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
     if (eqType === 'heat_mat' && heatMatPlacement) {
       newEq.attachedToId = heatMatPlacement;
+    }
+    if (eqType === 'nutrient_reservoir') {
+      newEq.setting = 100;
+      newEq.nutrientCapacityL = resLiters;
+      newEq.nutrientLevelL = resLiters;
+      newEq.nutrientEcPpm = DEFAULT_NUTRIENT_EC_PPM;
+      newEq.nutrientPh = DEFAULT_NUTRIENT_PH;
+      newEq.nutrientTargetEcPpm = DEFAULT_NUTRIENT_EC_PPM;
+      newEq.nutrientTargetPh = DEFAULT_NUTRIENT_PH;
+      newEq.pumpMode = resPumpMode;
+      newEq.floodsPerDay = 6;
+      newEq.floodMinutes = 15;
+      newEq.floodStartHour = 6;
+      newEq.feedTargets = reservoirFeedIds.filter(id => reservoirFeedOptions.some(o => o.id === id)).map(id => ({ id }));
+      newEq.lastSolutionChangeTime = simTime;
+      newEq.airStone = true;
+      newEq.dimensions = getReservoirDimensions(resLiters);
+    }
+    if (eqType === 'grow_rack') {
+      newEq.powerWatts = 0;
+      newEq.setting = 0;
+      newEq.rackTiers = createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert });
+      newEq.rackTierSpacingFt = rackSpacingFt;
+      newEq.dimensions = getRackDimensions(newEq);
     }
     // Tank / bucket capacity is an explicit property, sized to fit the unit's body
     if (eqType === 'humidifier') {
@@ -1337,6 +1451,126 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               )}
             </div>
 
+            {/* Grow rack sowing: without a rack here, point to where 1020 trays come from */}
+            {destinationRacks.length === 0 && (() => {
+              const racksElsewhere = [
+                ...(selectedDestinationTentId !== 'room' ? room.items.filter(isGrowRack).map(r => ({ rack: r, where: 'room', label: `${room.name} floor` })) : []),
+                ...room.tents.filter(t => t.id !== selectedDestinationTentId).flatMap(t => t.items.filter(isGrowRack).map(r => ({ rack: r, where: t.id, label: t.name })))
+              ];
+              return (
+                <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 p-3 space-y-2 text-xs">
+                  <label className="text-[11px] font-semibold text-zinc-400 block">Plant Into</label>
+                  <p className="text-[11px] text-zinc-400">
+                    Its own container (pot, bed, bucket...). To sow 1020 trays of cells or small pots, for ebb &amp; flow or seed starting, the destination needs a <span className="text-zinc-200 font-semibold">Grow Rack</span>.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {racksElsewhere.map(({ rack, where, label }) => (
+                      <button
+                        key={rack.id}
+                        type="button"
+                        onClick={() => { setSelectedDestinationTentId(where); setPlantRackId(rack.id); setPlantRackTier('all'); setPlantRackTray('all'); setPlantSowCount(null); }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-900/60 border border-emerald-700 text-emerald-200 hover:bg-emerald-800 text-[11px]"
+                      >
+                        Use {rack.name} in {label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => { setActiveTab('equipment'); setEqType('grow_rack'); setEqName(GROW_RACK_PRESETS[0].name); setEqWatts(0); }}
+                      className="px-2.5 py-1 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700 text-[11px]"
+                    >
+                      + Add a Grow Rack here
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+            {destinationRacks.length > 0 && (
+              <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 p-3 space-y-2 text-xs">
+                <label className="text-[11px] font-semibold text-zinc-400 block">Plant Into</label>
+                <select
+                  value={plantRackId}
+                  onChange={e => { setPlantRackId(e.target.value); setPlantRackTier('all'); setPlantRackTray('all'); setPlantSowCount(null); }}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="">Its own container (pot, bed, bucket...)</option>
+                  {destinationRacks.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}: {getFreeRackSlots(r, destinationItems).length} of {getRackCapacity(r)} cells free
+                    </option>
+                  ))}
+                </select>
+                {sowRack && (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelf</label>
+                        <select
+                          value={String(sowTier ?? 'all')}
+                          onChange={e => { setPlantRackTier(e.target.value === 'all' ? 'all' : Number(e.target.value)); setPlantRackTray('all'); }}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200"
+                        >
+                          <option value="all">Every shelf</option>
+                          {sowTiers.map((t, i) => (
+                            <option key={i} value={i}>Shelf {i + 1}: {TRAY_INSERTS[t.insert].label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tray</label>
+                        <select
+                          value={String(sowTray ?? 'all')}
+                          disabled={sowTier === undefined || sowTiers[sowTier].trays < 2}
+                          onChange={e => setPlantRackTray(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
+                        >
+                          <option value="all">Every tray</option>
+                          {sowTier !== undefined && Array.from({ length: sowTiers[sowTier].trays }, (_, i) => (
+                            <option key={i} value={i}>Tray {i + 1}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">How Many</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max={freeSowSlots.length}
+                          value={sowSlots.length}
+                          onChange={e => setPlantSowCount(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200"
+                        />
+                      </div>
+                    </div>
+                    {RESERVOIR_FED_SYSTEMS.includes(systemType) && !alreadyFed(sowRack.id) && (
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded-lg px-2 py-1.5">
+                        <span>No nutrient reservoir feeds this rack yet, so its trays won't flood.</span>
+                        <button
+                          type="button"
+                          onClick={() => { const preset = NUTRIENT_RESERVOIR_PRESETS[1]; setActiveTab('equipment'); setEqType('nutrient_reservoir'); setEqName(preset.name); setEqWatts(preset.pumpWatts); setResLiters(preset.liters); setResFeedIds(null); }}
+                          className="shrink-0 px-2 py-0.5 rounded bg-amber-800/70 hover:bg-amber-700 text-amber-50"
+                        >
+                          + Add Reservoir
+                        </button>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                      <span>
+                        {freeSowSlots.length === 0
+                          ? 'No free cells there.'
+                          : `Fills ${sowSlots.length} of ${freeSowSlots.length} free cells in order. Each seed gets its own genetics and plant record.`}
+                      </span>
+                      {plantSowCount !== null && freeSowSlots.length > 0 && (
+                        <button type="button" onClick={() => setPlantSowCount(null)} className="text-emerald-400 hover:text-emerald-300 shrink-0 ml-2">
+                          Fill all ({freeSowSlots.length})
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Cultivation System & Soil Dynamics Customizer */}
             <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 overflow-hidden">
               <button
@@ -1411,6 +1645,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   </div>
 
                   {/* Container & Volume */}
+                  {sowRack ? (
+                    <div className="p-2 bg-zinc-900/60 rounded-lg border border-zinc-800 text-[10px] text-zinc-400">
+                      Container comes from the rack: each plant goes in a cell or pot of its shelf's tray insert.
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Container Vessel</label>
@@ -1470,6 +1709,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       </div>
                     </div>
                   </div>
+                  )}
 
                   {/* Medium & Nutrient Program */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1517,7 +1757,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         : '💧 Hydroponic dynamic: Ideal pH 5.6 - 6.2 · Direct root uptake, rapid growth, requires EC monitoring.'}
                     </span>
                     <span className="font-mono text-emerald-400 shrink-0 ml-2">
-                      Vol: {containerVolume} gal
+                      {sowRack ? 'Vol: rack cell' : `Vol: ${containerVolume} gal`}
                     </span>
                   </div>
                 </div>
@@ -1533,9 +1773,12 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               </button>
               <button
                 onClick={handleCreatePlant}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white shadow-md shadow-emerald-950/40"
+                disabled={!!sowRack && sowSlots.length === 0}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white shadow-md shadow-emerald-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Add {propagationType === 'seed' ? 'Seed' : 'Cutting'} to {selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}
+                {sowRack
+                  ? `Sow ${sowSlots.length} ${propagationType === 'seed' ? 'Seed' : 'Cutting'}${sowSlots.length === 1 ? '' : 's'} into ${sowRack.name}`
+                  : `Add ${propagationType === 'seed' ? 'Seed' : 'Cutting'} to ${selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}`}
               </button>
             </div>
           </div>
@@ -1704,7 +1947,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   { type: 'co2_bag', label: 'CO₂ ExHale Bag' },
                   { type: 'oscillating_fan', label: 'Air Circulator' },
                   { type: 'portable_ac', label: 'Portable A/C' },
-                  { type: 'hvac_register', label: 'HVAC Register' }
+                  { type: 'hvac_register', label: 'HVAC Register' },
+                  { type: 'grow_rack', label: 'Grow Rack (1020s)' },
+                  { type: 'nutrient_reservoir', label: 'Nutrient Reservoir' }
                 ].map(opt => (
                   <button
                     key={opt.type}
@@ -1741,6 +1986,15 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       } else if (opt.type === 'hvac_register') {
                         setEqName('Ceiling Supply Register (Central HVAC)');
                         setEqWatts(0);
+                      } else if (opt.type === 'grow_rack') {
+                        setEqName(GROW_RACK_PRESETS[0].name);
+                        setEqWatts(0);
+                      } else if (opt.type === 'nutrient_reservoir') {
+                        const preset = NUTRIENT_RESERVOIR_PRESETS[1];
+                        setEqName(preset.name);
+                        setEqWatts(preset.pumpWatts);
+                        setResLiters(preset.liters);
+                        setResFeedIds(null);
                       } else {
                         setEqName('Ceramic Heater');
                         setEqWatts(500);
@@ -1768,8 +2022,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
                 />
               </div>
-              <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">Rated Power (Watts)</label>
+              {eqType !== 'grow_rack' && <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">{eqType === 'nutrient_reservoir' ? 'Pump Power (Watts)' : 'Rated Power (Watts)'}</label>
                 <input
                   type="number"
                   min="5"
@@ -1778,8 +2032,133 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   onChange={e => setEqWatts(parseInt(e.target.value))}
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
                 />
-              </div>
+              </div>}
             </div>
+
+            {eqType === 'nutrient_reservoir' && (
+              <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300 block mb-1">Reservoir Presets</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                    {NUTRIENT_RESERVOIR_PRESETS.map(p => (
+                      <button
+                        key={p.name}
+                        type="button"
+                        onClick={() => { setEqName(p.name); setEqWatts(p.pumpWatts); setResLiters(p.liters); }}
+                        className={`p-1.5 rounded-lg border text-left ${eqName === p.name ? 'bg-blue-950 border-blue-500 text-blue-200' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                      >
+                        <div className="font-semibold text-[11px] truncate">{p.name}</div>
+                        <div className="text-[9px] text-zinc-500">{p.liters} L · {p.pumpWatts} W pump</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tank Size (L)</label>
+                    <input type="number" min="5" max="1000" value={resLiters}
+                      onChange={e => setResLiters(Math.max(5, Math.min(1000, parseInt(e.target.value) || 5)))}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                    <span className="text-[10px] text-zinc-500">≈ {(resLiters / 3.785).toFixed(1)} gal</span>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Pump</label>
+                    <select value={resPumpMode} onChange={e => setResPumpMode(e.target.value as 'flood' | 'continuous')}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200">
+                      <option value="flood">Flood timer (ebb &amp; flow, drip): 6 × 15 min/day</option>
+                      <option value="continuous">Continuous (recirculating DWC, aeroponics)</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Feed Lines To</label>
+                  {reservoirFeedOptions.length === 0 ? (
+                    <span className="text-[11px] text-zinc-400 block">No grow racks or hydro plants in this room yet. Connect feed lines later from the reservoir's inspector.</span>
+                  ) : (
+                    <div className="space-y-1">
+                      {reservoirFeedOptions.map(o => (
+                        <label key={o.id} className="flex items-center gap-2 text-[11px] text-zinc-300">
+                          <input
+                            type="checkbox"
+                            checked={reservoirFeedIds.includes(o.id)}
+                            onChange={e => setResFeedIds(e.target.checked ? [...reservoirFeedIds, o.id] : reservoirFeedIds.filter(id => id !== o.id))}
+                            className="accent-blue-500"
+                          />
+                          {o.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] text-zinc-500 block">
+                  Starts full of fresh solution at {DEFAULT_NUTRIENT_EC_PPM} ppm, pH {DEFAULT_NUTRIENT_PH}. Each flood soaks the fed root zones and sets their EC, pH and water temperature; the tank drains as plants drink.
+                </span>
+              </div>
+            )}
+
+            {eqType === 'grow_rack' && (() => {
+              const preview = { rackTiers: createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert }), rackTierSpacingFt: rackSpacingFt } as EquipmentItem;
+              const dims = getRackDimensions(preview);
+              return (
+                <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
+                  <div>
+                    <label className="text-xs font-semibold text-zinc-300 block mb-1">Rack Presets</label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                      {GROW_RACK_PRESETS.map(p => (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => {
+                            setEqName(p.name);
+                            setRackTierCount(p.tiers);
+                            setRackTraysPerTier(p.traysPerTier);
+                            setRackSpacingFt(p.tierSpacingFt);
+                            setRackInsert(p.insert);
+                          }}
+                          className={`p-1.5 rounded-lg border text-left ${eqName === p.name ? 'bg-blue-950 border-blue-500 text-blue-200' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                        >
+                          <div className="font-semibold text-[11px] truncate">{p.name}</div>
+                          <div className="text-[9px] text-zinc-500">{p.tiers} shelves × {p.traysPerTier} tray{p.traysPerTier > 1 ? 's' : ''}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelves</label>
+                      <input type="number" min="1" max="8" value={rackTierCount}
+                        onChange={e => setRackTierCount(Math.max(1, Math.min(8, parseInt(e.target.value) || 1)))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Trays / Shelf</label>
+                      <input type="number" min="1" max="4" value={rackTraysPerTier}
+                        onChange={e => setRackTraysPerTier(Math.max(1, Math.min(4, parseInt(e.target.value) || 1)))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelf Spacing (ft)</label>
+                      <input type="number" min="0.5" max="3" step="0.25" value={rackSpacingFt}
+                        onChange={e => setRackSpacingFt(Math.max(0.5, Math.min(3, parseFloat(e.target.value) || 1)))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tray Insert (every shelf; change per shelf later in the inspector)</label>
+                    <select value={rackInsert} onChange={e => setRackInsert(e.target.value as TrayInsertType)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200">
+                      {TRAY_INSERT_TYPES.map(t => (
+                        <option key={t} value={t}>{TRAY_INSERTS[t].label} ({getInsertCellCount(t)} per tray)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="text-[10px] text-zinc-400 font-mono flex flex-wrap justify-between gap-2">
+                    <span>{rackTierCount * rackTraysPerTier} trays · {getRackCapacity(preview)} plant sites</span>
+                    <span>{dims.length}′ × {dims.width}′ × {dims.height}′</span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {eqType === 'exhaust_fan' && (
               <div>

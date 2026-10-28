@@ -33,6 +33,7 @@ export function itemWorldPosition(item: Item, room: Room, tent?: Tent): Vec3 {
 
 /** Ceiling-mounted items (lights, duct fans) hang from their container's top. */
 export function isCeilingMounted(item: Item, containerHeightFt: number): boolean {
+  if (item.category === 'plant' && item.rackSlot) return false; // Sits on a rack shelf, however high
   const z = item.position?.z || 0;
   return z > 0 && z + item.dimensions.height >= containerHeightFt - 1.0;
 }

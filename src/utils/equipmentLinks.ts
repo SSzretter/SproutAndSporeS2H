@@ -1,5 +1,6 @@
 import { EquipmentItem, Item, Position3D, Room, Tent } from '../types/sim';
 import { inferInlineFanDuctSize, INLINE_FAN_SPECS } from './equipmentCatalog';
+import { pruneFeedTargets } from './nutrientReservoirs';
 
 /**
  * Equipment connections — what is piped into, sitting under, or wrapped around what.
@@ -367,9 +368,12 @@ export function getMistWaterEffects(waterTempF: number, airTempF: number): { out
  * - drops hoses on in-tent units and hoses pointing at tents that no longer exist,
  * - re-homes heat mats whose target is gone (in a tent: under its floor tray, as mats behaved
  *   before attachments existed; on a room floor: unattached),
- * - fills in inline fan duct size and airflow.
+ * - fills in inline fan duct size and airflow,
+ * - drops nutrient reservoir feed lines to plants / racks / shelves that are gone.
  */
 export function migrateEquipmentLinks(room: Room): Room {
+  // Reservoir feed lines can run anywhere in the room
+  const allRoomItems = [...room.items, ...room.tents.flatMap(t => t.items)];
   const fix = (item: Item, items: Item[], tent?: Tent): Item => {
     if (item.category !== 'equipment') return item;
     const next: EquipmentItem & { reservoirConditioning?: unknown; reservoirSetpointF?: unknown } = { ...item };
@@ -397,6 +401,10 @@ export function migrateEquipmentLinks(room: Room): Room {
     if (next.type === 'humidifier') {
       next.reservoirCapacityL = getReservoirLiters(next); // explicit, and never larger than fits
       next.reservoirLevelL = Math.min(next.reservoirCapacityL, next.reservoirLevelL ?? next.reservoirCapacityL);
+    }
+
+    if (next.type === 'nutrient_reservoir') {
+      next.feedTargets = pruneFeedTargets(next, allRoomItems); // lines to removed plants / racks / shelves
     }
 
     if (next.type === 'exhaust_fan') {

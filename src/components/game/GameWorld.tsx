@@ -22,6 +22,7 @@ import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
 import { getCropIssues } from '../../utils/cropIssues';
+import { syncRoomRacks } from '../../utils/spatial';
 import { getEquipmentActivity } from '../../utils/equipmentStatus';
 import { migrateEquipmentLinks, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, emptyBucket } from '../../utils/equipmentLinks';
 import { 
@@ -67,7 +68,7 @@ function getSpawnPoint(room: Room): { x: number; y: number; targetX: number; tar
 interface GameWorldProps {
   state: SimulationState;
   onUpdateState: (updater: (prev: SimulationState) => SimulationState) => void;
-  onOpenAddItem: (tentId?: string) => void;
+  onOpenAddItem: (tentId?: string, rackId?: string) => void;
   onOpenAddRoom: (sourceWall?: WallSide) => void;
   onOpenHarvestModal: () => void;
   onSwitchToDashboard: () => void;
@@ -325,6 +326,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   // Hovered interactable object in the 3D world (the tooltip follows the mouse)
   const [hoverTarget, setHoverTarget] = useState<HoverTarget | null>(null);
+  // Left-click selection: stays until something else (or empty floor) is clicked, or Esc.
+  // The wheel raises / lowers it and middle-drag slides it.
+  const [selection, setSelection] = useState<{ kind: 'item'; id: string; tentId?: string } | { kind: 'tent'; id: string } | null>(null);
 
   // Floating notifications / action popups (e.g. "+30% Hydrated", "Harvested 85g!"), anchored in room feet
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
@@ -405,6 +409,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           setIsInventoryOpen(false);
           return;
         }
+        setSelection(null);
       }
 
       // If an inspection modal is open, avoid hotkey / movement interference
@@ -809,7 +814,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           items: rm.items.map(it => it.id === cropId ? updater(it) : it)
         };
       }
-    });
+    }).map(rm => (rm.id === activeRId ? syncRoomRacks(rm) : rm)); // dragging a rack carries its trays' plants
 
     const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
 
@@ -870,11 +875,21 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       return;
     }
 
+    // Left click selects it; right click opens its properties
     soundEffects.playClick();
+    setSelection({ kind: 'item', id: item.id, tentId });
+  };
 
-    // Normal left-click on equipment (humidifiers, dehumidifiers, fans, lights, etc.), people, pets, or crops
-    // opens their detailed properties/edit panel so the user can inspect and control all settings in the panel
+  const handleSceneRightClickItem = (item: Item, tentId: string | undefined) => {
+    soundEffects.playClick();
+    setSelection({ kind: 'item', id: item.id, tentId });
     setInGameInspectorTarget({ type: 'item', id: item.id, parentTentId: tentId || null });
+  };
+
+  const handleSceneRightClickTent = (tent: Tent) => {
+    soundEffects.playClick();
+    setSelection({ kind: 'tent', id: tent.id });
+    setInGameInspectorTarget({ type: 'tent', id: tent.id, parentTentId: null });
   };
 
   const handleSceneHover = (next: HoverTarget | null) => {
@@ -964,10 +979,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   const handleSceneClickTent = (tent: Tent) => {
     soundEffects.playClick();
-    setInGameInspectorTarget({ type: 'tent', id: tent.id, parentTentId: null });
+    setSelection({ kind: 'tent', id: tent.id });
   };
 
   const handleSceneClickDoor = (door: Doorway) => {
+    setSelection(null);
     if (door.roomId === OUTSIDE_DOOR_ID) {
       const p = playerRef.current;
       addFloatingText('🌳 Door to the outside', p.x, p.y, '#bae6fd');
@@ -979,6 +995,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   };
 
   const handleSceneClickFloor = (x: number, y: number) => {
+    // With something selected, a floor click only deselects; otherwise it walks there
+    if (selection) {
+      setSelection(null);
+      return;
+    }
     playerRef.current.targetX = x;
     playerRef.current.targetY = y;
   };
@@ -993,6 +1014,18 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     }
   };
 
+  const selectedTarget: HoverTarget | null = (() => {
+    if (!selection) return null;
+    if (selection.kind === 'tent') {
+      const tent = currentRoom.tents.find(t => t.id === selection.id);
+      return tent ? { kind: 'tent', tent } : null;
+    }
+    const host = selection.tentId ? currentRoom.tents.find(t => t.id === selection.tentId) : undefined;
+    const item = (host ? host.items : currentRoom.items).find(i => i.id === selection.id);
+    return item ? { kind: 'item', item, tentId: selection.tentId } : null;
+  })();
+  const selectedName = !selectedTarget ? null : selectedTarget.kind === 'item' ? selectedTarget.item.name : selectedTarget.kind === 'tent' ? selectedTarget.tent.name : null;
+
   const hoveredId = !hoverTarget ? null
     : hoverTarget.kind === 'item' ? hoverTarget.item.id
     : hoverTarget.kind === 'tent' ? hoverTarget.tent.id
@@ -1002,7 +1035,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     if (!hoverTarget) return null;
     if (hoverTarget.kind === 'tent') {
       const pos = hoverTarget.tent.position || { x: 1, y: 1 };
-      return `🎪 ${hoverTarget.tent.name} (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})ft [Hold Wheel: Move Tent • Wheel: Height • Click: Edit Tent]`;
+      return `🎪 ${hoverTarget.tent.name} (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})ft [Click: Select • Right-click: Edit Tent]`;
     }
     if (hoverTarget.kind === 'door') {
       if (hoverTarget.door.roomId === OUTSIDE_DOOR_ID) return '🌳 Exterior door to the outside';
@@ -1012,10 +1045,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     const item = [...currentRoom.items, ...currentRoom.tents.flatMap(t => t.items)].find(i => i.id === hoverTarget.item.id) || hoverTarget.item;
     if (item.category === 'plant' || item.category === 'mushroom') {
       const host = hoverTarget.tentId ? currentRoom.tents.find(t => t.id === hoverTarget.tentId) : undefined;
-      const issues = getCropIssues(item, (host ?? currentRoom).climate, host ? host.items : currentRoom.items, !host && currentRoom.environmentType === 'outdoor_garden');
+      const issues = getCropIssues(item, (host ?? currentRoom).climate, host ? host.items : currentRoom.items, !host && currentRoom.environmentType === 'outdoor_garden', [...currentRoom.items, ...currentRoom.tents.flatMap(t => t.items)]);
       const problems = issues.length > 0 ? ` — ${issues.map(i => `${i.severity === 'critical' ? '⛔' : '⚠'} ${i.label}`).join(', ')}` : '';
       const zHeight = item.position?.z ? ` • Z: ${item.position.z.toFixed(1)}ft` : '';
-      return `${item.name} (${item.stage})${zHeight}${problems} [Wheel: Height (Z) • Hold Wheel: Move • Click: Care]`;
+      return `${item.name} (${item.stage})${zHeight}${problems} [${activeTool === 'inspect' ? 'Click: Select' : 'Click: Use Tool'} • Right-click: Edit]`;
     }
     if (item.category === 'equipment') {
       const activity = getEquipmentActivity(item, new Date(state.simTime).getHours());
@@ -1023,19 +1056,19 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       const status = `${statusIcon} ${activity?.label ?? 'Off'}`;
       if (item.type === 'humidifier') {
         const water = isReservoirEmpty(item) ? '💧 EMPTY' : `💧 ${Math.round((getReservoirLevelL(item) / getReservoirLiters(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${status} • ${water}) [Click to Open Controls & Properties]`;
+        return `⚙️ ${item.name} (${status} • ${water}) [Click: Select • Right-click: Controls & Properties]`;
       }
       if (item.type === 'dehumidifier') {
         const bucket = item.drainHoseConnected ? 'drain hose'
           : isBucketFull(item) ? '🪣 FULL'
           : `🪣 ${Math.round((getBucketLevelL(item) / getBucketCapacityL(item)) * 100)}%`;
-        return `⚙️ ${item.name} (${status} • ${bucket}) [Click to Open Controls & Properties]`;
+        return `⚙️ ${item.name} (${status} • ${bucket}) [Click: Select • Right-click: Controls & Properties]`;
       }
       const vent = item.type === 'exhaust_fan' ? ` • → ${item.exhaustTo === 'outdoors' ? 'outdoors' : 'room'}` : '';
       const zHeight = item.position?.z != null ? ` • Z: ${item.position.z.toFixed(1)}ft` : '';
-      return `⚙️ ${item.name} (${status}${zHeight} • ${item.powerWatts}W${vent}) [Wheel: Height (Z) • Hold Wheel: Move • Click: Edit]`;
+      return `⚙️ ${item.name} (${status}${zHeight} • ${item.powerWatts}W${vent}) [Click: Select • Right-click: Edit]`;
     }
-    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Wheel: Height (Z) • Hold Wheel: Move • Click: Controls]`;
+    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click: Select • Right-click: Controls]`;
   })();
 
   // Doorways to other rooms on the left/right walls (or an Add Room portal)
@@ -1262,6 +1295,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           doorways={getRoomDoorways()}
           hoveredId={hoveredId}
           hoverTarget={hoverTarget}
+          selectedTarget={selectedTarget}
           floatingTexts={floatingTexts}
           playerRef={playerRef}
           cameraYawRef={cameraYawRef}
@@ -1270,6 +1304,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           onClickTent={handleSceneClickTent}
           onClickDoor={handleSceneClickDoor}
           onClickFloor={handleSceneClickFloor}
+          onRightClickItem={handleSceneRightClickItem}
+          onRightClickTent={handleSceneRightClickTent}
+          onDeselect={() => setSelection(null)}
           onUpdateItemPosition={handleUpdateItemPosition}
           onUpdateTentPosition={handleUpdateTentPosition}
           tempUnit={state.tempUnit}
@@ -1284,6 +1321,14 @@ export const GameWorld: React.FC<GameWorldProps> = ({
             style={{ left: `${lastMouseRef.current.x + 14}px`, top: `${lastMouseRef.current.y - 34}px` }}
           >
             {hoverTitle}
+          </div>
+        )}
+
+        {/* What is selected and what the mouse does to it */}
+        {selectedName && (
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 px-3 py-1.5 rounded-lg bg-zinc-900/90 border border-amber-500/60 text-xs text-zinc-200 shadow-xl whitespace-nowrap pointer-events-none">
+            <span className="font-bold text-amber-300">Selected: {selectedName}</span>
+            <span className="text-zinc-400"> · Wheel: height · Middle-drag: move · Right-click: edit · Esc / click floor: deselect</span>
           </div>
         )}
 
@@ -1307,12 +1352,13 @@ export const GameWorld: React.FC<GameWorldProps> = ({
               </button>
               <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
                 <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
-                <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Interact with objects</div>
+                <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Select object (floor / Esc deselects)</div>
+                <div><span className="text-zinc-200 font-semibold">[Right Click]</span> Edit object properties</div>
                 <div><span className="text-zinc-200 font-semibold">[Right Drag]</span> Rotate camera</div>
-                <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Pan camera (re-centers when you walk)</div>
-                <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Zoom</div>
+                <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Move selected object, else pan camera</div>
+                <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Raise / lower selected object, else zoom</div>
                 <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
-                <div><span className="text-zinc-200 font-semibold">[Click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
+                <div><span className="text-zinc-200 font-semibold">[Right-click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
                 <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>
                 <div><span className="text-zinc-200 font-semibold">[1 - 6]</span> Switch Hotbar Tool</div>
                 <div><span className="text-zinc-200 font-semibold">[H]</span> Pin / hide this help</div>
@@ -1574,9 +1620,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
                     return next;
                   });
                 }}
-                onOpenAddItem={(tentId) => {
+                onOpenAddItem={(tentId, rackId) => {
                   setInGameInspectorTarget(null);
-                  onOpenAddItem(tentId);
+                  onOpenAddItem(tentId, rackId);
                 }}
                 onHarvestPlant={(plant, tentId) => {
                   if (onHarvestPlant) {

@@ -152,7 +152,9 @@ export const NpcDossier: React.FC<NpcDossierProps> = ({
   const filteredLogs = useMemo(() => {
     const logs = person.actionLog || [];
     return logs.filter(log => {
-      if (logFilter !== 'all' && log.actionType !== logFilter) return false;
+      // The Equipment filter covers every hardware job
+      const hardware = ['refill_humidifier', 'empty_dehumidifier', 'service_reservoir', 'adjust_equipment'];
+      if (logFilter === 'refill_humidifier' ? !hardware.includes(log.actionType) : logFilter !== 'all' && log.actionType !== logFilter) return false;
       if (logSearch.trim()) {
         const q = logSearch.toLowerCase();
         return (
@@ -519,7 +521,7 @@ export const NpcDossier: React.FC<NpcDossierProps> = ({
               filteredLogs.map(log => {
                 const isWater = log.actionType === 'water';
                 const isMist = log.actionType === 'mist';
-                const isHardware = log.actionType === 'refill_humidifier' || log.actionType === 'empty_dehumidifier' || log.actionType === 'adjust_equipment';
+                const isHardware = log.actionType === 'refill_humidifier' || log.actionType === 'empty_dehumidifier' || log.actionType === 'service_reservoir' || log.actionType === 'adjust_equipment';
                 const isHarvest = log.actionType === 'harvest';
                 const isFeed = log.actionType === 'feed';
 
@@ -756,6 +758,66 @@ export const NpcDossier: React.FC<NpcDossierProps> = ({
                   />
                   <div className="text-[10px] text-zinc-500 mt-1">
                     Worker fetches RO water when humidifier reservoir gets this low.
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                  <div className="flex justify-between text-xs font-medium text-zinc-300 mb-1">
+                    <span>Top Off Nutrient Reservoirs Below</span>
+                    <span className="font-mono text-sky-400 font-bold">
+                      {person.workerSettings?.refillReservoirBelowPct ?? 35}% Full
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="10"
+                    max="80"
+                    step="5"
+                    value={person.workerSettings?.refillReservoirBelowPct ?? 35}
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      onUpdatePerson({
+                        ...person,
+                        workerSettings: {
+                          ...(person.workerSettings || getDefaultWorkerSettings(person.role)),
+                          refillReservoirBelowPct: val
+                        }
+                      });
+                    }}
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">
+                    Tops off with water and doses back to the reservoir's EC / pH targets; also doses whenever the solution drifts.
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                  <div className="flex justify-between text-xs font-medium text-zinc-300 mb-1">
+                    <span>Change Reservoir Solution Every</span>
+                    <span className="font-mono text-violet-400 font-bold">
+                      {person.workerSettings?.reservoirChangeDays ?? 14} Days
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="28"
+                    step="1"
+                    value={person.workerSettings?.reservoirChangeDays ?? 14}
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      onUpdatePerson({
+                        ...person,
+                        workerSettings: {
+                          ...(person.workerSettings || getDefaultWorkerSettings(person.role)),
+                          reservoirChangeDays: val
+                        }
+                      });
+                    }}
+                    className="w-full accent-violet-400 cursor-pointer"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">
+                    Dumps the spent solution and mixes a fresh tank at the reservoir's targets.
                   </div>
                 </div>
               </div>

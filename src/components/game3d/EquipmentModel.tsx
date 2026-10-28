@@ -3,6 +3,8 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { EquipmentItem } from '../../types/sim';
 import { getReservoirLevelL, getReservoirLiters, isReservoirEmpty, getBucketLevelL, getBucketCapacityL, isBucketFull } from '../../utils/equipmentLinks';
+import { getRackTiers, getTierShelfHeightFt, TRAY_1020 } from '../../utils/growRacks';
+import { getNutrientCapacityL, getNutrientLevelL, isNutrientReservoirEmpty } from '../../utils/nutrientReservoirs';
 
 /**
  * Low-poly equipment at true scale (item.dimensions L × W × H in feet).
@@ -59,6 +61,75 @@ function HangingCords({ length, width, topY, hangFt }: { length: number; width: 
   );
 }
 
+const noRaycast = () => null;
+
+/**
+ * Grow rack: four posts and a top frame, a wire shelf per tier, and a black 1020 tray per slot on it.
+ * Only the posts, top frame and tray rims take pointer events, so the plants in the cells stay clickable.
+ */
+function GrowRackModel({ eq }: { eq: EquipmentItem }) {
+  const { length: L, width: W, height: H } = eq.dimensions;
+  const tiers = getRackTiers(eq);
+  const post = 0.06;
+  const rim = 0.02;
+  const trayH = TRAY_1020.heightFt;
+  const corners: Array<[number, number]> = [[-L / 2 + post / 2, -W / 2 + post / 2], [L / 2 - post / 2, -W / 2 + post / 2], [-L / 2 + post / 2, W / 2 - post / 2], [L / 2 - post / 2, W / 2 - post / 2]];
+  return (
+    <group>
+      {corners.map(([x, z], i) => (
+        <mesh key={i} position={[x, H / 2, z]}>
+          <boxGeometry args={[post, H, post]} />
+          <meshStandardMaterial color="#a1a1aa" metalness={0.7} roughness={0.35} />
+        </mesh>
+      ))}
+      {/* Top frame */}
+      {[-1, 1].map(side => (
+        <mesh key={`tf${side}`} position={[0, H - post / 2, side * (W / 2 - post / 2)]}>
+          <boxGeometry args={[L, post, post]} />
+          <meshStandardMaterial color="#a1a1aa" metalness={0.7} roughness={0.35} />
+        </mesh>
+      ))}
+      {tiers.map((tier, ti) => {
+        const y = getTierShelfHeightFt(eq, ti);
+        const trayStart = -(tier.trays * TRAY_1020.lengthFt) / 2;
+        return (
+          <group key={ti} position={[0, y, 0]}>
+            <mesh position={[0, -0.01, 0]} raycast={noRaycast}>
+              <boxGeometry args={[L - post, 0.02, W - post]} />
+              <meshStandardMaterial color="#d4d4d8" metalness={0.6} roughness={0.5} transparent opacity={0.55} />
+            </mesh>
+            {Array.from({ length: tier.trays }, (_, tr) => {
+              const cx = trayStart + (tr + 0.5) * TRAY_1020.lengthFt;
+              const tl = TRAY_1020.lengthFt;
+              const tw = TRAY_1020.widthFt;
+              return (
+                <group key={tr} position={[cx, 0, 0]}>
+                  <mesh position={[0, 0.005, 0]} raycast={noRaycast}>
+                    <boxGeometry args={[tl, 0.01, tw]} />
+                    <meshStandardMaterial color="#18181b" roughness={0.8} />
+                  </mesh>
+                  {[-1, 1].map(side => (
+                    <mesh key={`l${side}`} position={[0, trayH / 2, side * (tw / 2 - rim / 2)]}>
+                      <boxGeometry args={[tl, trayH, rim]} />
+                      <meshStandardMaterial color="#18181b" roughness={0.8} />
+                    </mesh>
+                  ))}
+                  {[-1, 1].map(side => (
+                    <mesh key={`w${side}`} position={[side * (tl / 2 - rim / 2), trayH / 2, 0]}>
+                      <boxGeometry args={[rim, trayH, tw]} />
+                      <meshStandardMaterial color="#18181b" roughness={0.8} />
+                    </mesh>
+                  ))}
+                </group>
+              );
+            })}
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
 /** How an attached heat mat is shown: as a band wrapped around a tank, or faintly under a tent's floor tray. */
 export type HeatMatMount = { kind: 'wrap'; radius: number; height: number } | { kind: 'under_tray' };
 
@@ -68,6 +139,29 @@ export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem
   const on = eq.powerOn;
 
   switch (eq.type) {
+    case 'grow_rack':
+      return <GrowRackModel eq={eq} />;
+    case 'nutrient_reservoir': {
+      // Black tote with a lid; a translucent strip on the side shows the solution level
+      const fill = getNutrientLevelL(eq) / getNutrientCapacityL(eq);
+      const bodyH = Math.max(0.1, h - 0.08);
+      return (
+        <group>
+          <mesh position={[0, bodyH / 2, 0]}>
+            <boxGeometry args={[L * 0.96, bodyH, W * 0.96]} />
+            <meshStandardMaterial color="#18181b" roughness={0.7} />
+          </mesh>
+          <mesh position={[0, bodyH + 0.04, 0]}>
+            <boxGeometry args={[L, 0.08, W]} />
+            <meshStandardMaterial color="#3f3f46" roughness={0.6} />
+          </mesh>
+          <mesh position={[0, (bodyH * fill) / 2 + 0.01, W * 0.48 + 0.003]}>
+            <planeGeometry args={[L * 0.1, Math.max(0.01, bodyH * fill)]} />
+            <meshStandardMaterial color={isNutrientReservoirEmpty(eq) ? '#ef4444' : '#7dd3fc'} emissive={on ? '#0ea5e9' : '#000000'} emissiveIntensity={0.3} />
+          </mesh>
+        </group>
+      );
+    }
     case 'grow_light':
       return (
         <group>

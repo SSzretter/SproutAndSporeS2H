@@ -30,6 +30,7 @@ import {
   PetItem 
 } from '../types/sim';
 import { ROLE_METADATA } from '../utils/npcWorker';
+import { getRackCapacity, getRackOccupancy, isRackedPlant } from '../utils/growRacks';
 
 interface InteractiveFloorplanProps {
   room: Room;
@@ -183,9 +184,11 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
       case 'grow_light': return <Sun className="w-3.5 h-3.5 text-yellow-400" />;
       case 'humidifier':
       case 'dehumidifier': return <Droplets className="w-3.5 h-3.5 text-cyan-400" />;
+      case 'nutrient_reservoir': return <Droplets className="w-3.5 h-3.5 text-sky-400" />;
       case 'heater': return <Flame className="w-3.5 h-3.5 text-amber-400" />;
       case 'exhaust_fan':
       case 'oscillating_fan': return <Wind className="w-3.5 h-3.5 text-teal-400" />;
+      case 'grow_rack': return <Layers className="w-3.5 h-3.5 text-emerald-400" />;
       default: return <Zap className="w-3.5 h-3.5 text-emerald-400" />;
     }
   };
@@ -300,7 +303,8 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
             );
             const isShroomTent = tent.items.some(i => i.category === 'mushroom');
 
-            const plants = tent.items.filter(i => i.category === 'plant') as PlantItem[];
+            // Plants in rack trays show as the rack's sown count, not one by one
+            const plants = tent.items.filter(i => i.category === 'plant' && !i.rackSlot) as PlantItem[];
             const shrooms = tent.items.filter(i => i.category === 'mushroom') as MushroomItem[];
             const people = tent.items.filter(i => i.category === 'person') as PersonItem[];
             const pets = tent.items.filter(i => i.category === 'pet') as PetItem[];
@@ -465,7 +469,7 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
                       );
                     })}
 
-                    {plants.length === 0 && shrooms.length === 0 && people.length === 0 && pets.length === 0 && (
+                    {plants.length === 0 && shrooms.length === 0 && people.length === 0 && pets.length === 0 && !tent.items.some(isRackedPlant) && (
                       <div className="text-xs text-zinc-400 py-4 flex items-center gap-1.5">
                         <Info className="w-3.5 h-3.5" />
                         <span>Empty tent interior. Add plants, mushroom tubs, or equipment.</span>
@@ -503,10 +507,13 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
                                 ? 'bg-zinc-800 border-zinc-700 text-zinc-200'
                                 : 'bg-zinc-900 border-zinc-850 text-zinc-400'
                           }`}
-                          title={`${eq.name} (${eq.powerOn ? 'ON' : 'OFF'})`}
+                          title={eq.type === 'grow_rack'
+                            ? `${eq.name} (${getRackOccupancy(eq, tent.items).size}/${getRackCapacity(eq)} sown)`
+                            : `${eq.name} (${eq.powerOn ? 'ON' : 'OFF'})`}
                         >
                           {getEquipmentIcon(eq.type)}
                           <span>{eq.name.split(' ')[0]}</span>
+                          {eq.type === 'grow_rack' && <span className="font-mono text-emerald-400">{getRackOccupancy(eq, tent.items).size}/{getRackCapacity(eq)}</span>}
                         </button>
                       );
                     })}
@@ -524,7 +531,7 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
         <div className="mt-4 pt-3 border-t border-zinc-800/80 space-y-2 z-10">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-[11px] font-semibold text-zinc-300 flex items-center gap-1.5">
-              <span>Room Floor Items &amp; Occupants ({room.items.length}):</span>
+              <span>Room Floor Items &amp; Occupants ({room.items.filter(i => !isRackedPlant(i)).length}):</span>
             </span>
             <span className="text-[11px] text-zinc-400 font-mono">
               Total footprint: {room.dimensions.length * room.dimensions.width} sq ft
@@ -532,7 +539,7 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {room.items.map(item => {
+            {room.items.filter(i => !isRackedPlant(i)).map(item => {
               const isItemSelected = selectedType === 'item' && selectedId === item.id;
               const isPerson = item.category === 'person';
               const isPet = item.category === 'pet';
@@ -554,7 +561,9 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
               } else if (item.category === 'equipment') {
                 const eq = item as EquipmentItem;
                 icon = getEquipmentIcon(eq.type);
-                subtitle = eq.powerOn ? `${eq.powerWatts}W` : 'Standby';
+                subtitle = eq.type === 'grow_rack'
+                  ? `${getRackOccupancy(eq, room.items).size}/${getRackCapacity(eq)} sown`
+                  : eq.powerOn ? `${eq.powerWatts}W` : 'Standby';
               }
 
               return (

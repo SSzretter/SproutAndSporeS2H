@@ -6,6 +6,7 @@ import { TENT_CATALOG } from '../../utils/tentCatalog';
 import { getTentEnvelope, TENT_FABRIC_OPTIONS } from '../../utils/tentEnvelope';
 import { TentExhaustFanCard } from './TentExhaustFanCard';
 import { TentItemsSection } from './TentItemsSection';
+import { isRackedPlant } from '../../utils/growRacks';
 import type { TentSectionProps } from './types';
 
 export const TentPanel: React.FC<TentSectionProps> = (props) => {
@@ -14,6 +15,7 @@ export const TentPanel: React.FC<TentSectionProps> = (props) => {
   const isShroomTent = currentTent.items.some(i => i.category === 'mushroom');
 
   const filteredTentItems = currentTent.items.filter(item => {
+    if (isRackedPlant(item)) return false; // Listed in their rack's tray map instead
     if (filterTab === 'all') return true;
     if (filterTab === 'plants') return item.category === 'plant';
     if (filterTab === 'mushrooms') return item.category === 'mushroom';

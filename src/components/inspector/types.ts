@@ -36,7 +36,7 @@ export interface ItemInspectorProps {
   onSelectRoom: () => void;
   onSelectTent: (tentId: string) => void;
   onSelectItem: (itemId: string, parentTentId?: string | null) => void;
-  onOpenAddItem: (tentId?: string) => void;
+  onOpenAddItem: (tentId?: string, rackId?: string) => void; // rackId: open on the Plant tab, sowing into that grow rack
   onHarvestPlant: (plant: PlantItem, tentId?: string) => void;
   onHarvestMushroom: (mushroom: MushroomItem, tentId?: string) => void;
   onAddHarvestsToFacility?: (harvests: HarvestRecord[]) => void;

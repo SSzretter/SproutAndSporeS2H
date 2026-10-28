@@ -14,7 +14,7 @@ import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './E
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
 import { getVpdZone } from '../../utils/physics';
 import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
-import { HoseModel, ExhaustDuctModel } from './HoseModel';
+import { HoseModel, ExhaustDuctModel, FeedLinesModel } from './HoseModel';
 import { getEquipmentActivity, EquipmentActivity } from '../../utils/equipmentStatus';
 import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
 
@@ -42,6 +42,8 @@ interface GameSceneProps {
   doorways: Doorway[];
   hoveredId: string | null;
   hoverTarget?: HoverTarget | null;
+  // The item / tent picked with a left click; the wheel and middle-drag act on it until it is deselected
+  selectedTarget?: HoverTarget | null;
   floatingTexts: FloatingText[];
   playerRef: React.MutableRefObject<PlayerState>;
   cameraYawRef: React.MutableRefObject<number>;
@@ -50,6 +52,9 @@ interface GameSceneProps {
   onClickTent: (tent: Tent) => void;
   onClickDoor: (door: Doorway) => void;
   onClickFloor: (x: number, y: number) => void;
+  onRightClickItem: (item: Item, tentId: string | undefined) => void;
+  onRightClickTent: (tent: Tent) => void;
+  onDeselect: () => void; // Left click on nothing at all
   onUpdateItemPosition?: (itemId: string, tentId: string | undefined, newPos: Position3D, label: string) => void;
   onUpdateTentPosition?: (tentId: string, newPos: Position3D, label: string) => void;
   tempUnit: 'F' | 'C';
@@ -66,7 +71,7 @@ function isCropReady(item: Item): boolean {
   return false;
 }
 
-function HoverRing({ item, elevation = 0 }: { item: Item; elevation?: number }) {
+function HoverRing({ item, elevation = 0, color = '#34d399' }: { item: Item; elevation?: number; color?: string }) {
   const r = Math.max(item.dimensions.length, item.dimensions.width) / 2 + 0.14;
   const isElevated = elevation > 0.4;
   return (
@@ -79,7 +84,7 @@ function HoverRing({ item, elevation = 0 }: { item: Item; elevation?: number }) 
       {/* Fixture highlight ring */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, item.dimensions.height * 0.5, 0]}>
         <ringGeometry args={[r * 0.92, r * 1.06, 36]} />
-        <meshBasicMaterial color="#34d399" transparent opacity={0.9} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
       </mesh>
       {/* Vertical guideline between floor and elevated fixture */}
       {isElevated && (
@@ -116,22 +121,27 @@ function ActivityLight({ activity, y, x }: { activity: EquipmentActivity; y: num
   );
 }
 
+
 function ItemNode({
   item,
   room,
   tent,
   hour,
   hovered,
+  selected,
   onHover,
-  onClickItem
+  onClickItem,
+  onRightClickItem
 }: {
   item: Item;
   room: Room;
   tent?: Tent;
   hour: number;
   hovered: boolean;
+  selected: boolean;
   onHover: GameSceneProps['onHover'];
   onClickItem: GameSceneProps['onClickItem'];
+  onRightClickItem: GameSceneProps['onRightClickItem'];
 }) {
   const position = itemWorldPosition(item, room, tent);
   const containerTopY = tent ? tentWorldOrigin(tent, room)[1] + tent.dimensions.height : room.dimensions.height;
@@ -143,6 +153,13 @@ function ItemNode({
       if (e.delta > DRAG_CLICK_THRESHOLD_PX) return;
       e.stopPropagation();
       onClickItem(item, tent?.id, position);
+    },
+    // Right click (not a camera orbit drag) opens the properties panel
+    onContextMenu: (e: ThreeEvent<MouseEvent>) => {
+      e.nativeEvent.preventDefault();
+      if (e.delta > DRAG_CLICK_THRESHOLD_PX) return;
+      e.stopPropagation();
+      onRightClickItem(item, tent?.id);
     },
     onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onHover({ kind: 'item', item, tentId: tent?.id }); },
     onPointerOut: () => onHover(null)
@@ -177,26 +194,13 @@ function ItemNode({
             <boxGeometry args={[item.dimensions.length + 0.3, item.dimensions.height + 0.3, item.dimensions.width + 0.3]} />
             <meshBasicMaterial transparent opacity={0} />
           </mesh>
-          {/* Generous vertical buffer when hovered so wheel scrolling height doesn't lose the cursor */}
-          {hovered && (
-            <mesh position={[0, item.dimensions.height / 2, 0]} visible={false}>
-              <boxGeometry args={[item.dimensions.length + 1.2, item.dimensions.height + 3.5, item.dimensions.width + 1.2]} />
-              <meshBasicMaterial transparent opacity={0} />
-            </mesh>
-          )}
         </group>
       ) : (
         <group {...handlers}>
           {model}
-          {hovered && (
-            <mesh position={[0, item.dimensions.height / 2, 0]} visible={false}>
-              <boxGeometry args={[item.dimensions.length + 1.2, item.dimensions.height + 3.5, item.dimensions.width + 1.2]} />
-              <meshBasicMaterial transparent opacity={0} />
-            </mesh>
-          )}
         </group>
       )}
-      {hovered && <HoverRing item={item} elevation={position[1]} />}
+      {selected ? <HoverRing item={item} elevation={position[1]} color="#fbbf24" /> : hovered && <HoverRing item={item} elevation={position[1]} />}
       {item.category === 'equipment' && !(item.type === 'heat_mat' && item.attachedToId) && (() => {
         const activity = getEquipmentActivity(item, hour);
         if (!activity) return null;
@@ -209,21 +213,22 @@ function ItemNode({
 
 /**
  * Third-person follow camera around the cultivator. Right-drag orbits, middle-drag pans along
- * the floor, scroll zooms; left button is left free for interacting. A pan offset holds while
+ * the floor, scroll zooms; left button is left free for interacting. While an item or tent is
+ * selected, the wheel raises / lowers it and middle-drag slides it instead. A pan offset holds while
  * the cultivator stands still and eases back to center once they walk.
  */
 function CameraRig({ 
   playerRef, 
   cameraYawRef,
   room,
-  hoverTarget,
+  selectedTarget,
   onUpdateItemPosition,
   onUpdateTentPosition
 }: { 
   playerRef: GameSceneProps['playerRef']; 
   cameraYawRef: GameSceneProps['cameraYawRef'];
   room: Room;
-  hoverTarget?: HoverTarget | null;
+  selectedTarget?: HoverTarget | null;
   onUpdateItemPosition?: GameSceneProps['onUpdateItemPosition'];
   onUpdateTentPosition?: GameSceneProps['onUpdateTentPosition'];
 }) {
@@ -234,15 +239,8 @@ function CameraRig({
   const panning = useRef(false);
   const lastPlayer = useRef({ x: playerRef.current.x, y: playerRef.current.y });
 
-  const hoverTargetRef = useRef<HoverTarget | null>(hoverTarget || null);
-  hoverTargetRef.current = hoverTarget || null;
-  const lockedTargetRef = useRef<HoverTarget | null>(null);
-  const lastWheelTimeRef = useRef<number>(0);
-
-  // Keep locked target in sync when hoverTarget changes to an item/tent
-  if (hoverTarget) {
-    lockedTargetRef.current = hoverTarget;
-  }
+  const selectedRef = useRef<HoverTarget | null>(selectedTarget || null);
+  selectedRef.current = selectedTarget || null;
 
   const isDraggingItemRef = useRef<{
     itemId: string;
@@ -279,8 +277,8 @@ function CameraRig({
 
     const onDown = (e: PointerEvent) => {
       if (e.button === 1) {
-        // Middle button pressed!
-        const target = hoverTargetRef.current;
+        // Middle button: slides the selected item / tent, otherwise pans the camera
+        const target = selectedRef.current;
         if (target && target.kind === 'item' && onUpdateItemPosition) {
           e.preventDefault();
           e.stopPropagation();
@@ -448,21 +446,14 @@ function CameraRig({
       }
     };
 
-    // Scroll wheel: adjusts height Z if hovering an item or tent!
+    // Scroll wheel: raises / lowers the selected item or tent wherever the cursor is (zooms when nothing is selected)
     const onWheel = (e: WheelEvent) => {
-      const now = Date.now();
-      // Use locked target if user is actively scrolling within the last 1200ms
-      let target = hoverTargetRef.current;
-      if (!target && lockedTargetRef.current && (now - lastWheelTimeRef.current < 1200)) {
-        target = lockedTargetRef.current;
-      }
+      const target = selectedRef.current;
       if (!target) return;
 
       if (target.kind === 'tent' && onUpdateTentPosition) {
         e.preventDefault();
         e.stopPropagation();
-        lastWheelTimeRef.current = now;
-        lockedTargetRef.current = target;
 
         // Fetch live tent from room so every successive scroll reads the new Z
         const liveTent = room.tents.find(t => t.id === target.tent.id) || target.tent;
@@ -475,11 +466,6 @@ function CameraRig({
         const maxZ = Math.max(0, room.dimensions.height - liveTent.dimensions.height);
         const newZ = Math.round(Math.max(0, Math.min(maxZ, currentZ + dir * step)) * 100) / 100;
 
-        lockedTargetRef.current = {
-          ...target,
-          tent: { ...liveTent, position: { x: currentX, y: currentY, z: newZ } }
-        };
-
         onUpdateTentPosition(
           liveTent.id,
           { x: currentX, y: currentY, z: newZ },
@@ -491,8 +477,6 @@ function CameraRig({
       if (target.kind === 'item' && onUpdateItemPosition) {
         e.preventDefault();
         e.stopPropagation();
-        lastWheelTimeRef.current = now;
-        lockedTargetRef.current = target;
 
         // Fetch live item from tent/room so every successive scroll reads the new Z
         const tent = target.tentId ? room.tents.find(t => t.id === target.tentId) : undefined;
@@ -508,11 +492,6 @@ function CameraRig({
         const maxZ = Math.max(0, container.height - liveItem.dimensions.height);
         const newZ = Math.round(Math.max(0, Math.min(maxZ, currentZ + dir * step)) * 100) / 100;
 
-        lockedTargetRef.current = {
-          ...target,
-          item: { ...liveItem, position: { x: currentX, y: currentY, z: newZ } }
-        };
-
         onUpdateItemPosition(
           liveItem.id,
           target.tentId,
@@ -523,7 +502,7 @@ function CameraRig({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (e.button === 1 && hoverTargetRef.current?.kind === 'item') {
+      if (e.button === 1 && selectedRef.current?.kind === 'item') {
         e.preventDefault();
       }
     };
@@ -548,10 +527,8 @@ function CameraRig({
     const controls = controlsRef.current;
     if (!controls) return;
 
-    // Disable camera zoom when hovering an item/tent or actively scrolling Z height
-    const isScrollingTarget = Boolean(lockedTargetRef.current && (Date.now() - lastWheelTimeRef.current < 1200));
-    const isOverTarget = hoverTargetRef.current?.kind === 'item' || hoverTargetRef.current?.kind === 'tent' || isScrollingTarget;
-    controls.enableZoom = !isOverTarget;
+    // The wheel belongs to the selected item / tent; with nothing selected it zooms
+    controls.enableZoom = !selectedRef.current;
     
 
     const p = playerRef.current;
@@ -682,21 +659,54 @@ function buildWorldLabels(
       variant: isAdd ? 'doorAdd' : 'door' 
     });
   }
+  const roomItems = [...room.items, ...room.tents.flatMap(t => t.items)];
   const addBadges = (items: Item[], tent?: Tent) => {
+    // Plants in rack trays share one badge per rack (a sown rack holds hundreds of them)
+    const rackTallies = new Map<string, { ready: number; issues: Map<string, number>; critical: boolean }>();
     for (const item of items) {
       if (item.category !== 'plant' && item.category !== 'mushroom') continue;
+      if (item.category === 'plant' && item.rackSlot) {
+        const tally = rackTallies.get(item.rackSlot.rackId) ?? { ready: 0, issues: new Map<string, number>(), critical: false };
+        if (isCropReady(item)) tally.ready++;
+        const issues = getCropIssues(item, (tent ?? room).climate, items, !tent && room.environmentType === 'outdoor_garden', roomItems);
+        if (issues.length > 0) {
+          const text = issueBadgeText(issues[0]);
+          tally.issues.set(text, (tally.issues.get(text) ?? 0) + 1);
+          tally.critical ||= issues[0].severity === 'critical';
+        }
+        rackTallies.set(item.rackSlot.rackId, tally);
+        continue;
+      }
       const [x, y, z] = itemWorldPosition(item, room, tent);
       const top = y + item.dimensions.height + 0.4;
       const ready = isCropReady(item);
       if (ready) labels.push({ id: `ready-${item.id}`, position: [x, top, z], text: '✂', variant: 'badge' });
       // Most severe problem first, with a count of any others (all are listed in the hover tooltip)
-      const issues = getCropIssues(item, (tent ?? room).climate, items, !tent && room.environmentType === 'outdoor_garden');
+      const issues = getCropIssues(item, (tent ?? room).climate, items, !tent && room.environmentType === 'outdoor_garden', roomItems);
       if (issues.length > 0) {
         labels.push({
           id: `issue-${item.id}`,
           position: [x, ready ? top + 0.9 : top, z],
           text: `${issues[0].severity === 'critical' ? '⛔' : '⚠'} ${issueBadgeText(issues[0])}${issues.length > 1 ? ` +${issues.length - 1}` : ''}`,
           variant: issues[0].severity === 'critical' ? 'issueCritical' : 'issueWarning'
+        });
+      }
+    }
+    for (const [rackId, tally] of rackTallies) {
+      const rack = items.find(i => i.id === rackId);
+      if (!rack) continue;
+      const [x, y, z] = itemWorldPosition(rack, room, tent);
+      const top = y + rack.dimensions.height + 0.4;
+      if (tally.ready > 0) labels.push({ id: `ready-${rackId}`, position: [x, top, z], text: `✂ ${tally.ready}`, variant: 'badge' });
+      if (tally.issues.size > 0) {
+        // The most common problem, and how many plants on the rack have any problem
+        const [text] = [...tally.issues.entries()].sort((a, b) => b[1] - a[1])[0];
+        const affected = [...tally.issues.values()].reduce((a, b) => a + b, 0);
+        labels.push({
+          id: `issue-${rackId}`,
+          position: [x, tally.ready > 0 ? top + 0.9 : top, z],
+          text: `${tally.critical ? '⛔' : '⚠'} ${text} · ${affected} plant${affected === 1 ? '' : 's'}`,
+          variant: tally.critical ? 'issueCritical' : 'issueWarning'
         });
       }
     }
@@ -733,7 +743,9 @@ function buildWorldLabels(
 }
 
 function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegistry: LabelRegistry }) {
-  const { room, simTime, doorways, hoveredId, playerRef, cameraYawRef, onHover, onClickItem, onClickTent, onClickDoor, onClickFloor, labels, labelRegistry } = props;
+  const { room, simTime, doorways, hoveredId, playerRef, cameraYawRef, onHover, onClickItem, onClickTent, onClickDoor, onClickFloor, onRightClickItem, onRightClickTent, labels, labelRegistry } = props;
+  const sel = props.selectedTarget;
+  const selectedId = !sel ? null : sel.kind === 'item' ? sel.item.id : sel.kind === 'tent' ? sel.tent.id : null;
   const hour = new Date(simTime).getHours();
 
   const handleFloorClick = (e: ThreeEvent<MouseEvent>) => {
@@ -744,7 +756,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
   return (
     <>
       <SceneLighting room={room} simTime={simTime} />
-      <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} hoverTarget={props.hoverTarget} onUpdateItemPosition={props.onUpdateItemPosition} onUpdateTentPosition={props.onUpdateTentPosition} />
+      <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} selectedTarget={props.selectedTarget} onUpdateItemPosition={props.onUpdateItemPosition} onUpdateTentPosition={props.onUpdateTentPosition} />
       <RoomModel room={room} onFloorClick={handleFloorClick} />
       {doorways.map(door => (
         <DoorwayModel
@@ -760,23 +772,30 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
           <TentModel
             tent={tent}
             origin={tentWorldOrigin(tent, room)}
-            highlighted={hoveredId === tent.id}
+            highlighted={hoveredId === tent.id || selectedId === tent.id}
             onClick={onClickTent}
+            onRightClick={onRightClickTent}
             onHover={t => onHover(t ? { kind: 'tent', tent: t } : null)}
           />
           {tent.items.map(item => (
-            <ItemNode key={item.id} item={item} room={room} tent={tent} hour={hour} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
+            <ItemNode key={item.id} item={item} room={room} tent={tent} hour={hour} hovered={hoveredId === item.id} selected={selectedId === item.id} onHover={onHover} onClickItem={onClickItem} onRightClickItem={onRightClickItem} />
           ))}
           {tent.items.map(item => item.category === 'equipment' && item.type === 'exhaust_fan' && item.exhaustTo === 'outdoors'
             ? <ExhaustDuctModel key={`duct-${item.id}`} eq={item} room={room} tent={tent} />
+            : null)}
+          {tent.items.map(item => item.category === 'equipment' && item.type === 'nutrient_reservoir'
+            ? <FeedLinesModel key={`feed-${item.id}`} eq={item} room={room} tent={tent} />
             : null)}
         </group>
       ))}
       {room.items.map(item => item.category === 'equipment' && item.type === 'exhaust_fan' && item.exhaustTo === 'outdoors'
         ? <ExhaustDuctModel key={`duct-${item.id}`} eq={item} room={room} />
         : null)}
+      {room.items.map(item => item.category === 'equipment' && item.type === 'nutrient_reservoir'
+        ? <FeedLinesModel key={`feed-${item.id}`} eq={item} room={room} />
+        : null)}
       {room.items.map(item => (
-        <ItemNode key={item.id} item={item} room={room} hour={hour} hovered={hoveredId === item.id} onHover={onHover} onClickItem={onClickItem} />
+        <ItemNode key={item.id} item={item} room={room} hour={hour} hovered={hoveredId === item.id} selected={selectedId === item.id} onHover={onHover} onClickItem={onClickItem} onRightClickItem={onRightClickItem} />
       ))}
       {room.items.map(item => {
         const ductTent = getDuctTargetTent(room, item);
@@ -796,7 +815,10 @@ export function GameScene(props: GameSceneProps) {
       <Canvas
         dpr={[1, 2]}
         camera={{ fov: 50, near: 0.1, far: 400, position: [8, 15, 22] }}
-        onPointerMissed={() => props.onHover(null)}
+        onPointerMissed={e => {
+          props.onHover(null);
+          if (e.button === 0) props.onDeselect(); // Left click on empty space
+        }}
       >
         <SceneContent {...props} labels={labels} labelRegistry={labelRegistry} />
       </Canvas>

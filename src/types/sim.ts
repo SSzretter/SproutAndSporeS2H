@@ -87,7 +87,39 @@ export type ContainerType =
   | 'in_ground_earth'     // Direct In-Ground Earth Bed
   | 'dwc_reservoir_bucket'// 5-Gallon DWC Deep Water Reservoir Bucket with Net Pot & Air Stone
   | 'flood_drain_tray'    // Hydroponic Ebb & Flow Flood Tray
-  | 'aeroponic_chamber';  // Sealed Aeroponic Mist Chamber
+  | 'aeroponic_chamber'   // Sealed Aeroponic Mist Chamber
+  | 'tray_cell'           // One cell of a 1020 cell insert on a grow rack
+  | 'tray_pot';           // Square pot standing in a 1020 tray on a grow rack
+
+// What sits in a 1020 tray on a grow rack (see TRAY_INSERTS in growRacks.ts)
+export type TrayInsertType =
+  | 'cells_32'
+  | 'cells_50'
+  | 'cells_72'
+  | 'cells_128'
+  | 'cells_200'
+  | 'pots_4in_8'      // 8 × 4" square pots
+  | 'pots_3_5in_18';  // 18 × 3.5" square pots
+
+/** One shelf of a grow rack (tiers are listed bottom to top). */
+export interface RackTier {
+  trays: number;          // 1020 trays side by side on this shelf
+  insert: TrayInsertType; // Insert used in every tray on this shelf
+}
+
+/** What a nutrient reservoir's pump feeds: a plant, or a grow rack (one shelf, or every shelf when tier is unset). */
+export interface ReservoirFeedTarget {
+  id: string;
+  tier?: number;
+}
+
+/** Where a plant sits on a grow rack: shelf, tray on that shelf, and cell / pot in the tray (all 0-based). */
+export interface RackSlot {
+  rackId: string;
+  tier: number;
+  tray: number;
+  cell: number;
+}
 
 export type GrowingMedium = 
   | 'living_organic_soil' // Super Soil with Compost, Worm Castings, Biochar & Mycorrhizae
@@ -166,6 +198,7 @@ export interface PlantItem {
   containerDimensions?: Dimensions; // Physical pot / bed / bucket size (ft), derived from containerType + volume
   growingMedium?: GrowingMedium;
   nutrientProgram?: NutrientProgram;
+  rackSlot?: RackSlot; // Sown into a grow rack tray: position, cell size and container follow the rack
 
   // Real-time Soil & Hydroponic Dynamics:
   soilPh?: number;             // 5.2 - 7.5 (soil optimal 6.2 - 6.8; hydro optimal 5.6 - 6.2)
@@ -234,7 +267,9 @@ export type EquipmentType =
   | 'co2_bag'
   | 'heat_mat'
   | 'portable_ac'    // Room A/C: removes heat (BTU rating) and moisture, vents its own heat outside
-  | 'hvac_register'; // Supply register from the house's central system: heated / cooled air at a CFM
+  | 'hvac_register'  // Supply register from the house's central system: heated / cooled air at a CFM
+  | 'grow_rack'      // Multi-tier shelf of 1020 trays; plants sit in its cells (PlantItem.rackSlot)
+  | 'nutrient_reservoir'; // Tank of nutrient solution with a pump feeding hydro plants / rack shelves (feedTargets)
 
 export type EquipmentControlMode = 'auto' | 'manual' | 'schedule' | 'cycle';
 
@@ -278,7 +313,7 @@ export interface EquipmentItem {
   interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
   effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
   ductedToTentId?: string; // Humidifier / CO2 controller in room.items whose output is piped into this tent through a hose
-  reservoirTempF?: number; // Live humidifier water temperature (follows the air around the unit, plus any wrapped heat mat)
+  reservoirTempF?: number; // Live water temperature: humidifier tank (plus any wrapped heat mat) or nutrient reservoir
   reservoirLevelL?: number; // Humidifier water left in the tank (litres); drains while misting, refilled by hand
   reservoirCapacityL?: number; // Humidifier tank size (litres); must fit in the unit's body (see getMaxReservoirLiters)
   bucketLevelL?: number; // Dehumidifier condensate in its collection bucket (litres); fills while extracting, emptied by hand
@@ -290,6 +325,25 @@ export interface EquipmentItem {
   coolingCapacityBtu?: number; // Portable A/C rated cooling (BTU/h); defaults from the name ("8,000 BTU")
   registerMode?: 'cool' | 'heat' | 'auto' | 'off'; // HVAC register: what the house system supplies through it
   attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
+  rackTiers?: RackTier[]; // Grow rack: shelves, bottom to top
+  rackTierSpacingFt?: number; // Grow rack: shelf-to-shelf spacing (ft)
+  nutrientCapacityL?: number; // Nutrient reservoir: tank size (litres)
+  nutrientLevelL?: number; // Nutrient reservoir: solution left (litres)
+  nutrientEcPpm?: number; // Nutrient reservoir: solution strength (ppm, 500 scale)
+  nutrientPh?: number; // Nutrient reservoir: solution pH
+  nutrientTargetEcPpm?: number; // Nutrient reservoir: strength a fresh mix / dose is made up to
+  nutrientTargetPh?: number; // Nutrient reservoir: pH a fresh mix / dose is adjusted to
+  pumpMode?: 'flood' | 'continuous'; // Flood & drain on a timer (ebb & flow, drip) or always circulating (RDWC, aeroponics)
+  floodsPerDay?: number; // Flood mode: timer cycles per day, evenly spaced from floodStartHour
+  floodMinutes?: number; // Flood mode: how long each flood runs
+  floodStartHour?: number; // Flood mode: hour of the first flood of the day
+  feedTargets?: ReservoirFeedTarget[]; // Nutrient reservoir: plants / rack shelves its lines run to (anywhere in its room)
+  waterConditioning?: 'none' | 'chiller' | 'heater' | 'both'; // Nutrient reservoir: water chiller and / or aquarium heater
+  waterTargetTempF?: number; // Nutrient reservoir: temperature the chiller / heater holds the solution at
+  airStone?: boolean; // Nutrient reservoir: air pump + air stone oxygenating the solution
+  dissolvedOxygenPct?: number; // Nutrient reservoir: live oxygen saturation of the solution (0 - 100%)
+  conditioningWatts?: number; // Nutrient reservoir: live heat the chiller / heater put into the surrounding air (W)
+  lastSolutionChangeTime?: number; // Nutrient reservoir: when the solution was last dumped and mixed fresh
   dimensions: Dimensions;
   position?: Position3D; // Coordinates (x, y, z) in feet within host container
   notes?: string;
@@ -324,7 +378,7 @@ export interface NpcInventory {
 export interface NpcActionLogEntry {
   id: string;
   timestamp: number;
-  actionType: 'water' | 'feed' | 'mist' | 'refill_humidifier' | 'empty_dehumidifier' | 'adjust_equipment' | 'harvest' | 'inspect' | 'rest' | 'patrol';
+  actionType: 'water' | 'feed' | 'mist' | 'refill_humidifier' | 'empty_dehumidifier' | 'service_reservoir' | 'adjust_equipment' | 'harvest' | 'inspect' | 'rest' | 'patrol';
   title: string;
   details: string;
   targetName?: string;
@@ -339,6 +393,8 @@ export interface NpcWorkerSettings {
   mistThresholdPct?: number; // e.g. 45% substrate moisture
   refillHumidifierBelowL?: number; // e.g. 1.5 L
   emptyDehumidifierAbovePct?: number; // e.g. 80%
+  refillReservoirBelowPct?: number; // Top off + dose a nutrient reservoir below this fill level (e.g. 35%)
+  reservoirChangeDays?: number; // Dump and mix fresh nutrient solution this often (e.g. 14 days)
   autoHarvestCrops?: boolean; // whether to harvest ready crops
   workCadenceMinutes?: number; // frequency of autonomous rounds
 }

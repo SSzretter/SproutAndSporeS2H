@@ -56,6 +56,22 @@ function Pot({ plant }: { plant: PlantItem }) {
     );
   }
 
+  if (type === 'tray_cell' || type === 'tray_pot') {
+    // Square cell / pot standing in a rack's 1020 tray
+    return (
+      <group>
+        <mesh position={[0, h / 2, 0]}>
+          <boxGeometry args={[pot.length * 0.96, h, pot.width * 0.96]} />
+          <meshStandardMaterial color={type === 'tray_pot' ? '#27272a' : '#1c1917'} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, h * 0.95, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[pot.length * 0.86, pot.width * 0.86]} />
+          <meshStandardMaterial color={soil} roughness={1} />
+        </mesh>
+      </group>
+    );
+  }
+
   if (type === 'in_ground_earth') {
     return (
       <mesh position={[0, 0, 0]} scale={[r, h, pot.width / 2]}>

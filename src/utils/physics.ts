@@ -7,6 +7,7 @@ import { getTentEnvelope } from './tentEnvelope';
 import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomClimateUnit, stepRoomTemperature, RoomClimateUnitState, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F } from './roomThermal';
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
+import { getRootZoneWaterL, stepRoomNutrientReservoirs } from './nutrientReservoirs';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -1145,6 +1146,11 @@ export function simulateEnvironmentTick(
       rootHeat: getRootZoneHeat(item, room.items)
     });
   });
+  // Nutrient reservoirs flood / circulate to the plants and rack shelves they feed, on the floor or in any tent
+  const [fedRoomItems, ...fedTentItems] = stepRoomNutrientReservoirs([
+    { items: updatedRoomItems, ambientTempF: roomTempF, location: room.name },
+    ...updatedTents.map(t => ({ items: t.items, ambientTempF: t.climate.tempF, location: t.name }))
+  ], { simTime: currentSimTime, elapsedMinutes }, events);
 
   return {
     room: {
@@ -1159,8 +1165,8 @@ export function simulateEnvironmentTick(
         // One decimal: per-minute exchange with tents and outdoors is a fraction of a ppm
         co2Ppm: Math.round(Math.max(350, Math.min(5000, roomCo2)) * 10) / 10
       },
-      tents: updatedTents,
-      items: updatedRoomItems
+      tents: updatedTents.map((t, i) => ({ ...t, items: fedTentItems[i] })),
+      items: fedRoomItems
     },
     events
   };
@@ -1257,18 +1263,24 @@ function simulateCropItem(params: {
     plant.rootTempF = currentRoot + (targetRootTemp - currentRoot) * Math.min(1, 0.05 * (elapsedMinutes / 10));
 
     // B. Soil & Medium Dynamics:
-    // Volume buffering: 1-gal pot dries quickly; 10-gal or 50-gal raised bed buffers moisture
+    // Water use follows the plant: transpiration scales with its canopy (leaf area), how hard the air
+    // pulls (VPD) and whether the lights are on, plus a little evaporation off the pot's surface. The
+    // moisture drop is that water against what the root zone holds, so a big plant in a small pot dries
+    // within a day or two while a seedling barely dents a 5 gal pot. Roughly 2.5 L/day for a 30" canopy
+    // at ~1 kPa VPD; a 72-cell seedling ~0.04 L/day.
     const volGallons = plant.containerVolumeGallons || getDefaultContainerVolumeGallons(plant.containerType);
-    const volBuffer = Math.max(0.2, Math.min(2.5, 5 / volGallons));
-    
-    let mediumDrainFactor = 1.0;
-    if (plant.growingMedium === 'coco_perlite') mediumDrainFactor = 1.35;
-    else if (plant.growingMedium === 'living_organic_soil' || plant.growingMedium === 'native_garden_loam') mediumDrainFactor = 0.85;
-    else if (plant.systemType === 'dwc') mediumDrainFactor = 0.05;
-
-    const transpirationRate = (isDay ? 0.08 : 0.02) * volBuffer * mediumDrainFactor;
-    const moistureConsumed = transpirationRate * (elapsedMinutes / 60);
-    plant.soilMoisture = Math.max(0, parseFloat((plant.soilMoisture - moistureConsumed).toFixed(2)));
+    const canopyIn = Math.max(0.5, plant.canopyWidthInches || 0);
+    const transpirationLPerDay = 0.015 * Math.pow(canopyIn, 1.5)
+      * Math.max(0.4, Math.min(1.8, enclosureClimate.vpdKpa || 1))
+      * (isDay ? 1.3 : 0.35);
+    const potSurfaceSqFt = plant.containerDimensions ? plant.containerDimensions.length * plant.containerDimensions.width : 0.8;
+    const evaporationLPerDay = 0.1 * potSurfaceSqFt;
+    // A DWC bucket's roots hang in its own water: the medium barely dries
+    const dwcFactor = plant.systemType === 'dwc' ? 0.05 : 1;
+    const waterUsedL = (transpirationLPerDay + evaporationLPerDay) * dwcFactor * (elapsedMinutes / 1440);
+    const moistureConsumed = (waterUsedL / getRootZoneWaterL({ ...plant, containerVolumeGallons: volGallons })) * 100;
+    // Not rounded: at 1x a minute's drying is well under 0.01% and would be rounded away
+    plant.soilMoisture = Math.max(0, plant.soilMoisture - moistureConsumed);
 
     // Rain hydration for outdoor gardens
     if (isOutdoor && outside?.weather === 'rainy') {
