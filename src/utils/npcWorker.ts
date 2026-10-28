@@ -300,6 +300,32 @@ export function ensurePersonNpcFields(person: PersonItem): PersonItem {
   const role: PersonRole = person.role || 'resident';
   const meta = ROLE_METADATA[role] || ROLE_METADATA.resident;
 
+  // Self-heal stale active action strings from earlier saves (e.g. stuck "Emptying ..." or "Watering ...")
+  let cleanAction = person.currentAction;
+  const isStaleAction = cleanAction && (
+    cleanAction.startsWith('Emptying') ||
+    cleanAction.startsWith('Watering') ||
+    cleanAction.startsWith('Misting') ||
+    cleanAction.startsWith('Refilling') ||
+    cleanAction.startsWith('Feeding') ||
+    cleanAction.startsWith('Harvest') ||
+    cleanAction.startsWith('Serviced')
+  );
+
+  const defaultIdle = role === 'resident'
+    ? 'Resting in living space'
+    : role === 'technician'
+    ? 'Standby: Monitoring equipment & ducting'
+    : role === 'grower'
+    ? 'Monitoring root zones & canopy health'
+    : role === 'harvester'
+    ? 'Scouting ripening flowers & mushrooms'
+    : 'Patrolling facility zones';
+
+  if (!cleanAction || isStaleAction) {
+    cleanAction = defaultIdle;
+  }
+
   return {
     ...person,
     role,
@@ -316,7 +342,7 @@ export function ensurePersonNpcFields(person: PersonItem): PersonItem {
       }
     ],
     inventory: person.inventory || getDefaultNpcInventory(role),
-    currentAction: person.currentAction || (role === 'resident' ? 'Resting in living space' : 'On standby / inspecting'),
+    currentAction: cleanAction,
     shirtColor: person.shirtColor || meta.shirtColor,
     hatColor: person.hatColor || meta.hatColor
   };
@@ -444,6 +470,30 @@ export function simulateNpcRoomTick(
 
     let acted = false;
 
+    // Check if worker was in the middle of a task that has now finished its realistic duration (~2.5 min)
+    const lastLog = actionLog[0];
+    const lastActionAgeMs = lastLog ? simTime - lastLog.timestamp : Infinity;
+    const isWorkingOnTask = Boolean(
+      person.currentAction && (
+        person.currentAction.startsWith('Emptying') ||
+        person.currentAction.startsWith('Watering') ||
+        person.currentAction.startsWith('Refilling') ||
+        person.currentAction.startsWith('Misting') ||
+        person.currentAction.startsWith('Feeding') ||
+        person.currentAction.startsWith('Harvest') ||
+        person.currentAction.startsWith('Serviced')
+      )
+    );
+
+    const taskDurationExpired = person.currentActionUntil 
+      ? simTime >= person.currentActionUntil 
+      : lastActionAgeMs > 2.5 * 60 * 1000;
+
+    if (isWorkingOnTask && !taskDurationExpired) {
+      // Worker is actively performing the task during this 2.5 min window
+      return person;
+    }
+
     // 1. TEND DRY PLANTS (Grower, Caretaker)
     if (!acted && (role === 'grower' || role === 'caretaker')) {
       const waterThreshold = settings.waterThresholdPct ?? 45;
@@ -479,6 +529,7 @@ export function simulateNpcRoomTick(
         return {
           ...person,
           currentAction: `Watering ${p.name} (${loc})`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: p.id,
           actionLog,
           inventory
@@ -515,6 +566,7 @@ export function simulateNpcRoomTick(
         return {
           ...person,
           currentAction: `Feeding nutrients to ${p.name}`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: p.id,
           actionLog,
           inventory
@@ -557,6 +609,7 @@ export function simulateNpcRoomTick(
         return {
           ...person,
           currentAction: `Misting ${m.name} (${loc})`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: m.id,
           actionLog,
           inventory
@@ -604,6 +657,7 @@ export function simulateNpcRoomTick(
         return {
           ...person,
           currentAction: `Refilling ${eq.name} (${loc})`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: eq.id,
           actionLog,
           inventory
@@ -646,7 +700,8 @@ export function simulateNpcRoomTick(
         acted = true;
         return {
           ...person,
-          currentAction: `Emptying ${eq.name} bucket`,
+          currentAction: `Emptying ${eq.name} bucket (${loc})`,
+          currentActionUntil: simTime + 2.5 * 60 * 1000,
           currentActionTargetId: eq.id,
           actionLog,
           inventory
@@ -803,16 +858,23 @@ export function simulateNpcRoomTick(
       }
     }
 
-    // If nothing needed immediate attention, update status to patrolling / monitoring
-    const currentAct = person.currentAction;
-    if (!currentAct || currentAct.startsWith('Watering') || currentAct.startsWith('Misting') || currentAct.startsWith('Refilling') || currentAct.startsWith('Harvested')) {
-      return {
-        ...person,
-        currentAction: `Inspecting ${role === 'grower' ? 'crop canopies' : role === 'technician' ? 'equipment & ducting' : role === 'harvester' ? 'ripening status' : 'facility zones'}`
-      };
-    }
+    // If nothing needed attention (or task duration completed), set proper monitoring / standby status
+    const idleAction = role === 'grower'
+      ? 'Monitoring root zones & canopy health'
+      : role === 'technician'
+      ? 'Standby: Monitoring equipment & ducting'
+      : role === 'harvester'
+      ? 'Scouting ripening flowers & mushrooms'
+      : 'Patrolling facility zones';
 
-    return person;
+    return {
+      ...person,
+      currentAction: idleAction,
+      currentActionUntil: undefined,
+      currentActionTargetId: undefined,
+      actionLog,
+      inventory
+    };
   };
 
   // Process room-level persons

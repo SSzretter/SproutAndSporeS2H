@@ -9,7 +9,8 @@ import {
   EquipmentItem,
   HarvestRecord,
   JournalEntry,
-  JournalCategory
+  JournalCategory,
+  Position3D
 } from '../../types/sim';
 import { GameScene, HoverTarget, FloatingText, Doorway, PlayerState } from '../game3d/GameScene';
 import { WallSide } from '../../types/sim';
@@ -104,6 +105,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const lastDoorTravelTimeRef = useRef<number>(0);
+  const lastAdjustActionTimeRef = useRef<number>(0);
   const cameraYawRef = useRef(0);
 
   // Sound state
@@ -876,12 +878,89 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   };
 
   const handleSceneHover = (next: HoverTarget | null) => {
+    // While the user is actively wheel-scrolling or dragging an object, ignore transient pointerout events
+    if (!next && Date.now() - lastAdjustActionTimeRef.current < 1200) {
+      return;
+    }
     const idOf = (t: HoverTarget | null) => !t ? null
       : t.kind === 'item' ? t.item.id
       : t.kind === 'tent' ? t.tent.id
       : t.door.roomId;
     setHoverTarget(prev => (idOf(prev) === idOf(next) ? prev : next));
   };
+
+  // Real-time item repositioning via scroll wheel (Z height) and middle-drag (X, Y)
+  const handleUpdateItemPosition = useCallback((
+    itemId: string,
+    tentId: string | undefined,
+    newPos: Position3D,
+    label?: string
+  ) => {
+    lastAdjustActionTimeRef.current = Date.now();
+    onUpdateState(prev => {
+      const next = updateCropInSimulation(prev, itemId, tentId, (item) => ({
+        ...item,
+        position: newPos
+      }));
+      broadcastSimulationState(next);
+      return next;
+    });
+
+    if (label) {
+      const tent = tentId ? currentRoom.tents.find(t => t.id === tentId) : undefined;
+      const item = tent ? tent.items.find(i => i.id === itemId) : currentRoom.items.find(i => i.id === itemId);
+      if (item) {
+        const [wx, , wz] = itemWorldPosition(item, currentRoom, tent);
+        setFloatingTexts(prev => {
+          const filtered = prev.filter(t => t.id !== 'item-pos-adjust');
+          return [...filtered, { id: 'item-pos-adjust', text: label, x: wx, y: wz, color: '#38bdf8', createdAt: Date.now() }];
+        });
+      }
+    }
+  }, [onUpdateState, currentRoom]);
+
+  // Real-time tent repositioning via middle-drag (X, Y) and scroll wheel (Z height)
+  // Everything inside the tent shifts smoothly with the tent while preserving relative coordinates
+  const handleUpdateTentPosition = useCallback((
+    tentId: string,
+    newPos: Position3D,
+    label?: string
+  ) => {
+    lastAdjustActionTimeRef.current = Date.now();
+    onUpdateState(prev => {
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(rm => {
+        if (rm.id !== activeRId) return rm;
+        return {
+          ...rm,
+          tents: rm.tents.map(t => t.id === tentId ? { ...t, position: newPos } : t)
+        };
+      });
+      const updatedActive = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+      const next = {
+        ...prev,
+        rooms: updatedRooms,
+        room: updatedActive
+      };
+      broadcastSimulationState(next);
+      return next;
+    });
+
+    if (label) {
+      setFloatingTexts(prev => {
+        const filtered = prev.filter(t => t.id !== 'tent-pos-adjust');
+        return [...filtered, {
+          id: 'tent-pos-adjust',
+          text: label,
+          x: newPos.x + 2,
+          y: newPos.y + 2,
+          color: '#34d399',
+          createdAt: Date.now()
+        }];
+      });
+    }
+  }, [onUpdateState]);
 
   const handleSceneClickTent = (tent: Tent) => {
     soundEffects.playClick();
@@ -921,7 +1000,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   const hoverTitle = (() => {
     if (!hoverTarget) return null;
-    if (hoverTarget.kind === 'tent') return `${hoverTarget.tent.name} [Click to Edit Tent & Items]`;
+    if (hoverTarget.kind === 'tent') {
+      const pos = hoverTarget.tent.position || { x: 1, y: 1 };
+      return `🎪 ${hoverTarget.tent.name} (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})ft [Hold Wheel: Move Tent • Wheel: Height • Click: Edit Tent]`;
+    }
     if (hoverTarget.kind === 'door') {
       if (hoverTarget.door.roomId === OUTSIDE_DOOR_ID) return '🌳 Exterior door to the outside';
       return hoverTarget.door.roomId === 'ADD_ROOM' ? '➕ Add a New Room [Click]' : `${hoverTarget.door.label} [Click or Walk Through]`;
@@ -932,7 +1014,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       const host = hoverTarget.tentId ? currentRoom.tents.find(t => t.id === hoverTarget.tentId) : undefined;
       const issues = getCropIssues(item, (host ?? currentRoom).climate, host ? host.items : currentRoom.items, !host && currentRoom.environmentType === 'outdoor_garden');
       const problems = issues.length > 0 ? ` — ${issues.map(i => `${i.severity === 'critical' ? '⛔' : '⚠'} ${i.label}`).join(', ')}` : '';
-      return `${item.name} (${item.stage})${problems} [Click to Inspect & Care]`;
+      const zHeight = item.position?.z ? ` • Z: ${item.position.z.toFixed(1)}ft` : '';
+      return `${item.name} (${item.stage})${zHeight}${problems} [Wheel: Height (Z) • Hold Wheel: Move • Click: Care]`;
     }
     if (item.category === 'equipment') {
       const activity = getEquipmentActivity(item, new Date(state.simTime).getHours());
@@ -949,9 +1032,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         return `⚙️ ${item.name} (${status} • ${bucket}) [Click to Open Controls & Properties]`;
       }
       const vent = item.type === 'exhaust_fan' ? ` • → ${item.exhaustTo === 'outdoors' ? 'outdoors' : 'room'}` : '';
-      return `⚙️ ${item.name} (${status} • ${item.powerWatts}W${vent}) [Click to Open Controls & Properties]`;
+      const zHeight = item.position?.z != null ? ` • Z: ${item.position.z.toFixed(1)}ft` : '';
+      return `⚙️ ${item.name} (${status}${zHeight} • ${item.powerWatts}W${vent}) [Wheel: Height (Z) • Hold Wheel: Move • Click: Edit]`;
     }
-    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Click to Open Dossier & Controls]`;
+    return `${item.category === 'person' ? '👤' : '🐾'} ${item.name} [Wheel: Height (Z) • Hold Wheel: Move • Click: Controls]`;
   })();
 
   // Doorways to other rooms on the left/right walls (or an Add Room portal)
@@ -1177,6 +1261,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           simTime={state.simTime}
           doorways={getRoomDoorways()}
           hoveredId={hoveredId}
+          hoverTarget={hoverTarget}
           floatingTexts={floatingTexts}
           playerRef={playerRef}
           cameraYawRef={cameraYawRef}
@@ -1185,6 +1270,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
           onClickTent={handleSceneClickTent}
           onClickDoor={handleSceneClickDoor}
           onClickFloor={handleSceneClickFloor}
+          onUpdateItemPosition={handleUpdateItemPosition}
+          onUpdateTentPosition={handleUpdateTentPosition}
           tempUnit={state.tempUnit}
           showTentStats={showTentStats}
         />

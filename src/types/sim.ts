@@ -353,6 +353,7 @@ export interface PersonItem {
   workerSettings?: NpcWorkerSettings;
   currentAction?: string;
   currentActionTimer?: number;
+  currentActionUntil?: number; // simTime when the active task finishes
   currentActionTargetId?: string;
   actionLog?: NpcActionLogEntry[];
   inventory?: NpcInventory;

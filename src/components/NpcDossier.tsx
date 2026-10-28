@@ -268,7 +268,7 @@ export const NpcDossier: React.FC<NpcDossierProps> = ({
           <div className="flex items-center gap-2 text-xs">
             <span className="text-zinc-500 font-medium">Currently:</span>
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-700/80 text-zinc-200 font-medium shadow-inner">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+              <span className={`w-2 h-2 rounded-full ${person.currentAction?.startsWith('Standby') || person.currentAction?.startsWith('Monitoring') || person.currentAction?.startsWith('Inspecting') || person.currentAction?.startsWith('Resting') ? 'bg-emerald-400' : 'bg-cyan-400 animate-ping'}`} />
               <span>{person.currentAction || 'Inspecting grow room environment'}</span>
             </div>
           </div>

@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
-import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem, PersonItem } from '../../types/sim';
+import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem, PersonItem, Position3D } from '../../types/sim';
 import { ROLE_METADATA } from '../../utils/npcWorker';
 import { tentWorldOrigin, itemWorldPosition, isCeilingMounted, Vec3 } from './coords';
 import { PlantModel } from './PlantModel';
@@ -41,6 +41,7 @@ interface GameSceneProps {
   simTime: number;
   doorways: Doorway[];
   hoveredId: string | null;
+  hoverTarget?: HoverTarget | null;
   floatingTexts: FloatingText[];
   playerRef: React.MutableRefObject<PlayerState>;
   cameraYawRef: React.MutableRefObject<number>;
@@ -49,6 +50,8 @@ interface GameSceneProps {
   onClickTent: (tent: Tent) => void;
   onClickDoor: (door: Doorway) => void;
   onClickFloor: (x: number, y: number) => void;
+  onUpdateItemPosition?: (itemId: string, tentId: string | undefined, newPos: Position3D, label: string) => void;
+  onUpdateTentPosition?: (tentId: string, newPos: Position3D, label: string) => void;
   tempUnit: 'F' | 'C';
   showTentStats: boolean; // live temp / RH / VPD / CO2 under each tent's name
 }
@@ -63,13 +66,29 @@ function isCropReady(item: Item): boolean {
   return false;
 }
 
-function HoverRing({ item }: { item: Item }) {
-  const r = Math.max(item.dimensions.length, item.dimensions.width) / 2 + 0.12;
+function HoverRing({ item, elevation = 0 }: { item: Item; elevation?: number }) {
+  const r = Math.max(item.dimensions.length, item.dimensions.width) / 2 + 0.14;
+  const isElevated = elevation > 0.4;
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
-      <ringGeometry args={[r * 0.9, r, 40]} />
-      <meshBasicMaterial color="#34d399" transparent opacity={0.9} />
-    </mesh>
+    <group raycast={() => null}>
+      {/* Floor projection / shadow footprint ring */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -elevation + 0.02, 0]}>
+        <ringGeometry args={[r * 0.88, r, 36]} />
+        <meshBasicMaterial color="#38bdf8" transparent opacity={0.65} />
+      </mesh>
+      {/* Fixture highlight ring */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, item.dimensions.height * 0.5, 0]}>
+        <ringGeometry args={[r * 0.92, r * 1.06, 36]} />
+        <meshBasicMaterial color="#34d399" transparent opacity={0.9} />
+      </mesh>
+      {/* Vertical guideline between floor and elevated fixture */}
+      {isElevated && (
+        <mesh position={[0, (-elevation + item.dimensions.height * 0.5) / 2, 0]}>
+          <cylinderGeometry args={[0.015, 0.015, elevation, 6]} />
+          <meshBasicMaterial color="#38bdf8" transparent opacity={0.5} />
+        </mesh>
+      )}
+    </group>
   );
 }
 
@@ -146,19 +165,38 @@ function ItemNode({
   return (
     <group position={position} userData={ITEM_USER_DATA}>
       {ceilingMounted ? (
-        <>
-          {/* Ceiling gear isn't clickable through its body (it would cover the canopy);
-              a slim hit area on top of it is. */}
+        <group {...handlers}>
           {model}
-          <mesh position={[0, item.dimensions.height + 0.15, 0]} {...handlers}>
+          {/* Top bracket handle */}
+          <mesh position={[0, item.dimensions.height + 0.15, 0]}>
             <boxGeometry args={[Math.min(1, item.dimensions.length * 0.5), 0.3, Math.min(1, item.dimensions.width * 0.5)]} />
             <meshStandardMaterial color={hovered ? '#34d399' : '#3f3f46'} transparent opacity={hovered ? 0.9 : 0.6} />
           </mesh>
-        </>
+          {/* Invisible hover hitbox covering fixture body */}
+          <mesh position={[0, item.dimensions.height / 2, 0]} visible={false}>
+            <boxGeometry args={[item.dimensions.length + 0.3, item.dimensions.height + 0.3, item.dimensions.width + 0.3]} />
+            <meshBasicMaterial transparent opacity={0} />
+          </mesh>
+          {/* Generous vertical buffer when hovered so wheel scrolling height doesn't lose the cursor */}
+          {hovered && (
+            <mesh position={[0, item.dimensions.height / 2, 0]} visible={false}>
+              <boxGeometry args={[item.dimensions.length + 1.2, item.dimensions.height + 3.5, item.dimensions.width + 1.2]} />
+              <meshBasicMaterial transparent opacity={0} />
+            </mesh>
+          )}
+        </group>
       ) : (
-        <group {...handlers}>{model}</group>
+        <group {...handlers}>
+          {model}
+          {hovered && (
+            <mesh position={[0, item.dimensions.height / 2, 0]} visible={false}>
+              <boxGeometry args={[item.dimensions.length + 1.2, item.dimensions.height + 3.5, item.dimensions.width + 1.2]} />
+              <meshBasicMaterial transparent opacity={0} />
+            </mesh>
+          )}
+        </group>
       )}
-      {hovered && <HoverRing item={item} />}
+      {hovered && <HoverRing item={item} elevation={position[1]} />}
       {item.category === 'equipment' && !(item.type === 'heat_mat' && item.attachedToId) && (() => {
         const activity = getEquipmentActivity(item, hour);
         if (!activity) return null;
@@ -174,13 +212,59 @@ function ItemNode({
  * the floor, scroll zooms; left button is left free for interacting. A pan offset holds while
  * the cultivator stands still and eases back to center once they walk.
  */
-function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['playerRef']; cameraYawRef: GameSceneProps['cameraYawRef'] }) {
+function CameraRig({ 
+  playerRef, 
+  cameraYawRef,
+  room,
+  hoverTarget,
+  onUpdateItemPosition,
+  onUpdateTentPosition
+}: { 
+  playerRef: GameSceneProps['playerRef']; 
+  cameraYawRef: GameSceneProps['cameraYawRef'];
+  room: Room;
+  hoverTarget?: HoverTarget | null;
+  onUpdateItemPosition?: GameSceneProps['onUpdateItemPosition'];
+  onUpdateTentPosition?: GameSceneProps['onUpdateTentPosition'];
+}) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const { camera, gl } = useThree();
   const desired = useRef(new THREE.Vector3());
   const panOffset = useRef(new THREE.Vector3());
   const panning = useRef(false);
   const lastPlayer = useRef({ x: playerRef.current.x, y: playerRef.current.y });
+
+  const hoverTargetRef = useRef<HoverTarget | null>(hoverTarget || null);
+  hoverTargetRef.current = hoverTarget || null;
+  const lockedTargetRef = useRef<HoverTarget | null>(null);
+  const lastWheelTimeRef = useRef<number>(0);
+
+  // Keep locked target in sync when hoverTarget changes to an item/tent
+  if (hoverTarget) {
+    lockedTargetRef.current = hoverTarget;
+  }
+
+  const isDraggingItemRef = useRef<{
+    itemId: string;
+    tentId?: string;
+    itemDims: { length: number; width: number; height: number };
+    containerDims: { length: number; width: number; height: number };
+    tentOrigin: [number, number];
+    plane: THREE.Plane;
+    offset: THREE.Vector3;
+    currentZ: number;
+    itemName: string;
+  } | null>(null);
+
+  const isDraggingTentRef = useRef<{
+    tentId: string;
+    tentDims: { length: number; width: number; height: number };
+    roomDims: { length: number; width: number; height: number };
+    plane: THREE.Plane;
+    offset: THREE.Vector3;
+    currentZ: number;
+    tentName: string;
+  } | null>(null);
 
   useEffect(() => {
     const p = playerRef.current;
@@ -189,30 +273,291 @@ function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['pla
     controlsRef.current?.update();
   }, [camera, playerRef]);
 
+  // Pointer & Wheel listeners for item Z-height scrolling and middle-click X,Y panning
   useEffect(() => {
     const el = gl.domElement;
-    const onDown = (e: PointerEvent) => { if (e.button === 1) panning.current = true; };
-    const onUp = (e: PointerEvent) => { if (e.button === 1) panning.current = false; };
-    // Middle-click would otherwise start the browser's autoscroll
-    const onMouseDown = (e: MouseEvent) => { if (e.button === 1) e.preventDefault(); };
+
+    const onDown = (e: PointerEvent) => {
+      if (e.button === 1) {
+        // Middle button pressed!
+        const target = hoverTargetRef.current;
+        if (target && target.kind === 'item' && onUpdateItemPosition) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const item = target.item;
+          const tent = target.tentId ? room.tents.find(t => t.id === target.tentId) : undefined;
+          const container = tent ? tent.dimensions : room.dimensions;
+          const worldPos = itemWorldPosition(item, room, tent);
+          const [tx, , tz] = tent ? tentWorldOrigin(tent, room) : [0, 0, 0];
+
+          // Horizontal plane at the item's world elevation Y
+          const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos[1]);
+
+          const rect = el.getBoundingClientRect();
+          const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+          const hitPoint = new THREE.Vector3();
+          raycaster.ray.intersectPlane(plane, hitPoint);
+
+          const offset = new THREE.Vector3(worldPos[0] - hitPoint.x, 0, worldPos[2] - hitPoint.z);
+          const currentZ = item.position?.z ?? (isCeilingMounted(item, container.height) ? Math.max(0, container.height - item.dimensions.height - 0.2) : 0);
+
+          isDraggingItemRef.current = {
+            itemId: item.id,
+            tentId: target.tentId,
+            itemDims: item.dimensions,
+            containerDims: container,
+            tentOrigin: [tx, tz],
+            plane,
+            offset,
+            currentZ,
+            itemName: item.name
+          };
+
+          if (controlsRef.current) {
+            controlsRef.current.enablePan = false;
+          }
+          document.body.style.cursor = 'move';
+          return;
+        }
+
+        if (target && target.kind === 'tent' && onUpdateTentPosition) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const tent = target.tent;
+          const tentOrigin = tentWorldOrigin(tent, room);
+          const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -tentOrigin[1]);
+
+          const rect = el.getBoundingClientRect();
+          const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+          const hitPoint = new THREE.Vector3();
+          raycaster.ray.intersectPlane(plane, hitPoint);
+
+          const offset = new THREE.Vector3(tentOrigin[0] - hitPoint.x, 0, tentOrigin[2] - hitPoint.z);
+          const currentZ = tent.position?.z ?? 0;
+
+          isDraggingTentRef.current = {
+            tentId: tent.id,
+            tentDims: tent.dimensions,
+            roomDims: room.dimensions,
+            plane,
+            offset,
+            currentZ,
+            tentName: tent.name
+          };
+
+          if (controlsRef.current) {
+            controlsRef.current.enablePan = false;
+          }
+          document.body.style.cursor = 'move';
+          return;
+        }
+
+        panning.current = true;
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (isDraggingTentRef.current && onUpdateTentPosition) {
+        e.preventDefault();
+        const drag = isDraggingTentRef.current;
+        const rect = el.getBoundingClientRect();
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+        const hitPoint = new THREE.Vector3();
+
+        if (raycaster.ray.intersectPlane(drag.plane, hitPoint)) {
+          const worldX = hitPoint.x + drag.offset.x;
+          const worldZ = hitPoint.z + drag.offset.z;
+
+          // Clamp tent footprint within room floor
+          const maxX = Math.max(0.5, drag.roomDims.length - drag.tentDims.length - 0.5);
+          const maxZ = Math.max(0.5, drag.roomDims.width - drag.tentDims.width - 0.5);
+          const clampedX = Math.round(Math.max(0.5, Math.min(maxX, worldX)) * 10) / 10;
+          const clampedY = Math.round(Math.max(0.5, Math.min(maxZ, worldZ)) * 10) / 10;
+
+          onUpdateTentPosition(
+            drag.tentId,
+            { x: clampedX, y: clampedY, z: drag.currentZ },
+            `🎪 ${drag.tentName}: (${clampedX.toFixed(1)}, ${clampedY.toFixed(1)}) ft`
+          );
+        }
+        return;
+      }
+
+      if (isDraggingItemRef.current && onUpdateItemPosition) {
+        e.preventDefault();
+        const drag = isDraggingItemRef.current;
+        const rect = el.getBoundingClientRect();
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+        const hitPoint = new THREE.Vector3();
+
+        if (raycaster.ray.intersectPlane(drag.plane, hitPoint)) {
+          const worldX = hitPoint.x + drag.offset.x;
+          const worldZ = hitPoint.z + drag.offset.z;
+
+          // Convert from world to container local
+          const localX = worldX - drag.tentOrigin[0];
+          const localY = worldZ - drag.tentOrigin[1];
+
+          // Clamp within container
+          const halfL = drag.itemDims.length / 2;
+          const halfW = drag.itemDims.width / 2;
+          const clampedX = Math.round(Math.max(halfL, Math.min(drag.containerDims.length - halfL, localX)) * 100) / 100;
+          const clampedY = Math.round(Math.max(halfW, Math.min(drag.containerDims.width - halfW, localY)) * 100) / 100;
+
+          onUpdateItemPosition(
+            drag.itemId,
+            drag.tentId,
+            { x: clampedX, y: clampedY, z: drag.currentZ },
+            `✥ ${drag.itemName}: X ${clampedX.toFixed(1)} ft, Y ${clampedY.toFixed(1)} ft`
+          );
+        }
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      if (e.button === 1) {
+        if (isDraggingTentRef.current) {
+          isDraggingTentRef.current = null;
+          if (controlsRef.current) {
+            controlsRef.current.enablePan = true;
+          }
+          document.body.style.cursor = 'default';
+        }
+        if (isDraggingItemRef.current) {
+          isDraggingItemRef.current = null;
+          if (controlsRef.current) {
+            controlsRef.current.enablePan = true;
+          }
+          document.body.style.cursor = 'default';
+        }
+        panning.current = false;
+      }
+    };
+
+    // Scroll wheel: adjusts height Z if hovering an item or tent!
+    const onWheel = (e: WheelEvent) => {
+      const now = Date.now();
+      // Use locked target if user is actively scrolling within the last 1200ms
+      let target = hoverTargetRef.current;
+      if (!target && lockedTargetRef.current && (now - lastWheelTimeRef.current < 1200)) {
+        target = lockedTargetRef.current;
+      }
+      if (!target) return;
+
+      if (target.kind === 'tent' && onUpdateTentPosition) {
+        e.preventDefault();
+        e.stopPropagation();
+        lastWheelTimeRef.current = now;
+        lockedTargetRef.current = target;
+
+        // Fetch live tent from room so every successive scroll reads the new Z
+        const liveTent = room.tents.find(t => t.id === target.tent.id) || target.tent;
+        const currentZ = liveTent.position?.z ?? 0;
+        const currentX = liveTent.position?.x ?? 1;
+        const currentY = liveTent.position?.y ?? 1;
+
+        const step = e.shiftKey ? 0.05 : 0.2;
+        const dir = e.deltaY < 0 ? 1 : -1;
+        const maxZ = Math.max(0, room.dimensions.height - liveTent.dimensions.height);
+        const newZ = Math.round(Math.max(0, Math.min(maxZ, currentZ + dir * step)) * 100) / 100;
+
+        lockedTargetRef.current = {
+          ...target,
+          tent: { ...liveTent, position: { x: currentX, y: currentY, z: newZ } }
+        };
+
+        onUpdateTentPosition(
+          liveTent.id,
+          { x: currentX, y: currentY, z: newZ },
+          `🎪 ${liveTent.name} Height: ${newZ.toFixed(2)} ft (Z)`
+        );
+        return;
+      }
+
+      if (target.kind === 'item' && onUpdateItemPosition) {
+        e.preventDefault();
+        e.stopPropagation();
+        lastWheelTimeRef.current = now;
+        lockedTargetRef.current = target;
+
+        // Fetch live item from tent/room so every successive scroll reads the new Z
+        const tent = target.tentId ? room.tents.find(t => t.id === target.tentId) : undefined;
+        const liveItem = (tent ? tent.items : room.items).find(i => i.id === target.item.id) || target.item;
+        const container = tent ? tent.dimensions : room.dimensions;
+
+        const currentZ = liveItem.position?.z ?? (isCeilingMounted(liveItem, container.height) ? Math.max(0, container.height - liveItem.dimensions.height - 0.2) : 0);
+        const currentX = liveItem.position?.x ?? container.length / 2;
+        const currentY = liveItem.position?.y ?? container.width / 2;
+
+        const step = e.shiftKey ? 0.05 : 0.2;
+        const dir = e.deltaY < 0 ? 1 : -1; // scroll up raises height, scroll down lowers height
+        const maxZ = Math.max(0, container.height - liveItem.dimensions.height);
+        const newZ = Math.round(Math.max(0, Math.min(maxZ, currentZ + dir * step)) * 100) / 100;
+
+        lockedTargetRef.current = {
+          ...target,
+          item: { ...liveItem, position: { x: currentX, y: currentY, z: newZ } }
+        };
+
+        onUpdateItemPosition(
+          liveItem.id,
+          target.tentId,
+          { x: currentX, y: currentY, z: newZ },
+          `↕️ ${liveItem.name} Height: ${newZ.toFixed(2)} ft (Z)`
+        );
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 && hoverTargetRef.current?.kind === 'item') {
+        e.preventDefault();
+      }
+    };
+
     el.addEventListener('pointerdown', onDown);
     el.addEventListener('mousedown', onMouseDown);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+
     return () => {
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('mousedown', onMouseDown);
+      el.removeEventListener('wheel', onWheel);
+      window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      document.body.style.cursor = 'default';
     };
-  }, [gl]);
+  }, [gl, camera, room, onUpdateItemPosition]);
 
   useFrame(() => {
     const controls = controlsRef.current;
     if (!controls) return;
+
+    // Disable camera zoom when hovering an item/tent or actively scrolling Z height
+    const isScrollingTarget = Boolean(lockedTargetRef.current && (Date.now() - lastWheelTimeRef.current < 1200));
+    const isOverTarget = hoverTargetRef.current?.kind === 'item' || hoverTargetRef.current?.kind === 'tent' || isScrollingTarget;
+    controls.enableZoom = !isOverTarget;
+    
+
     const p = playerRef.current;
     desired.current.set(p.x, 2.5, p.y);
 
     if (panning.current) {
-      // OrbitControls is moving the target; remember where it is relative to the cultivator
       panOffset.current.copy(controls.target).sub(desired.current);
     } else {
       const moved = p.x !== lastPlayer.current.x || p.y !== lastPlayer.current.y;
@@ -233,7 +578,6 @@ function CameraRig({ playerRef, cameraYawRef }: { playerRef: GameSceneProps['pla
     <OrbitControls
       ref={controlsRef}
       makeDefault
-      // -1 = no camera action, so left clicks only interact
       mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
       screenSpacePanning={false}
       minDistance={4}
@@ -400,7 +744,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
   return (
     <>
       <SceneLighting room={room} simTime={simTime} />
-      <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} />
+      <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} hoverTarget={props.hoverTarget} onUpdateItemPosition={props.onUpdateItemPosition} onUpdateTentPosition={props.onUpdateTentPosition} />
       <RoomModel room={room} onFloorClick={handleFloorClick} />
       {doorways.map(door => (
         <DoorwayModel

@@ -298,19 +298,32 @@ export function TentModel({
     <group position={origin} {...handlers}>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2, 0.01, W / 2]}>
         <planeGeometry args={[L, W]} />
-        <meshStandardMaterial color={highlighted ? '#1f3d33' : '#1c1c20'} roughness={0.8} />
+        <meshStandardMaterial 
+          color={highlighted ? '#134e4a' : '#1c1c20'} 
+          emissive={highlighted ? '#047857' : '#000000'}
+          emissiveIntensity={highlighted ? 0.25 : 0}
+          roughness={0.8} 
+        />
       </mesh>
       <group>
         {poles.map(([x, z], i) => (
           <mesh key={i} position={[x, H / 2, z]}>
             <cylinderGeometry args={[0.04, 0.04, H, 6]} />
-            <meshStandardMaterial color={frameColor} />
+            <meshStandardMaterial 
+              color={frameColor} 
+              emissive={highlighted ? '#10b981' : '#000000'}
+              emissiveIntensity={highlighted ? 0.4 : 0}
+            />
           </mesh>
         ))}
         {topBars.map((bar, i) => (
           <mesh key={i} position={bar.pos}>
             <boxGeometry args={bar.size} />
-            <meshStandardMaterial color={frameColor} />
+            <meshStandardMaterial 
+              color={frameColor} 
+              emissive={highlighted ? '#10b981' : '#000000'}
+              emissiveIntensity={highlighted ? 0.4 : 0}
+            />
           </mesh>
         ))}
       </group>
