@@ -17,6 +17,7 @@ import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
 import { HoseModel, ExhaustDuctModel, FeedLinesModel } from './HoseModel';
 import { getEquipmentActivity, EquipmentActivity } from '../../utils/equipmentStatus';
 import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
+import { isLightScheduledOn } from '../../utils/roomThermal';
 
 export type { Doorway } from './EnvironmentModels';
 export type { PlayerState } from './CharacterModels';
@@ -175,7 +176,7 @@ function ItemNode({
       : matTarget.kind === 'tent_floor' ? { kind: 'under_tray' }
       : matTarget.wrapped ? { kind: 'wrap', radius: matTarget.item.dimensions.length / 2, height: matTarget.item.dimensions.height }
       : undefined;
-    model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} />;
+    model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} simHour={hour} />;
   }
   else model = <OccupantModel occ={item} />;
 
@@ -577,7 +578,7 @@ function SceneLighting({ room, simTime }: { room: Room; simTime: number }) {
   const addLights = (items: Item[], tent?: Tent) => {
     for (const it of items) {
       if (growLights.length >= MAX_GROW_LIGHTS) return;
-      if (it.category === 'equipment' && it.type === 'grow_light' && it.powerOn) {
+      if (it.category === 'equipment' && it.type === 'grow_light' && it.powerOn && isLightScheduledOn(hour, it.schedule)) {
         const [x, y, z] = itemWorldPosition(it, room, tent);
         growLights.push([x, y - 0.1, z]);
       }

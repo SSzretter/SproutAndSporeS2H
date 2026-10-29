@@ -109,6 +109,9 @@ export type TrayInsertType =
 export interface RackTier {
   trays: number;          // 1020 trays side by side on this shelf
   insert: TrayInsertType; // Insert used in every tray on this shelf
+  domes?: boolean[];      // Per-tray boolean: true if a humidity dome is placed over tray [tr]
+  domeVentsOpen?: boolean[]; // Per-tray boolean: true if the humidity dome's top vents are rotated open
+  domeHeightsIn?: number[]; // Per-tray dome height in inches: e.g. 7 (standard propagation dome) or 4
 }
 
 /** What a nutrient reservoir's pump feeds: a plant, or a grow rack (one shelf, or every shelf when tier is unset). */
@@ -313,6 +316,7 @@ export interface EquipmentItem {
     enabled: boolean;
     onHour: number; // 0 - 23
     offHour: number; // 0 - 23
+    disabledState?: 'off' | 'on'; // When schedule is disabled: 'off' (light stays off, 0 PPFD) or 'on' (24/0 continuous)
   };
   interlockStatus?: string; // Reason when arbitrated/suppressed by central controller
   effectiveSetting?: number; // Live arbitrated power percentage (0 - 100%)
@@ -332,6 +336,7 @@ export interface EquipmentItem {
   rackTiers?: RackTier[]; // Grow rack: shelves, bottom to top
   rackTierSpacingFt?: number; // Grow rack: shelf-to-shelf spacing (ft)
   rackType?: 'standard' | 'ebb_and_flow'; // Standard wire shelving vs automated Ebb & Flow flood rack
+  trayLayout?: 'side_by_side' | 'end_to_end'; // Side-by-side (3 trays in 36" width) vs end-to-end
   ebbFlowIntegratedPump?: boolean; // Ebb & Flow rack: integrated submersible flood pump
   ebbFlowFloodsPerDay?: number; // Ebb & Flow rack: automated flood cycles per day
   ebbFlowFloodDurationMin?: number; // Ebb & Flow rack: minutes per flood soak

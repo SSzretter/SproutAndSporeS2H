@@ -286,6 +286,12 @@ export function getPlantTargetSize(plant: PlantItem, containerFactor: number): P
   };
 }
 
+export interface TrayDomeInfo {
+  domed: boolean;
+  vented: boolean;
+  trappedHeatF?: number;
+}
+
 /**
  * Evaluates how close current environmental conditions are to the plant's stage requirements.
  */
@@ -293,7 +299,8 @@ export function evaluatePlantStageSuitability(
   plant: PlantItem,
   climate: Climate,
   rootTempF: number,
-  actualPhotoperiodHours: number = 18
+  actualPhotoperiodHours: number = 18,
+  domeInfo?: TrayDomeInfo
 ): StageSuitabilityReport {
   const req = plant.stageRequirements?.[plant.stage] || DEFAULT_STAGE_REQUIREMENTS[plant.stage];
   const details: string[] = [];
@@ -489,6 +496,49 @@ export function evaluatePlantStageSuitability(
     if (climate.lightPPFD > 750) {
       scoreMultiplier *= 1.15;
       details.push(`High solar PPFD (${climate.lightPPFD} μmol) fueling rapid vertical hop bine climbing!`);
+    }
+  }
+
+  // Humidity Dome & Tray Microclimate Biology
+  if (domeInfo?.domed) {
+    if (plant.stage === 'germination') {
+      scoreMultiplier *= 1.45; // 45% acceleration: high ambient moisture softens seed coat, maintains radicle turgor
+      details.push(
+        domeInfo.vented
+          ? `Humidity dome (vented) maintaining high humidity (RH ~75-88%) and gentle air exchange. Optimal seed germination acceleration!`
+          : `Humidity dome (sealed) maintaining ultra-high humidity (RH ~88-96%). Accelerated seed coat imbibition & rapid radicle emergence!`
+      );
+    } else if (plant.stage === 'rooting') {
+      scoreMultiplier *= 1.35; // Preserves cutting hydration while adventitious roots develop
+      details.push(
+        domeInfo.vented
+          ? `Humidity dome (vented) preserving cutting turgor with fresh gas exchange. Ideal rooting!`
+          : `Humidity dome (sealed) preserving stem turgidity while adventitious root primordia form.`
+      );
+    } else if (plant.stage === 'seedling' || plant.stage === 'mature_seedling') {
+      if (!domeInfo.vented) {
+        // Damping-off risk! Stagnant humid air rots seedling collars
+        scoreMultiplier *= 0.65;
+        details.push(`High damping-off fungal rot risk! Emerged seedling kept under unvented dome. Open dome vents or remove dome.`);
+      } else {
+        scoreMultiplier *= 0.95;
+        details.push(`Transitional hardening under vented dome. Prepare to remove dome as true leaves develop.`);
+      }
+    }
+
+    if (climate.tempF > 88) {
+      scoreMultiplier *= 0.6;
+      details.push(`Greenhouse solar heat trap! Tray dome interior overheating (${climate.tempF.toFixed(1)}°F > 88°F). Dim lights or open dome vents.`);
+    }
+  } else {
+    // Uncovered tray or open container
+    if (plant.stage === 'germination') {
+      if (climate.rh < 55) {
+        scoreMultiplier *= 0.75;
+        details.push(`Uncovered tray in low humidity (${climate.rh}% RH). Topsoil crust drying risks stalling seed germination. Consider adding a humidity dome.`);
+      } else {
+        details.push(`Uncovered seed tray. Germination proceeding at baseline rate.`);
+      }
     }
   }
 

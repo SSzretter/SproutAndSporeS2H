@@ -1,6 +1,7 @@
 import React from 'react';
 import { PlantItem, EquipmentItem } from '../../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS } from '../../utils/plantLifecycle';
+import { calculateTrayMicroclimate } from '../../utils/growRacks';
 import { PlantVigorCard } from './PlantVigorCard';
 import { PlantGeneticsCard } from './PlantGeneticsCard';
 import { PlantLifecycleCard } from './PlantLifecycleCard';
@@ -21,7 +22,8 @@ export const PlantCard: React.FC<ItemSectionProps> = (props) => {
         const isSeed = (plant.propagationType || 'seed') === 'seed';
           
         // Get photoperiod hours
-        const growLight = (currentTent?.items || room.items).find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
+        const hostItems = currentTent?.items || room.items;
+        const growLight = hostItems.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
         let photoperiodHours = 18;
         if (growLight?.schedule?.enabled) {
           const on = growLight.schedule.onHour;
@@ -30,15 +32,41 @@ export const PlantCard: React.FC<ItemSectionProps> = (props) => {
         } else if (growLight && !growLight.powerOn) {
           photoperiodHours = 0;
         } else if (growLight && growLight.powerOn) {
-          photoperiodHours = 24;
+          photoperiodHours = growLight.schedule?.disabledState === 'on' ? 24 : 0;
         }
+
+        // Check if plant is in a grow rack slot with tray microclimate / humidity dome
+        const rack = plant.rackSlot ? hostItems.find(i => i.id === plant.rackSlot!.rackId) as EquipmentItem | undefined : undefined;
+        const hasFloorHeatMat = hostItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+        const trayMicro = rack && plant.rackSlot ? calculateTrayMicroclimate({
+          rack,
+          tierIndex: plant.rackSlot.tier,
+          trayIndex: plant.rackSlot.tray,
+          ambientClimate: enclosureClimate,
+          floorHeatMatActive: hasFloorHeatMat,
+          overheadLightPpfd: enclosureClimate.lightPPFD,
+          plantStage: plant.stage
+        }) : undefined;
+
+        const effectiveClimate = trayMicro ? {
+          ...enclosureClimate,
+          tempF: trayMicro.tempF,
+          rh: trayMicro.rh,
+          vpdKpa: trayMicro.vpdKpa,
+          lightPPFD: trayMicro.lightPPFD
+        } : enclosureClimate;
 
         // Evaluate live suitability
         const suitability = evaluatePlantStageSuitability(
           plant,
-          enclosureClimate,
+          effectiveClimate,
           plant.rootTempF || 68,
-          photoperiodHours
+          photoperiodHours,
+          trayMicro ? {
+            domed: trayMicro.hasDome,
+            vented: trayMicro.ventsOpen,
+            trappedHeatF: trayMicro.tempF - enclosureClimate.tempF
+          } : undefined
         );
 
         // Expected days for current stage
@@ -121,7 +149,16 @@ export const PlantCard: React.FC<ItemSectionProps> = (props) => {
 
             <PlantLifecycleCard {...props} plant={plant} isSeed={isSeed} suitability={suitability} expectedDays={expectedDays} currentStageDays={currentStageDays} milestones={milestones} />
 
-            <PlantStageAuditCard {...props} plant={plant} enclosureClimate={enclosureClimate} photoperiodHours={photoperiodHours} suitability={suitability} req={req} />
+            <PlantStageAuditCard
+              {...props}
+              plant={plant}
+              enclosureClimate={effectiveClimate}
+              photoperiodHours={photoperiodHours}
+              suitability={suitability}
+              req={req}
+              trayMicro={trayMicro}
+              rack={rack}
+            />
 
             <PlantSoilCard {...props} plant={plant} />
 

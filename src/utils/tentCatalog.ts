@@ -19,6 +19,21 @@ export interface CatalogTentModel {
 export const TENT_CATALOG: CatalogTentModel[] = [
   // AC INFINITY CLOUDLAB SERIES
   {
+    id: 'aci-cloudlab-propagation-322',
+    brand: 'AC Infinity',
+    modelName: 'CLOUDLAB 622 Propagation Tent',
+    shortCode: '3x2x2',
+    dimensions: { length: 3.0, width: 2.0, height: 2.0, unit: 'ft' },
+    dimensionsInches: '36" × 24" × 24"',
+    mylarRating: '2000D Diamond Mylar',
+    poleDiameter: '22mm Steel Poles',
+    ventPorts: 'Dual 4" & 6" Cinch Ports',
+    weightCapacityLbs: 120,
+    description: 'Horizontal low-profile 36" × 24" × 24" propagation tent with center wire shelf support, accommodating 3 1020 trays on bottom and 3 on top (6 trays total).',
+    recommendedUse: '1020 Seed Starting Trays, Humidity Domes & Clones',
+    iconColor: 'text-sky-400'
+  },
+  {
     id: 'aci-cloudlab-propagation',
     brand: 'AC Infinity',
     modelName: 'CLOUDLAB Propagation Tent',

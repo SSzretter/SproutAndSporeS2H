@@ -1,4 +1,4 @@
-import { Dimensions, EquipmentItem, Item, Position3D, RackSlot, RackTier, TrayInsertType } from '../types/sim';
+import { Dimensions, EquipmentItem, Item, Position3D, RackSlot, RackTier, TrayInsertType, Climate, PlantStage } from '../types/sim';
 
 /**
  * Grow racks: multi-tier shelves of standard 1020 trays (10" × 20"). Each shelf holds one or more
@@ -14,7 +14,13 @@ const IN = 1 / 12;
 const roundFt = (v: number) => Math.round(v * 1000) / 1000;
 
 // Outer size of a 1020 tray: 10.75" × 21.5" × 2.5"
-export const TRAY_1020 = { lengthFt: 21.5 * IN, widthFt: 10.75 * IN, heightFt: 2.5 * IN };
+// Standard 1020 propagation dome: 7" tall (or 2.5" low dome)
+export const TRAY_1020 = {
+  lengthFt: 21.5 * IN, // 1.7917 ft (21.5 inches along long side)
+  widthFt: 10.75 * IN,  // 0.8958 ft (10.75 inches along short side)
+  heightFt: 2.5 * IN,   // 0.2083 ft (2.5 inches tray depth)
+  domeHeightFt: 7.0 * IN // 0.5833 ft (7.0 inches standard propagation dome)
+};
 
 // Rack frame: posts / shelf lip around the trays, and the bottom shelf's height off the floor
 const FRAME_MARGIN_FT = 0.1;
@@ -54,12 +60,23 @@ export interface GrowRackPreset {
   tierSpacingFt: number;
   insert: TrayInsertType;
   rackType?: 'standard' | 'ebb_and_flow';
+  trayLayout?: 'side_by_side' | 'end_to_end';
   integratedReservoirL?: number;
   floodsPerDay?: number;
   desc?: string;
 }
 
 export const GROW_RACK_PRESETS: GrowRackPreset[] = [
+  {
+    name: 'AC Infinity 2-Tier Propagation Shelf (36" × 24")',
+    tiers: 2,
+    traysPerTier: 3,
+    tierSpacingFt: 0.85,
+    insert: 'cells_72',
+    rackType: 'standard',
+    trayLayout: 'side_by_side',
+    desc: '2-tier propagation rack engineered for 36" × 24" × 24" (3x2x2) tents. Fits 3 1020 trays on bottom and 3 on top (6 trays total).'
+  },
   {
     name: 'Rootrimmer 5-Level Ebb & Flow Unit',
     tiers: 5,
@@ -125,7 +142,13 @@ export function getRack1020TrayCount(rack: EquipmentItem): number {
 }
 
 export function createRackTiers(preset: Pick<GrowRackPreset, 'tiers' | 'traysPerTier' | 'insert'>): RackTier[] {
-  return Array.from({ length: preset.tiers }, () => ({ trays: preset.traysPerTier, insert: preset.insert }));
+  return Array.from({ length: preset.tiers }, () => ({
+    trays: preset.traysPerTier,
+    insert: preset.insert,
+    domes: Array(preset.traysPerTier).fill(false),
+    domeVentsOpen: Array(preset.traysPerTier).fill(false),
+    domeHeightsIn: Array(preset.traysPerTier).fill(7)
+  }));
 }
 
 export function getRackTiers(rack: EquipmentItem): RackTier[] {
@@ -157,9 +180,12 @@ export function getInsertCellDimensions(insert: TrayInsertType): Dimensions {
 export function getRackDimensions(rack: EquipmentItem): Dimensions {
   const tiers = getRackTiers(rack);
   const maxTrays = Math.max(1, ...tiers.map(t => t.trays));
+  const isSideBySide = rack.trayLayout === 'side_by_side';
+  const trayLenX = isSideBySide ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
+  const trayWidY = isSideBySide ? TRAY_1020.lengthFt : TRAY_1020.widthFt;
   return {
-    length: roundFt(maxTrays * TRAY_1020.lengthFt + FRAME_MARGIN_FT * 2),
-    width: roundFt(TRAY_1020.widthFt + FRAME_MARGIN_FT * 2),
+    length: roundFt(maxTrays * trayLenX + FRAME_MARGIN_FT * 2),
+    width: roundFt(trayWidY + FRAME_MARGIN_FT * 2),
     height: roundFt(BOTTOM_SHELF_FT + tiers.length * getRackTierSpacingFt(rack)),
     unit: 'ft'
   };
@@ -192,12 +218,32 @@ export function getRackSlotPosition(rack: EquipmentItem, slot: RackSlot): Positi
   const tier = getRackTiers(rack)[slot.tier];
   const spec = TRAY_INSERTS[tier.insert];
   const base = rack.position || { x: 0, y: 0, z: 0 };
+  const isSideBySide = rack.trayLayout === 'side_by_side';
+
+  const trayLenX = isSideBySide ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
+  const trayWidY = isSideBySide ? TRAY_1020.lengthFt : TRAY_1020.widthFt;
+  const trayStartX = base.x - (tier.trays * trayLenX) / 2 + slot.tray * trayLenX;
+
   const row = Math.floor(slot.cell / spec.cols);
   const col = slot.cell % spec.cols;
-  const trayStartX = base.x - (tier.trays * TRAY_1020.lengthFt) / 2 + slot.tray * TRAY_1020.lengthFt;
+
+  let cellX = 0;
+  let cellY = 0;
+  if (isSideBySide) {
+    // 10.75" side is across X (col: 0..cols-1)
+    // 21.5" side is along Y (row: 0..rows-1)
+    cellX = trayStartX + ((col + 0.5) * trayLenX) / spec.cols;
+    cellY = base.y - trayWidY / 2 + ((row + 0.5) * trayWidY) / spec.rows;
+  } else {
+    // 21.5" side is along X (row: 0..rows-1)
+    // 10.75" side is across Y (col: 0..cols-1)
+    cellX = trayStartX + ((row + 0.5) * trayLenX) / spec.rows;
+    cellY = base.y - trayWidY / 2 + ((col + 0.5) * trayWidY) / spec.cols;
+  }
+
   return {
-    x: roundFt(trayStartX + ((row + 0.5) * TRAY_1020.lengthFt) / spec.rows),
-    y: roundFt(base.y - TRAY_1020.widthFt / 2 + ((col + 0.5) * TRAY_1020.widthFt) / spec.cols),
+    x: roundFt(cellX),
+    y: roundFt(cellY),
     z: roundFt((base.z || 0) + getTierShelfHeightFt(rack, slot.tier) + TRAY_FLOOR_FT)
   };
 }
@@ -260,4 +306,185 @@ export function countRackPlants(rack: EquipmentItem, items: Item[], tier: number
 
 export function isRackedPlant(item: Item): boolean {
   return item.category === 'plant' && !!item.rackSlot;
+}
+
+// ---------------------------------------------------------------------------
+// Humidity Dome per 1020 Tray Helpers & Microclimate Physics
+// ---------------------------------------------------------------------------
+
+export function isTrayDomed(rack: EquipmentItem, tierIndex: number, trayIndex: number): boolean {
+  const tier = rack.rackTiers?.[tierIndex];
+  return !!tier?.domes?.[trayIndex];
+}
+
+export function isTrayDomeVented(rack: EquipmentItem, tierIndex: number, trayIndex: number): boolean {
+  const tier = rack.rackTiers?.[tierIndex];
+  return !!tier?.domeVentsOpen?.[trayIndex];
+}
+
+export function setTrayDome(
+  rack: EquipmentItem,
+  tierIndex: number,
+  trayIndex: number,
+  domed: boolean,
+  ventOpen: boolean = false
+): EquipmentItem {
+  const tiers = getRackTiers(rack);
+  const nextTiers = tiers.map((t, ti) => {
+    if (ti !== tierIndex) return t;
+    const domes = [...(t.domes || [])];
+    while (domes.length < t.trays) domes.push(false);
+    domes[trayIndex] = domed;
+
+    const domeVentsOpen = [...(t.domeVentsOpen || [])];
+    while (domeVentsOpen.length < t.trays) domeVentsOpen.push(false);
+    domeVentsOpen[trayIndex] = ventOpen;
+
+    const domeHeightsIn = [...(t.domeHeightsIn || [])];
+    while (domeHeightsIn.length < t.trays) domeHeightsIn.push(7);
+    if (domed && !domeHeightsIn[trayIndex]) domeHeightsIn[trayIndex] = 7;
+
+    return { ...t, domes, domeVentsOpen, domeHeightsIn };
+  });
+  return { ...rack, rackTiers: nextTiers };
+}
+
+export interface TrayMicroclimate {
+  hasDome: boolean;
+  ventsOpen: boolean;
+  tempF: number;
+  rh: number;
+  vpdKpa: number;
+  lightPPFD: number;
+  soilMoistureEvapMultiplier: number;
+  tierElevationFt: number;
+  conductedMatHeatF: number;
+  statusLabel: string;
+  warning?: string;
+  isOverheating: boolean;
+  isDampingOffRisk: boolean;
+}
+
+function calcSimpleVPD(tempF: number, rh: number, lightPPFD: number = 0): number {
+  const tempC = ((tempF - 32) * 5) / 9;
+  const leafOffsetC = lightPPFD > 50 ? -1.8 : -0.2;
+  const leafTempC = tempC + leafOffsetC;
+  const svpLeaf = 0.61078 * Math.exp((17.27 * leafTempC) / (leafTempC + 237.3));
+  const avpAir = (0.61078 * Math.exp((17.27 * tempC) / (tempC + 237.3))) * (Math.max(0, Math.min(100, rh)) / 100);
+  return Math.max(0.01, parseFloat((svpLeaf - avpAir).toFixed(2)));
+}
+
+/**
+ * Calculates the exact microclimate inside an individual 1020 tray based on:
+ * - Shelf height (tier 0 near floor heat mat vs tier 1 near ceiling lights)
+ * - Heat mat conduction
+ * - Overhead light PPFD & shelf shading
+ * - Humidity dome moisture retention (88-96% closed vs 75-85% vented)
+ * - Greenhouse solar oven effect under lighting
+ * - Damping-off and thermal shock risk indicators
+ */
+export function calculateTrayMicroclimate(params: {
+  rack: EquipmentItem;
+  tierIndex: number;
+  trayIndex: number;
+  ambientClimate: Climate;
+  floorHeatMatActive: boolean;
+  floorHeatMatRiseF?: number;
+  overheadLightPpfd?: number;
+  plantStage?: PlantStage;
+}): TrayMicroclimate {
+  const {
+    rack,
+    tierIndex,
+    trayIndex,
+    ambientClimate,
+    floorHeatMatActive,
+    floorHeatMatRiseF = 8,
+    overheadLightPpfd = 0,
+    plantStage
+  } = params;
+
+  const tiers = getRackTiers(rack);
+  const tier = tiers[tierIndex] || tiers[0];
+  const hasDome = !!tier?.domes?.[trayIndex];
+  const ventsOpen = !!tier?.domeVentsOpen?.[trayIndex];
+
+  // 1. Height & Heat Mat Gradient:
+  // Tier 0 is at bottom (shelf height ~0.33ft = 4"), receiving 85% conducted warmth from a floor heat mat.
+  // Tier 1 is higher up (~1.18ft), receiving only 20% residual convective warmth.
+  const tierElevationFt = getTierShelfHeightFt(rack, tierIndex);
+  const matShare = tierIndex === 0 ? 0.85 : 0.20;
+  const conductedMatHeatF = floorHeatMatActive ? floorHeatMatRiseF * matShare : 0;
+
+  // 2. Light distribution by tier height:
+  // Top tier receives direct overhead light; lower tiers receive ~30% PPFD due to shelf shading.
+  const isTopTier = tierIndex === tiers.length - 1;
+  const effectivePpfd = isTopTier ? overheadLightPpfd : Math.round(overheadLightPpfd * 0.3);
+
+  // 3. Ambient temperature & dome greenhouse effect:
+  let effectiveTempF = ambientClimate.tempF + conductedMatHeatF;
+  let effectiveRh = ambientClimate.rh;
+
+  let warning: string | undefined;
+  let isOverheating = false;
+  let isDampingOffRisk = false;
+
+  if (hasDome) {
+    if (ventsOpen) {
+      // Vents cracked open: humidity elevated to 75% - 85% RH, slight air exchange
+      effectiveRh = Math.min(88, Math.max(75, ambientClimate.rh + 22));
+      effectiveTempF += 1.5;
+    } else {
+      // Vents closed: sealed moisture trap (88% - 96% RH)
+      effectiveRh = Math.min(96, Math.max(88, ambientClimate.rh + 36));
+      effectiveTempF += 3.0;
+    }
+
+    // Solar greenhouse oven effect under strong light:
+    if (effectivePpfd > 120) {
+      const solarRise = Math.min(8, (effectivePpfd - 120) * 0.035);
+      effectiveTempF += solarRise;
+    }
+
+    // Check Negative Scenarios:
+    // A. Overheating:
+    if (effectiveTempF > 88) {
+      isOverheating = true;
+      warning = `Greenhouse overheating under dome (${effectiveTempF.toFixed(1)}°F > 88°F)! Crack vents open or dim/raise lights.`;
+    }
+
+    // B. Damping-Off Fungal Risk:
+    // When seedlings have emerged (cotyledons/first leaves) and dome is still on with high humidity
+    if ((plantStage === 'seedling' || plantStage === 'mature_seedling' || plantStage === 'vegetative') && !ventsOpen) {
+      isDampingOffRisk = true;
+      warning = `High damping-off fungal risk! Seedling emerged under closed dome. Open vents or remove dome to prevent stem rot.`;
+    } else if ((plantStage === 'seedling' || plantStage === 'mature_seedling') && ventsOpen && effectiveRh > 80) {
+      isDampingOffRisk = true;
+      warning = `Transition to open air: Seedlings require moderate humidity (65-70%) to build sturdy vascular stems.`;
+    }
+  }
+
+  const vpdKpa = calcSimpleVPD(effectiveTempF, effectiveRh, effectivePpfd);
+  const soilMoistureEvapMultiplier = hasDome ? (ventsOpen ? 0.35 : 0.15) : 1.0;
+
+  let statusLabel = 'Ambient Enclosure';
+  if (hasDome) {
+    statusLabel = ventsOpen ? 'Dome (Vented Microclimate)' : 'Dome (Sealed Microclimate)';
+  }
+
+  return {
+    hasDome,
+    ventsOpen,
+    tempF: parseFloat(effectiveTempF.toFixed(1)),
+    rh: Math.round(effectiveRh),
+    vpdKpa,
+    lightPPFD: effectivePpfd,
+    soilMoistureEvapMultiplier,
+    tierElevationFt,
+    conductedMatHeatF: parseFloat(conductedMatHeatF.toFixed(1)),
+    statusLabel,
+    warning,
+    isOverheating,
+    isDampingOffRisk
+  };
 }

@@ -5,6 +5,7 @@ import { EquipmentItem } from '../../types/sim';
 import { getReservoirLevelL, getReservoirLiters, isReservoirEmpty, getBucketLevelL, getBucketCapacityL, isBucketFull } from '../../utils/equipmentLinks';
 import { getRackTiers, getTierShelfHeightFt, TRAY_1020 } from '../../utils/growRacks';
 import { getNutrientCapacityL, getNutrientLevelL, isNutrientReservoirEmpty } from '../../utils/nutrientReservoirs';
+import { isLightScheduledOn } from '../../utils/roomThermal';
 
 /**
  * Low-poly equipment at true scale (item.dimensions L × W × H in feet).
@@ -74,6 +75,10 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
   const rim = 0.02;
   const trayH = TRAY_1020.heightFt;
   const corners: Array<[number, number]> = [[-L / 2 + post / 2, -W / 2 + post / 2], [L / 2 - post / 2, -W / 2 + post / 2], [-L / 2 + post / 2, W / 2 - post / 2], [L / 2 - post / 2, W / 2 - post / 2]];
+  const isSideBySide = eq.trayLayout === 'side_by_side';
+  const tl = isSideBySide ? TRAY_1020.widthFt : TRAY_1020.lengthFt; // dimension along X
+  const tw = isSideBySide ? TRAY_1020.lengthFt : TRAY_1020.widthFt; // dimension along Z
+
   return (
     <group>
       {corners.map(([x, z], i) => (
@@ -91,7 +96,7 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
       ))}
       {tiers.map((tier, ti) => {
         const y = getTierShelfHeightFt(eq, ti);
-        const trayStart = -(tier.trays * TRAY_1020.lengthFt) / 2;
+        const trayStart = -(tier.trays * tl) / 2;
         return (
           <group key={ti} position={[0, y, 0]}>
             <mesh position={[0, -0.01, 0]} raycast={noRaycast}>
@@ -99,15 +104,18 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
               <meshStandardMaterial color="#d4d4d8" metalness={0.6} roughness={0.5} transparent opacity={0.55} />
             </mesh>
             {Array.from({ length: tier.trays }, (_, tr) => {
-              const cx = trayStart + (tr + 0.5) * TRAY_1020.lengthFt;
-              const tl = TRAY_1020.lengthFt;
-              const tw = TRAY_1020.widthFt;
+              const cx = trayStart + (tr + 0.5) * tl;
+              const hasDome = !!tier.domes?.[tr];
+              const ventsOpen = !!tier.domeVentsOpen?.[tr];
+              const domeH = ((tier.domeHeightsIn?.[tr] || 7) / 12);
               return (
                 <group key={tr} position={[cx, 0, 0]}>
+                  {/* 1020 Tray Base */}
                   <mesh position={[0, 0.005, 0]} raycast={noRaycast}>
                     <boxGeometry args={[tl, 0.01, tw]} />
                     <meshStandardMaterial color="#18181b" roughness={0.8} />
                   </mesh>
+                  {/* Tray Rims */}
                   {[-1, 1].map(side => (
                     <mesh key={`l${side}`} position={[0, trayH / 2, side * (tw / 2 - rim / 2)]}>
                       <boxGeometry args={[tl, trayH, rim]} />
@@ -120,6 +128,36 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
                       <meshStandardMaterial color="#18181b" roughness={0.8} />
                     </mesh>
                   ))}
+
+                  {/* Optional Translucent Humidity Dome */}
+                  {hasDome && (
+                    <group position={[0, trayH, 0]} raycast={noRaycast}>
+                      {/* Clear plastic dome body */}
+                      <mesh position={[0, domeH / 2, 0]}>
+                        <boxGeometry args={[tl * 0.98, domeH, tw * 0.98]} />
+                        <meshStandardMaterial
+                          color="#e0f2fe"
+                          transparent
+                          opacity={0.32}
+                          roughness={0.15}
+                          metalness={0.1}
+                          side={THREE.DoubleSide}
+                        />
+                      </mesh>
+                      {/* Top rim accent */}
+                      <mesh position={[0, domeH, 0]}>
+                        <boxGeometry args={[tl * 0.88, 0.015, tw * 0.88]} />
+                        <meshStandardMaterial color="#bae6fd" transparent opacity={0.5} roughness={0.2} />
+                      </mesh>
+                      {/* Top adjustable vent dials */}
+                      {[-0.25, 0.25].map((vx, vi) => (
+                        <mesh key={vi} position={[vx * tl, domeH + 0.01, 0]} rotation={[0, ventsOpen ? Math.PI / 4 : 0, 0]}>
+                          <cylinderGeometry args={[0.035, 0.035, 0.015, 8]} />
+                          <meshStandardMaterial color={ventsOpen ? '#38bdf8' : '#71717a'} roughness={0.4} />
+                        </mesh>
+                      ))}
+                    </group>
+                  )}
                 </group>
               );
             })}
@@ -133,10 +171,11 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
 /** How an attached heat mat is shown: as a band wrapped around a tank, or faintly under a tent's floor tray. */
 export type HeatMatMount = { kind: 'wrap'; radius: number; height: number } | { kind: 'under_tray' };
 
-export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem; hangFt?: number; matMount?: HeatMatMount }) {
+export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq: EquipmentItem; hangFt?: number; matMount?: HeatMatMount; simHour?: number }) {
   const { length: L, width: W, height: H } = eq.dimensions;
   const h = Math.max(0.04, H);
   const on = eq.powerOn;
+  const isLit = on && (eq.type !== 'grow_light' || isLightScheduledOn(simHour, eq.schedule));
 
   switch (eq.type) {
     case 'grow_rack':
@@ -173,9 +212,9 @@ export function EquipmentModel({ eq, hangFt = 0, matMount }: { eq: EquipmentItem
           <mesh position={[0, -0.002, 0]} rotation={[Math.PI / 2, 0, 0]}>
             <planeGeometry args={[L * 0.94, W * 0.94]} />
             <meshStandardMaterial
-              color={on ? '#fff7d6' : '#71717a'}
-              emissive={on ? '#ffe9a8' : '#000000'}
-              emissiveIntensity={on ? 1.6 : 0}
+              color={isLit ? '#fff7d6' : '#71717a'}
+              emissive={isLit ? '#ffe9a8' : '#000000'}
+              emissiveIntensity={isLit ? 1.6 : 0}
               side={THREE.DoubleSide}
             />
           </mesh>

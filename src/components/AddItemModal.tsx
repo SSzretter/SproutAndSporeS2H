@@ -193,7 +193,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [rackTraysPerTier, setRackTraysPerTier] = useState(GROW_RACK_PRESETS[0].traysPerTier);
   const [rackSpacingFt, setRackSpacingFt] = useState(GROW_RACK_PRESETS[0].tierSpacingFt);
   const [rackInsert, setRackInsert] = useState<TrayInsertType>(GROW_RACK_PRESETS[0].insert);
-  const [rackType, setRackType] = useState<'standard' | 'ebb_and_flow'>(GROW_RACK_PRESETS[0].rackType || 'ebb_and_flow');
+  const [rackType, setRackType] = useState<'standard' | 'ebb_and_flow'>(GROW_RACK_PRESETS[0].rackType || 'standard');
+  const [rackTrayLayout, setRackTrayLayout] = useState<'side_by_side' | 'end_to_end'>(GROW_RACK_PRESETS[0].trayLayout || 'side_by_side');
   const [rackIntegratedResL, setRackIntegratedResL] = useState(GROW_RACK_PRESETS[0].integratedReservoirL || 60);
   const [rackFloodsPerDay, setRackFloodsPerDay] = useState(GROW_RACK_PRESETS[0].floodsPerDay || 6);
   const [resLiters, setResLiters] = useState(NUTRIENT_RESERVOIR_PRESETS[1].liters); // Nutrient reservoir tank size
@@ -577,6 +578,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
     if (eqType === 'grow_rack') {
       newEq.rackType = rackType;
+      newEq.trayLayout = rackTrayLayout;
       newEq.powerWatts = rackType === 'ebb_and_flow' ? 25 : 0;
       newEq.setting = rackType === 'ebb_and_flow' ? 100 : 0;
       newEq.rackTiers = createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert });
@@ -2112,7 +2114,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
             )}
 
             {eqType === 'grow_rack' && (() => {
-              const preview = { rackTiers: createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert }), rackTierSpacingFt: rackSpacingFt } as EquipmentItem;
+              const preview = {
+                rackTiers: createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert }),
+                rackTierSpacingFt: rackSpacingFt,
+                trayLayout: rackTrayLayout
+              } as EquipmentItem;
               const dims = getRackDimensions(preview);
               return (
                 <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
@@ -2129,6 +2135,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                             setRackTraysPerTier(p.traysPerTier);
                             setRackSpacingFt(p.tierSpacingFt);
                             setRackInsert(p.insert);
+                            setRackTrayLayout(p.trayLayout || 'side_by_side');
                             if (p.rackType) setRackType(p.rackType);
                             if (p.integratedReservoirL) setRackIntegratedResL(p.integratedReservoirL);
                             if (p.floodsPerDay) setRackFloodsPerDay(p.floodsPerDay);
@@ -2142,6 +2149,29 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                           </div>
                         </button>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* 1020 Tray Orientation */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-300 block mb-1.5">1020 Tray Orientation on Shelves</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRackTrayLayout('side_by_side')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'side_by_side' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">Side-by-Side (3 across 36" wide)</div>
+                        <div className="text-[10px] text-zinc-500">Short side along shelf (fits 3x2 tents)</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRackTrayLayout('end_to_end')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'end_to_end' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">End-to-End (Linear)</div>
+                        <div className="text-[10px] text-zinc-500">Long side along shelf (linear racks)</div>
+                      </button>
                     </div>
                   </div>
 
@@ -2229,6 +2259,36 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                   </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-400 bg-zinc-900 p-2.5 rounded-lg border border-zinc-800">
+                    <div>
+                      <span>Physical Dimensions: <strong className="text-zinc-100">{dims.length}′ L × {dims.width}′ W × {dims.height}′ H</strong></span>
+                      <div className="text-[10px] text-zinc-500">({Math.round(dims.length * 12)}″ wide × {Math.round(dims.width * 12)}″ deep × {Math.round(dims.height * 12)}″ high)</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={dims.length <= (targetDims.length + 0.1) && dims.width <= (targetDims.width + 0.1) && dims.height <= (targetDims.height + 0.1) ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                        {dims.length <= (targetDims.length + 0.1) && dims.width <= (targetDims.width + 0.1) && dims.height <= (targetDims.height + 0.1)
+                          ? `✓ Fits Destination (${targetDims.length}′ × ${targetDims.width}′ × ${targetDims.height}′)`
+                          : `⚠️ Exceeds Limits (${targetDims.length}′ × ${targetDims.width}′ × ${targetDims.height}′)`}
+                      </span>
+                      {targetDims.length <= 3.2 && targetDims.width <= 2.2 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEqName('AC Infinity 2-Tier Propagation Shelf (36" × 24")');
+                            setRackTierCount(2);
+                            setRackTraysPerTier(3);
+                            setRackSpacingFt(0.85);
+                            setRackTrayLayout('side_by_side');
+                          }}
+                          className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-sans font-bold"
+                        >
+                          Auto-Fit 3x2x2
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <div>
                     <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Tray Insert (customizable per shelf in inspector)</label>
                     <select value={rackInsert} onChange={e => setRackInsert(e.target.value as TrayInsertType)}

@@ -86,9 +86,17 @@ export function getRoomEnvelope(room: Room): RoomEnvelope {
   return { uaOutdoor, uaGround, uaHouse, capacity };
 }
 
-export function isLightScheduledOn(hour: number, schedule?: { enabled: boolean; onHour: number; offHour: number }): boolean {
-  if (!schedule || !schedule.enabled) return true;
+export function isLightScheduledOn(
+  hour: number,
+  schedule?: { enabled: boolean; onHour: number; offHour: number; disabledState?: 'off' | 'on' }
+): boolean {
+  if (!schedule) return true;
+  if (!schedule.enabled) {
+    // When schedule is disabled: stays OFF (0 PPFD) unless explicitly switched to 24/0 continuous ('on')
+    return schedule.disabledState === 'on';
+  }
   const { onHour, offHour } = schedule;
+  if (onHour === offHour) return true;
   if (onHour < offHour) {
     return hour >= onHour && hour < offHour;
   } else {

@@ -298,8 +298,8 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 z-10 my-auto">
           {room.tents.map(tent => {
             const isTentSelected = selectedType === 'tent' && selectedId === tent.id;
-            const hasLightsOn = tent.items.some(
-              i => i.category === 'equipment' && i.type === 'grow_light' && i.powerOn
+            const hasLightsOn = (tent.climate?.lightPPFD ?? 0) > 20 || tent.items.some(
+              i => i.category === 'equipment' && i.type === 'grow_light' && i.powerOn && (i.effectiveSetting ?? (i.schedule?.enabled === false && i.schedule?.disabledState !== 'on' ? 0 : 100)) > 0
             );
             const isShroomTent = tent.items.some(i => i.category === 'mushroom');
 

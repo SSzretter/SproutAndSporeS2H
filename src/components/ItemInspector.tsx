@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Tent, Item, Dimensions } from '../types/sim';
+import { Tent, Item, EquipmentItem, Dimensions } from '../types/sim';
 import { clampItemPosition } from '../utils/spatial';
+import { getRackDimensions } from '../utils/growRacks';
 import { RoomPanel } from './inspector/RoomPanel';
 import { TentPanel } from './inspector/TentPanel';
 import { ItemPanel } from './inspector/ItemPanel';
@@ -92,6 +93,24 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
         ...currentItem,
         containerDimensions: {
           ...container,
+          [key]: parseFloat(value.toFixed(2))
+        }
+      }, selectedParentTentId);
+      return;
+    }
+    if (currentItem.category === 'equipment' && currentItem.type === 'grow_rack') {
+      const eq = currentItem as EquipmentItem;
+      if (key === 'height') {
+        const tierCount = Math.max(1, eq.rackTiers?.length || 1);
+        const spacing = Math.max(0.4, Math.min(2.5, (value - 0.33) / tierCount));
+        const updated = { ...eq, rackTierSpacingFt: parseFloat(spacing.toFixed(2)) };
+        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+        return;
+      }
+      onUpdateItem({
+        ...currentItem,
+        dimensions: {
+          ...currentItem.dimensions,
           [key]: parseFloat(value.toFixed(2))
         }
       }, selectedParentTentId);

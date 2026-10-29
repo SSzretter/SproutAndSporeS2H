@@ -1,12 +1,12 @@
 import React from 'react';
-import { Home, Check, Trash2, ArrowLeft, Edit3, Sliders, ChevronRight, Dog, Cat, Move } from 'lucide-react';
+import { Home, Check, Trash2, ArrowLeft, Edit3, Sliders, ChevronRight, Dog, Cat, Move, Layers, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { CropGrowth3DViewer } from '../game3d/CropGrowth3DViewer';
-import { Room, Item, PlantItem, MushroomItem, PersonItem, PetItem, PetType, Dimensions, PlantStage } from '../../types/sim';
+import { Room, Item, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, PetType, Dimensions, PlantStage } from '../../types/sim';
 import { NpcDossier } from '../NpcDossier';
 import { PlantCard } from './PlantCard';
 import { MushroomCard } from './MushroomCard';
 import { EquipmentCard } from './EquipmentCard';
-import { describeRackSlot, isGrowRack } from '../../utils/growRacks';
+import { describeRackSlot, isGrowRack, getRackTiers, getRackDimensions, getRackTierSpacingFt, createRackTiers } from '../../utils/growRacks';
 import { placeItemInFreeSpace, syncItemGeometry } from '../../utils/spatial';
 import type { ItemSectionProps } from './types';
 
@@ -105,71 +105,222 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
             </button>
           </div>
 
-          {/* Editable Dimensions: L x W x H */}
-          <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
-                <Sliders className="w-3.5 h-3.5 text-emerald-400" />
-                {isCropItem ? 'Pot / Container Dimensions (L × W × H)' : 'Item Dimensions (L × W × H)'}
-              </span>
-              <span className="font-mono text-emerald-400 text-xs">
-                Footprint: {(currentItem.dimensions.length * currentItem.dimensions.width).toFixed(2)} sq ft
-              </span>
-            </div>
-            {isCropItem && (
-              <div className="text-[10px] font-mono text-zinc-400">
-                Overall with {currentItem.category === 'plant' ? 'canopy' : 'fruit bodies'}: {currentItem.dimensions.length}′ × {currentItem.dimensions.width}′ × {currentItem.dimensions.height}′
-                {currentItem.category === 'plant' && (
-                  <> · plant {currentItem.heightInches.toFixed(0)}″ tall, {currentItem.canopyWidthInches.toFixed(0)}″ canopy</>
-                )}
-              </div>
-            )}
+          {/* Dimensions Editor: Specialized for Grow Racks vs Standard Items */}
+          {currentItem.category === 'equipment' && currentItem.type === 'grow_rack' ? (() => {
+            const eq = currentItem as EquipmentItem;
+            const tiers = getRackTiers(eq);
+            const dims = getRackDimensions(eq);
+            const tierCount = tiers.length;
+            const traysPerTier = tiers[0]?.trays || 1;
+            const spacing = getRackTierSpacingFt(eq);
+            const isSideBySide = eq.trayLayout === 'side_by_side';
+            const containerDims = currentTent ? currentTent.dimensions : room.dimensions;
+            const fitsLength = dims.length <= containerDims.length + 0.15;
+            const fitsWidth = dims.width <= containerDims.width + 0.15;
+            const fitsHeight = dims.height <= containerDims.height + 0.15;
+            const fitsAll = fitsLength && fitsWidth && fitsHeight;
 
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                  Length ({itemSizeDims.unit})
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0.1"
-                  max="20"
-                  value={itemSizeDims.length}
-                  onChange={e => handleItemDimensionChange('length', parseFloat(e.target.value))}
-                  className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
-                />
+            return (
+              <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                    Grow Rack Architecture &amp; Dimensions
+                  </span>
+                  <span className="font-mono text-emerald-400 text-xs">
+                    {dims.length}′ L × {dims.width}′ W × {dims.height}′ H ({(dims.length * dims.width).toFixed(2)} sq ft)
+                  </span>
+                </div>
+
+                {/* Enclosure Fit Badge & Auto-Fit 3x2x2 Preset Button */}
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    {fitsAll ? (
+                      <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                        <CheckCircle2 className="w-4 h-4 shrink-0" /> Fits inside {parentName} ({containerDims.length}′ × {containerDims.width}′ × {containerDims.height}′)
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-amber-400 font-medium">
+                        <AlertTriangle className="w-4 h-4 shrink-0" /> Exceeds {parentName} limits ({containerDims.length}′ × {containerDims.width}′ × {containerDims.height}′)!
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated: EquipmentItem = {
+                        ...eq,
+                        name: 'AC Infinity 2-Tier Propagation Shelf (36" × 24")',
+                        trayLayout: 'side_by_side',
+                        rackTierSpacingFt: 0.85,
+                        rackTiers: createRackTiers({ tiers: 2, traysPerTier: 3, insert: tiers[0]?.insert || 'cells_72' })
+                      };
+                      onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                    }}
+                    className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-[11px] font-bold shadow-sm transition-all"
+                  >
+                    Auto-Fit 3x2x2 Tent (2 Levels · 3 Trays Across)
+                  </button>
+                </div>
+
+                {/* Architecture Inputs */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                      Shelves / Levels
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="6"
+                      value={tierCount}
+                      onChange={e => {
+                        const count = Math.max(1, Math.min(6, parseInt(e.target.value) || 1));
+                        const updated: EquipmentItem = {
+                          ...eq,
+                          rackTiers: createRackTiers({ tiers: count, traysPerTier, insert: tiers[0]?.insert || 'cells_72' })
+                        };
+                        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                      1020 Trays / Level
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="4"
+                      value={traysPerTier}
+                      onChange={e => {
+                        const count = Math.max(1, Math.min(4, parseInt(e.target.value) || 1));
+                        const updated: EquipmentItem = {
+                          ...eq,
+                          rackTiers: createRackTiers({ tiers: tierCount, traysPerTier: count, insert: tiers[0]?.insert || 'cells_72' })
+                        };
+                        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                      Level Spacing (ft)
+                    </label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="2.5"
+                      step="0.05"
+                      value={spacing}
+                      onChange={e => {
+                        const val = Math.max(0.5, Math.min(2.5, parseFloat(e.target.value) || 0.85));
+                        const updated: EquipmentItem = {
+                          ...eq,
+                          rackTierSpacingFt: val
+                        };
+                        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                      1020 Tray Layout
+                    </label>
+                    <select
+                      value={isSideBySide ? 'side_by_side' : 'end_to_end'}
+                      onChange={e => {
+                        const updated: EquipmentItem = {
+                          ...eq,
+                          trayLayout: e.target.value as 'side_by_side' | 'end_to_end'
+                        };
+                        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2 py-1 text-xs font-mono text-zinc-100"
+                    >
+                      <option value="side_by_side">Side-by-Side (3 across 36" shelf)</option>
+                      <option value="end_to_end">End-to-End (Linear)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-zinc-400 font-mono">
+                  Calculated frame: {dims.length}′ ({Math.round(dims.length * 12)}″) wide × {dims.width}′ ({Math.round(dims.width * 12)}″) deep × {dims.height}′ ({Math.round(dims.height * 12)}″) tall · Holds {tierCount * traysPerTier} × 1020 trays
+                </div>
               </div>
-              <div>
-                <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                  Width ({itemSizeDims.unit})
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0.1"
-                  max="20"
-                  value={itemSizeDims.width}
-                  onChange={e => handleItemDimensionChange('width', parseFloat(e.target.value))}
-                  className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
-                />
+            );
+          })() : (
+            <div className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+                  {isCropItem ? 'Pot / Container Dimensions (L × W × H)' : 'Item Dimensions (L × W × H)'}
+                </span>
+                <span className="font-mono text-emerald-400 text-xs">
+                  Footprint: {(currentItem.dimensions.length * currentItem.dimensions.width).toFixed(2)} sq ft
+                </span>
               </div>
-              <div>
-                <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                  Height ({itemSizeDims.unit})
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0.1"
-                  max="20"
-                  value={itemSizeDims.height}
-                  onChange={e => handleItemDimensionChange('height', parseFloat(e.target.value))}
-                  className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
-                />
+              {isCropItem && (
+                <div className="text-[10px] font-mono text-zinc-400">
+                  Overall with {currentItem.category === 'plant' ? 'canopy' : 'fruit bodies'}: {currentItem.dimensions.length}′ × {currentItem.dimensions.width}′ × {currentItem.dimensions.height}′
+                  {currentItem.category === 'plant' && (
+                    <> · plant {currentItem.heightInches.toFixed(0)}″ tall, {currentItem.canopyWidthInches.toFixed(0)}″ canopy</>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    Length ({itemSizeDims.unit})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="20"
+                    value={parseFloat(itemSizeDims.length.toFixed(2))}
+                    onChange={e => handleItemDimensionChange('length', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    Width ({itemSizeDims.unit})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="20"
+                    value={parseFloat(itemSizeDims.width.toFixed(2))}
+                    onChange={e => handleItemDimensionChange('width', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                    Height ({itemSizeDims.unit})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="20"
+                    value={parseFloat(itemSizeDims.height.toFixed(2))}
+                    onChange={e => handleItemDimensionChange('height', parseFloat(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Editable 3D Position in Enclosure: X, Y, Z */}
           {(() => {

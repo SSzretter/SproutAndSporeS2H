@@ -107,6 +107,8 @@ export interface PlantMilestone {
   reached: boolean;
 }
 
+import { TrayMicroclimate } from '../../utils/growRacks';
+
 export interface PlantLocals {
   plant: PlantItem;
   enclosureClimate: Climate;
@@ -118,6 +120,8 @@ export interface PlantLocals {
   currentStageDays: number;
   req: StageConditionRequirements;
   milestones: PlantMilestone[];
+  trayMicro?: TrayMicroclimate;
+  rack?: EquipmentItem;
 }
 
 export interface EquipmentLocals {

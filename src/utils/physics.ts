@@ -8,6 +8,7 @@ import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomC
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
 import { getRootZoneWaterL, stepRoomNutrientReservoirs } from './nutrientReservoirs';
+import { calculateTrayMicroclimate } from './growRacks';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -391,10 +392,12 @@ export function arbitrateEnclosureEquipment(params: {
       const isTimerOn = isLightScheduledOn(hour, eq.schedule);
       if (isTimerOn) {
         eq.effectiveSetting = eq.setting;
-        eq.interlockStatus = eq.schedule?.enabled ? 'On (Scheduled photoperiod)' : 'On (Continuous)';
+        eq.interlockStatus = eq.schedule?.enabled ? 'On (Scheduled photoperiod)' : 'On (Continuous 24/0)';
       } else {
         eq.effectiveSetting = 0;
-        eq.interlockStatus = 'Off (Night cycle by schedule)';
+        eq.interlockStatus = eq.schedule?.enabled === false
+          ? 'Off (Schedule disabled: Germination darkness)'
+          : 'Off (Night cycle by schedule)';
       }
       return eq;
     }
@@ -1036,7 +1039,7 @@ export function simulateEnvironmentTick(
     } else if (activeGrowLight && !activeGrowLight.powerOn) {
       enclosurePhotoperiodHours = 0;
     } else if (activeGrowLight && activeGrowLight.powerOn) {
-      enclosurePhotoperiodHours = 24;
+      enclosurePhotoperiodHours = activeGrowLight.schedule?.disabledState === 'on' ? 24 : 0;
     }
 
     tTempF = Math.max(45, Math.min(115, parseFloat(tTempF.toFixed(1))));
@@ -1066,7 +1069,8 @@ export function simulateEnvironmentTick(
         room,
         outside,
         tentName: tent.name,
-        rootHeat: getRootZoneHeat(item, tent.items, tent.id)
+        rootHeat: getRootZoneHeat(item, tent.items, tent.id),
+        enclosureItems: arbitratedItems
       });
     });
 
@@ -1136,14 +1140,25 @@ export function simulateEnvironmentTick(
         vpdKpa: roomVPD,
         co2Ppm: roomCo2
       },
-      photoperiodHours: (isOutdoorGarden || isGreenhouse) ? 14 : 18,
+      photoperiodHours: (() => {
+        const rLight = room.items.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
+        if (!rLight) return (isOutdoorGarden || isGreenhouse) ? 14 : 18;
+        if (rLight.schedule?.enabled) {
+          const on = rLight.schedule.onHour;
+          const off = rLight.schedule.offHour;
+          return off > on ? (off - on) : (24 - on + off);
+        }
+        if (!rLight.powerOn) return 0;
+        return rLight.schedule?.disabledState === 'on' ? 24 : 0;
+      })(),
       elapsedMinutes,
       currentSimTime,
       events,
       room,
       outside,
       tentName: isOutdoorGarden ? room.name : undefined,
-      rootHeat: getRootZoneHeat(item, room.items)
+      rootHeat: getRootZoneHeat(item, room.items),
+      enclosureItems: room.items
     });
   });
   // Nutrient reservoirs flood / circulate to the plants and rack shelves they feed, on the floor or in any tent
@@ -1213,13 +1228,36 @@ function simulateCropItem(params: {
   outside?: OutsideConditions;
   tentName?: string;
   rootHeat?: RootZoneHeat | null; // Heat mats under this pot / container (or under the tent's floor tray)
+  enclosureItems?: any[];
 }): any {
-  const { item, enclosureClimate, photoperiodHours, elapsedMinutes, currentSimTime, events, room, outside, tentName, rootHeat = null } = params;
+  const { item, enclosureClimate, photoperiodHours, elapsedMinutes, currentSimTime, events, room, outside, tentName, rootHeat = null, enclosureItems = [] } = params;
 
   if (item.category === 'plant') {
     const plant = { ...item } as PlantItem;
     const isDay = enclosureClimate.lightPPFD > 60;
     const isOutdoor = room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
+
+    // Check if plant is in a grow rack tray (with optional humidity dome, height elevation & heat conduction)
+    const rackItem = plant.rackSlot ? enclosureItems.find(i => i.id === plant.rackSlot!.rackId) as EquipmentItem | undefined : undefined;
+    const hasFloorHeatMat = enclosureItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+    const trayMicro = rackItem && plant.rackSlot ? calculateTrayMicroclimate({
+      rack: rackItem,
+      tierIndex: plant.rackSlot.tier,
+      trayIndex: plant.rackSlot.tray,
+      ambientClimate: enclosureClimate,
+      floorHeatMatActive: hasFloorHeatMat,
+      overheadLightPpfd: enclosureClimate.lightPPFD,
+      plantStage: plant.stage
+    }) : undefined;
+
+    const cropClimate = trayMicro ? {
+      ...enclosureClimate,
+      tempF: trayMicro.tempF,
+      tempC: parseFloat(fahrenheitToCelsius(trayMicro.tempF).toFixed(1)),
+      rh: trayMicro.rh,
+      vpdKpa: trayMicro.vpdKpa,
+      lightPPFD: trayMicro.lightPPFD
+    } : enclosureClimate;
 
     // Ensure keyDates exists
     if (!plant.keyDates) {
@@ -1256,8 +1294,12 @@ function simulateCropItem(params: {
     }
 
     // A. Root Zone Temperature Simulation
-    let targetRootTemp = isOutdoor ? enclosureClimate.tempF * 0.82 + 12.0 : enclosureClimate.tempF * 0.75 + 16.0;
+    let targetRootTemp = isOutdoor ? cropClimate.tempF * 0.82 + 12.0 : cropClimate.tempF * 0.75 + 16.0;
     targetRootTemp = applyRootZoneHeat(targetRootTemp, rootHeat);
+    // If on a grow rack, add conducted bottom heat from tier position
+    if (trayMicro?.conductedMatHeatF && !rootHeat) {
+      targetRootTemp += trayMicro.conductedMatHeatF * 0.65;
+    }
     const currentRoot = plant.rootTempF || targetRootTemp;
     // Not rounded: per-minute changes are smaller than 0.1° and would otherwise be lost
     plant.rootTempF = currentRoot + (targetRootTemp - currentRoot) * Math.min(1, 0.05 * (elapsedMinutes / 10));
@@ -1268,13 +1310,15 @@ function simulateCropItem(params: {
     // moisture drop is that water against what the root zone holds, so a big plant in a small pot dries
     // within a day or two while a seedling barely dents a 5 gal pot. Roughly 2.5 L/day for a 30" canopy
     // at ~1 kPa VPD; a 72-cell seedling ~0.04 L/day.
+    // Under a humidity dome, evaporation is suppressed to 15% (closed) or 35% (vented), conserving moisture!
     const volGallons = plant.containerVolumeGallons || getDefaultContainerVolumeGallons(plant.containerType);
     const canopyIn = Math.max(0.5, plant.canopyWidthInches || 0);
     const transpirationLPerDay = 0.015 * Math.pow(canopyIn, 1.5)
-      * Math.max(0.4, Math.min(1.8, enclosureClimate.vpdKpa || 1))
+      * Math.max(0.4, Math.min(1.8, cropClimate.vpdKpa || 1))
       * (isDay ? 1.3 : 0.35);
     const potSurfaceSqFt = plant.containerDimensions ? plant.containerDimensions.length * plant.containerDimensions.width : 0.8;
-    const evaporationLPerDay = 0.1 * potSurfaceSqFt;
+    const evapMultiplier = trayMicro ? trayMicro.soilMoistureEvapMultiplier : 1.0;
+    const evaporationLPerDay = 0.1 * potSurfaceSqFt * evapMultiplier;
     // A DWC bucket's roots hang in its own water: the medium barely dries
     const dwcFactor = plant.systemType === 'dwc' ? 0.05 : 1;
     const waterUsedL = (transpirationLPerDay + evaporationLPerDay) * dwcFactor * (elapsedMinutes / 1440);
@@ -1335,13 +1379,37 @@ function simulateCropItem(params: {
       }
     }
 
-    // C. Stage Suitability & Stress Assessment
+    // C. Stage Suitability & Stress Assessment (with Tray Dome Microclimate)
     const stageSuitability = evaluatePlantStageSuitability(
       plant,
-      enclosureClimate,
+      cropClimate,
       plant.rootTempF,
-      photoperiodHours
+      photoperiodHours,
+      trayMicro ? {
+        domed: trayMicro.hasDome,
+        vented: trayMicro.ventsOpen,
+        trappedHeatF: trayMicro.tempF - enclosureClimate.tempF
+      } : undefined
     );
+
+    // Occasional events for tray dome dangers
+    if (trayMicro?.isOverheating && Math.random() < 0.04) {
+      events.push({
+        type: 'warning',
+        category: 'crop',
+        tentName,
+        title: `🔥 Dome Overheating: ${plant.name}`,
+        message: trayMicro.warning || `Interior dome temperature reached ${trayMicro.tempF}°F. Open vents or dim lights.`
+      });
+    } else if (trayMicro?.isDampingOffRisk && Math.random() < 0.04) {
+      events.push({
+        type: 'warning',
+        category: 'crop',
+        tentName,
+        title: `⚠️ Damping-Off Risk: ${plant.name}`,
+        message: trayMicro.warning || `Seedling under closed dome in high humidity. Crack dome vents open or remove dome.`
+      });
+    }
 
     let healthDelta = 0;
     if (plant.soilMoisture < 15) {
@@ -1356,12 +1424,19 @@ function simulateCropItem(params: {
       healthDelta -= 0.15 * (elapsedMinutes / 60);
     }
 
-    if (enclosureClimate.vpdKpa > 1.8) {
+    if (cropClimate.vpdKpa > 1.8) {
       healthDelta -= 0.2 * (elapsedMinutes / 60);
-    } else if (enclosureClimate.vpdKpa < 0.35) {
+    } else if (cropClimate.vpdKpa < 0.35) {
       healthDelta -= 0.08 * (elapsedMinutes / 60);
-    } else if (enclosureClimate.vpdKpa >= 0.8 && enclosureClimate.vpdKpa <= 1.4 && plant.soilMoisture > 40 && plant.soilMoisture < 80) {
+    } else if (cropClimate.vpdKpa >= 0.8 && cropClimate.vpdKpa <= 1.4 && plant.soilMoisture > 40 && plant.soilMoisture < 80) {
       healthDelta += 0.25 * (elapsedMinutes / 60);
+    }
+
+    if (trayMicro?.isDampingOffRisk) {
+      healthDelta -= 0.25 * (elapsedMinutes / 60);
+    }
+    if (trayMicro?.isOverheating) {
+      healthDelta -= 0.30 * (elapsedMinutes / 60);
     }
 
     if (stageSuitability.status === 'optimal') {

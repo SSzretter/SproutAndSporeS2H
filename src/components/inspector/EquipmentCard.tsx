@@ -37,8 +37,15 @@ export const EquipmentCard: React.FC<ItemSectionProps> = (props) => {
         // Calculate daylight hours
         const onH = eq.schedule?.onHour ?? 6;
         const offH = eq.schedule?.offHour ?? 0;
-        let dayLength = offH >= onH ? offH - onH : (24 - onH + offH);
-        if (dayLength === 0) dayLength = 24;
+        let dayLength = 0;
+        if (eq.schedule?.enabled) {
+          dayLength = offH >= onH ? offH - onH : (24 - onH + offH);
+          if (dayLength === 0) dayLength = 24;
+        } else if (eq.schedule?.disabledState === 'on') {
+          dayLength = 24;
+        } else {
+          dayLength = 0;
+        }
         const nightLength = 24 - dayLength;
 
         return (

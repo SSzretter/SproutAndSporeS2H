@@ -33,10 +33,15 @@ export function getEquipmentActivity(item: Item, hour: number): EquipmentActivit
   }
 
   switch (item.type) {
-    case 'grow_light':
-      return isLightScheduledOn(hour, item.schedule)
-        ? { activity: 'running', label: 'Lights on' }
-        : { activity: 'idle', label: 'Lights off (schedule)' };
+    case 'grow_light': {
+      const isRunning = isLightScheduledOn(hour, item.schedule);
+      if (isRunning) return { activity: 'running', label: item.schedule?.enabled ? 'Lights on' : 'Lights on (24/0)' };
+      const isOffDisabled = item.schedule && !item.schedule.enabled && item.schedule.disabledState !== 'on';
+      return {
+        activity: 'idle',
+        label: isOffDisabled ? 'Schedule disabled (Off for germination)' : 'Lights off (schedule)'
+      };
+    }
     case 'co2_bag':
       return { activity: 'running', label: 'Releasing CO\u2082' };
     case 'heat_mat':

@@ -40,7 +40,8 @@ export function getPhotoperiodHours(containerItems: Item[], outdoor: boolean): n
     const { onHour, offHour } = light.schedule;
     return offHour > onHour ? offHour - onHour : 24 - onHour + offHour;
   }
-  return light.powerOn ? 24 : 0;
+  if (!light.powerOn) return 0;
+  return light.schedule?.disabledState === 'on' ? 24 : 0;
 }
 
 function plantIssues(plant: PlantItem, climate: Climate, photoperiodHours: number): CropIssue[] {
