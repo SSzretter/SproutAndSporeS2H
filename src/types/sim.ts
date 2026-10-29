@@ -93,13 +93,17 @@ export type ContainerType =
 
 // What sits in a 1020 tray on a grow rack (see TRAY_INSERTS in growRacks.ts)
 export type TrayInsertType =
-  | 'cells_32'
-  | 'cells_50'
-  | 'cells_72'
-  | 'cells_128'
-  | 'cells_200'
-  | 'pots_4in_8'      // 8 × 4" square pots
-  | 'pots_3_5in_18';  // 18 × 3.5" square pots
+  | 'cells_18'      // 18-cell jumbo deep insert (3 × 6)
+  | 'cells_24'      // 24-cell insert (4 × 6)
+  | 'cells_32'      // 32-cell insert (4 × 8)
+  | 'cells_50'      // 50-cell insert (5 × 10)
+  | 'cells_72'      // 72-cell insert (6 × 12)
+  | 'cells_98'      // 98-site rockwool cube sheet / plug tray (7 × 14)
+  | 'cells_128'     // 128-cell plug tray (8 × 16)
+  | 'cells_200'     // 200-cell plug tray (10 × 20)
+  | 'pots_4in_8'    // 8 × 4" square pots (2 × 4)
+  | 'pots_3_5in_18' // 18 × 3.5" square pots (3 × 6)
+  | 'microgreens_mesh'; // 1-site open flood mesh / capillary mat (10" × 20")
 
 /** One shelf of a grow rack (tiers are listed bottom to top). */
 export interface RackTier {
@@ -327,6 +331,12 @@ export interface EquipmentItem {
   attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
   rackTiers?: RackTier[]; // Grow rack: shelves, bottom to top
   rackTierSpacingFt?: number; // Grow rack: shelf-to-shelf spacing (ft)
+  rackType?: 'standard' | 'ebb_and_flow'; // Standard wire shelving vs automated Ebb & Flow flood rack
+  ebbFlowIntegratedPump?: boolean; // Ebb & Flow rack: integrated submersible flood pump
+  ebbFlowFloodsPerDay?: number; // Ebb & Flow rack: automated flood cycles per day
+  ebbFlowFloodDurationMin?: number; // Ebb & Flow rack: minutes per flood soak
+  ebbFlowManualFloodActive?: boolean; // Ebb & Flow rack: temporary manual flood active
+  integratedReservoirL?: number; // Ebb & Flow rack: capacity of integrated bottom nutrient solution tank
   nutrientCapacityL?: number; // Nutrient reservoir: tank size (litres)
   nutrientLevelL?: number; // Nutrient reservoir: solution left (litres)
   nutrientEcPpm?: number; // Nutrient reservoir: solution strength (ppm, 500 scale)

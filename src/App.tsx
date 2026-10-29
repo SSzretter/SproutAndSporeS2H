@@ -13,7 +13,7 @@ import {
   OutdoorLocation,
   OutsideConditions 
 } from './types/sim';
-import { loadSimulation, saveSimulation, resetSimulation } from './utils/storage';
+import { loadSimulation, saveSimulation, resetSimulation, importSimulationJson } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
 import { simulateNpcRoomTick } from './utils/npcWorker';
 import { syncItemGeometry, placeItemInFreeSpace, syncRoomRacks, placeNewRoomContents } from './utils/spatial';
@@ -94,6 +94,29 @@ export default function App() {
     saveSimulation(state);
     setLastSavedAt(Date.now());
   }, [state.room, state.rooms, state.activeRoomId, state.outside, state.outdoorLocation, state.tempUnit, state.harvests]);
+
+  // Ensure simulation state is immediately saved to localStorage on tab close, reload, or page hide
+  useEffect(() => {
+    const handleFlush = () => {
+      if (stateRef.current) {
+        saveSimulation(stateRef.current);
+      }
+    };
+    window.addEventListener('beforeunload', handleFlush);
+    window.addEventListener('pagehide', handleFlush);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden' && stateRef.current) {
+        saveSimulation(stateRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleFlush);
+      window.removeEventListener('pagehide', handleFlush);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
 
   // Dual-screen cross-window sync & Hash routing (#game vs dashboard)
   useEffect(() => {
@@ -316,14 +339,11 @@ export default function App() {
 
   // Import JSON save
   const handleImportJson = useCallback((jsonStr: string) => {
-    const parsed = JSON.parse(jsonStr) as SimulationState;
-    if (!parsed.room || !parsed.outside) {
-      throw new Error('Invalid simulation state format.');
-    }
-    saveSimulation(parsed);
-    setState(parsed);
-    if (parsed.outdoorLocation) {
-      getCachedHourlyWeather(parsed.outdoorLocation.lat, parsed.outdoorLocation.lon, parsed.simTime).then(pkg => {
+    const loaded = importSimulationJson(jsonStr);
+    setState(loaded);
+    broadcastSimulationState(loaded);
+    if (loaded.outdoorLocation) {
+      getCachedHourlyWeather(loaded.outdoorLocation.lat, loaded.outdoorLocation.lon, loaded.simTime).then(pkg => {
         weatherPackageRef.current = pkg;
       });
     }

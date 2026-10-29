@@ -1,9 +1,9 @@
 import React from 'react';
-import { Layers, Plus, Minus, Sprout } from 'lucide-react';
+import { Layers, Plus, Minus, Sprout, Waves, Droplets } from 'lucide-react';
 import { EquipmentItem, PlantItem, PlantStage, RackTier, TrayInsertType } from '../../types/sim';
 import {
   countRackPlants, getCellLabel, getInsertCellCount, getRackCapacity, getRackOccupancy, getRackTiers,
-  getRackTierSpacingFt, rackSlotKey, TRAY_INSERTS, TRAY_INSERT_TYPES
+  getRackTierSpacingFt, isEbbAndFlowRack, rackSlotKey, TRAY_INSERTS, TRAY_INSERT_TYPES
 } from '../../utils/growRacks';
 import type { ItemSectionProps, EquipmentLocals } from './types';
 
@@ -28,17 +28,88 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
   const tiers = getRackTiers(eq);
   const occupancy = getRackOccupancy(eq, containerItems);
   const capacity = getRackCapacity(eq);
+  const isEbb = isEbbAndFlowRack(eq);
+  const total1020Trays = tiers.reduce((n, t) => n + t.trays, 0);
 
   const setTiers = (next: RackTier[]) => onUpdateItem({ ...eq, rackTiers: next } as EquipmentItem, selectedParentTentId);
   const updateTier = (index: number, patch: Partial<RackTier>) => setTiers(tiers.map((t, i) => (i === index ? { ...t, ...patch } : t)));
   const topOccupied = countRackPlants(eq, containerItems, tiers.length - 1) > 0;
 
+  const handleManualFlood = () => {
+    // Water every plant currently on this rack
+    const rackedPlantIds = new Set(
+      containerItems
+        .filter((i): i is PlantItem => i.category === 'plant' && i.rackSlot?.rackId === eq.id)
+        .map(p => p.id)
+    );
+
+    rackedPlantIds.forEach(id => {
+      const p = containerItems.find(i => i.id === id) as PlantItem;
+      if (p) {
+        onUpdateItem({
+          ...p,
+          soilMoisture: 92,
+          ecTdsPpm: 900,
+          soilPh: 5.8,
+          aerationOxygenPct: 90,
+          rootTempF: 68.0,
+          lastWateredTime: Date.now()
+        }, selectedParentTentId);
+      }
+    });
+
+    onUpdateItem({
+      ...eq,
+      notes: `${eq.notes ? eq.notes + ' · ' : ''}Manual flood cycle executed.`
+    }, selectedParentTentId);
+  };
+
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 space-y-3">
+      {/* Ebb & Flow Flood Unit Badge & Banner */}
+      {isEbb ? (
+        <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/60 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Waves className="w-4 h-4 text-cyan-400 shrink-0" />
+            <div>
+              <div className="text-xs font-semibold text-cyan-200">Ebb &amp; Flow Flood Unit ({total1020Trays} × 1020 Trays)</div>
+              <div className="text-[10px] text-cyan-400">
+                {eq.integratedReservoirL || 60}L bottom tank · {eq.ebbFlowFloodsPerDay || 6} floods/day (15m flood cycle)
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleManualFlood}
+            className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-[11px] font-medium flex items-center gap-1 transition-colors"
+          >
+            <Droplets className="w-3.5 h-3.5" /> Run Flood Cycle
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => onUpdateItem({
+              ...eq,
+              rackType: 'ebb_and_flow',
+              integratedReservoirL: 60,
+              ebbFlowIntegratedPump: true,
+              ebbFlowFloodsPerDay: 6,
+              ebbFlowFloodDurationMin: 15,
+              powerWatts: 25
+            }, selectedParentTentId)}
+            className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 hover:underline"
+          >
+            <Waves className="w-3 h-3" /> Upgrade to Ebb &amp; Flow Flood Unit
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs text-zinc-300">
           <Layers className="w-4 h-4 text-emerald-400" />
-          <span className="font-semibold">{tiers.length} shelves · {tiers.reduce((n, t) => n + t.trays, 0)} trays (1020)</span>
+          <span className="font-semibold">{tiers.length} levels · {total1020Trays} trays (1020)</span>
         </div>
         <span className="font-mono text-xs font-bold text-emerald-400">{occupancy.size} / {capacity} sown</span>
       </div>

@@ -32,13 +32,17 @@ export interface TrayInsertSpec {
 }
 
 export const TRAY_INSERTS: Record<TrayInsertType, TrayInsertSpec> = {
+  cells_18: { label: '18-cell jumbo insert', kind: 'cell', cols: 3, rows: 6, cellSizeIn: 3.0, depthIn: 3.0 },
+  cells_24: { label: '24-cell insert', kind: 'cell', cols: 4, rows: 6, cellSizeIn: 2.5, depthIn: 2.5 },
   cells_32: { label: '32-cell insert', kind: 'cell', cols: 4, rows: 8, cellSizeIn: 2.4, depthIn: 2.3 },
   cells_50: { label: '50-cell insert', kind: 'cell', cols: 5, rows: 10, cellSizeIn: 2.0, depthIn: 2.3 },
   cells_72: { label: '72-cell insert', kind: 'cell', cols: 6, rows: 12, cellSizeIn: 1.6, depthIn: 2.25 },
+  cells_98: { label: '98-site rockwool sheet', kind: 'cell', cols: 7, rows: 14, cellSizeIn: 1.4, depthIn: 1.5 },
   cells_128: { label: '128-cell plug tray', kind: 'cell', cols: 8, rows: 16, cellSizeIn: 1.25, depthIn: 1.9 },
   cells_200: { label: '200-cell plug tray', kind: 'cell', cols: 10, rows: 20, cellSizeIn: 1.0, depthIn: 1.75 },
   pots_4in_8: { label: '8 × 4" square pots', kind: 'pot', cols: 2, rows: 4, cellSizeIn: 4, depthIn: 3.5 },
-  pots_3_5in_18: { label: '18 × 3.5" square pots', kind: 'pot', cols: 3, rows: 6, cellSizeIn: 3.5, depthIn: 3.5 }
+  pots_3_5in_18: { label: '18 × 3.5" square pots', kind: 'pot', cols: 3, rows: 6, cellSizeIn: 3.5, depthIn: 3.5 },
+  microgreens_mesh: { label: 'Open 1020 flood mat / mesh', kind: 'cell', cols: 1, rows: 1, cellSizeIn: 10.0, depthIn: 1.5 }
 };
 
 export const TRAY_INSERT_TYPES = Object.keys(TRAY_INSERTS) as TrayInsertType[];
@@ -49,16 +53,75 @@ export interface GrowRackPreset {
   traysPerTier: number;
   tierSpacingFt: number;
   insert: TrayInsertType;
+  rackType?: 'standard' | 'ebb_and_flow';
+  integratedReservoirL?: number;
+  floodsPerDay?: number;
+  desc?: string;
 }
 
 export const GROW_RACK_PRESETS: GrowRackPreset[] = [
-  { name: '5-Tier 1020 Seedling Rack', tiers: 5, traysPerTier: 1, tierSpacingFt: 1.0, insert: 'cells_72' },
-  { name: '4-Tier Wire Shelf (48" × 18")', tiers: 4, traysPerTier: 2, tierSpacingFt: 1.5, insert: 'cells_72' },
-  { name: '3-Tier Propagation Cart', tiers: 3, traysPerTier: 2, tierSpacingFt: 1.25, insert: 'pots_3_5in_18' }
+  {
+    name: 'Rootrimmer 5-Level Ebb & Flow Unit',
+    tiers: 5,
+    traysPerTier: 1,
+    tierSpacingFt: 1.0,
+    insert: 'cells_72',
+    rackType: 'ebb_and_flow',
+    integratedReservoirL: 60,
+    floodsPerDay: 6,
+    desc: '5 vertical flood levels (5 × 1020 trays) with automated flood manifold & bottom tank'
+  },
+  {
+    name: 'Commercial 4-Tier Ebb & Flow Rack (48" × 24")',
+    tiers: 4,
+    traysPerTier: 2,
+    tierSpacingFt: 1.5,
+    insert: 'cells_50',
+    rackType: 'ebb_and_flow',
+    integratedReservoirL: 100,
+    floodsPerDay: 4,
+    desc: 'Heavy-duty 4-tier rack holding 8 total 1020 flood trays for high-throughput ebb & flow'
+  },
+  {
+    name: '5-Tier 1020 Seedling Rack',
+    tiers: 5,
+    traysPerTier: 1,
+    tierSpacingFt: 1.0,
+    insert: 'cells_72',
+    rackType: 'standard',
+    desc: 'Standard 5-shelf wire frame holding 5 1020 flat trays for seed starting'
+  },
+  {
+    name: '4-Tier Wire Shelf (48" × 18")',
+    tiers: 4,
+    traysPerTier: 2,
+    tierSpacingFt: 1.5,
+    insert: 'cells_72',
+    rackType: 'standard',
+    desc: 'Standard commercial wire shelf holding 8 1020 trays'
+  },
+  {
+    name: '3-Tier Propagation Cart',
+    tiers: 3,
+    traysPerTier: 2,
+    tierSpacingFt: 1.25,
+    insert: 'pots_3_5in_18',
+    rackType: 'standard',
+    desc: 'Caster-mounted nursery rack with square pots'
+  }
 ];
 
 export function isGrowRack(item: Item): item is EquipmentItem {
   return item.category === 'equipment' && item.type === 'grow_rack';
+}
+
+export function isEbbAndFlowRack(eq: EquipmentItem): boolean {
+  return isGrowRack(eq) && eq.rackType === 'ebb_and_flow';
+}
+
+export function getRack1020TrayCount(rack: EquipmentItem): number {
+  const tiers = getRackTiers(rack);
+  return tiers.reduce((sum, t) => sum + (t.trays || 1), 0);
 }
 
 export function createRackTiers(preset: Pick<GrowRackPreset, 'tiers' | 'traysPerTier' | 'insert'>): RackTier[] {

@@ -92,6 +92,22 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
     }
   };
 
+  const handleRestoreBackup = () => {
+    try {
+      const backup = localStorage.getItem('sprout_spore_grow_sim_v2_backup');
+      if (!backup) {
+        setImportError('No secondary backup snapshot found in this browser origin.');
+        return;
+      }
+      onImportJson(backup);
+      setShowImportModal(false);
+      setImportText('');
+      setImportError('');
+    } catch (e: any) {
+      setImportError(e.message || 'Failed to restore backup snapshot');
+    }
+  };
+
   return (
     <header className="bg-zinc-950/90 border-b border-zinc-800/80 backdrop-blur sticky top-0 z-40 text-zinc-100">
       <div className="max-w-7xl mx-auto px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
@@ -325,19 +341,30 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
             {importError && (
               <p className="text-xs text-rose-400 mt-2">{importError}</p>
             )}
-            <div className="mt-4 flex justify-end gap-3">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
               <button
-                onClick={() => setShowImportModal(false)}
-                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+                type="button"
+                onClick={handleRestoreBackup}
+                className="px-3 py-2 rounded-xl bg-cyan-950/70 border border-cyan-800/80 hover:bg-cyan-900 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                title="Restore from the automatic secondary rolling backup in localStorage"
               >
-                Cancel
+                <RotateCcw className="w-3.5 h-3.5" />
+                Restore Auto-Backup
               </button>
-              <button
-                onClick={handleImportSubmit}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors shadow-lg shadow-emerald-900/30"
-              >
-                Load State
-              </button>
+              <div className="flex items-center gap-3 ml-auto">
+                <button
+                  onClick={() => setShowImportModal(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleImportSubmit}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors shadow-lg shadow-emerald-900/30"
+                >
+                  Load State
+                </button>
+              </div>
             </div>
           </div>
         </div>

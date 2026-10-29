@@ -62,7 +62,7 @@ import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/sp
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 import {
   createRackTiers, getFreeRackSlots, getInsertCellCount, getInsertCellDimensions, getInsertCellVolumeGallons, getRackCapacity,
-  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, isGrowRack, TRAY_INSERTS, TRAY_INSERT_TYPES
+  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, isGrowRack, isEbbAndFlowRack, getRack1020TrayCount, TRAY_INSERTS, TRAY_INSERT_TYPES
 } from '../utils/growRacks';
 import {
   DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getReservoirDimensions, NUTRIENT_RESERVOIR_PRESETS, RESERVOIR_FED_SYSTEMS
@@ -193,6 +193,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [rackTraysPerTier, setRackTraysPerTier] = useState(GROW_RACK_PRESETS[0].traysPerTier);
   const [rackSpacingFt, setRackSpacingFt] = useState(GROW_RACK_PRESETS[0].tierSpacingFt);
   const [rackInsert, setRackInsert] = useState<TrayInsertType>(GROW_RACK_PRESETS[0].insert);
+  const [rackType, setRackType] = useState<'standard' | 'ebb_and_flow'>(GROW_RACK_PRESETS[0].rackType || 'ebb_and_flow');
+  const [rackIntegratedResL, setRackIntegratedResL] = useState(GROW_RACK_PRESETS[0].integratedReservoirL || 60);
+  const [rackFloodsPerDay, setRackFloodsPerDay] = useState(GROW_RACK_PRESETS[0].floodsPerDay || 6);
   const [resLiters, setResLiters] = useState(NUTRIENT_RESERVOIR_PRESETS[1].liters); // Nutrient reservoir tank size
   const [resPumpMode, setResPumpMode] = useState<'flood' | 'continuous'>('flood');
   const [resFeedIds, setResFeedIds] = useState<string[] | null>(null); // null = every rack and unfed hydro plant here
@@ -406,11 +409,16 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           { species: plantSpecies, stage: plantStage, propagationType, stageProgress: initialProgress } as PlantItem,
           getContainerSizeFactor(cellGallons)
         );
+        const isEbbRack = sowRack.rackType === 'ebb_and_flow';
         return {
           ...newPlant,
           id: `plant-${stamp}-${i}`,
           name: `${newPlant.name} (${getRackSlotCode(sowRack, slot)})`,
           rackSlot: slot,
+          systemType: isEbbRack ? 'ebb_and_flow' : newPlant.systemType,
+          growingMedium: isEbbRack && newPlant.growingMedium === 'living_organic_soil' ? 'hydroton_clay_pebbles' : newPlant.growingMedium,
+          soilPh: isEbbRack ? 5.8 : newPlant.soilPh,
+          reservoirTempF: isEbbRack ? 68.0 : newPlant.reservoirTempF,
           containerType: TRAY_INSERTS[insert].kind === 'pot' ? 'tray_pot' : 'tray_cell',
           containerVolumeGallons: cellGallons,
           containerDimensions: getInsertCellDimensions(insert),
@@ -568,10 +576,17 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       newEq.dimensions = getReservoirDimensions(resLiters);
     }
     if (eqType === 'grow_rack') {
-      newEq.powerWatts = 0;
-      newEq.setting = 0;
+      newEq.rackType = rackType;
+      newEq.powerWatts = rackType === 'ebb_and_flow' ? 25 : 0;
+      newEq.setting = rackType === 'ebb_and_flow' ? 100 : 0;
       newEq.rackTiers = createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert });
       newEq.rackTierSpacingFt = rackSpacingFt;
+      if (rackType === 'ebb_and_flow') {
+        newEq.integratedReservoirL = rackIntegratedResL;
+        newEq.ebbFlowIntegratedPump = true;
+        newEq.ebbFlowFloodsPerDay = rackFloodsPerDay;
+        newEq.ebbFlowFloodDurationMin = 15;
+      }
       newEq.dimensions = getRackDimensions(newEq);
     }
     // Tank / bucket capacity is an explicit property, sized to fit the unit's body
@@ -2103,7 +2118,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
                   <div>
                     <label className="text-xs font-semibold text-zinc-300 block mb-1">Rack Presets</label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
                       {GROW_RACK_PRESETS.map(p => (
                         <button
                           key={p.name}
@@ -2114,37 +2129,108 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                             setRackTraysPerTier(p.traysPerTier);
                             setRackSpacingFt(p.tierSpacingFt);
                             setRackInsert(p.insert);
+                            if (p.rackType) setRackType(p.rackType);
+                            if (p.integratedReservoirL) setRackIntegratedResL(p.integratedReservoirL);
+                            if (p.floodsPerDay) setRackFloodsPerDay(p.floodsPerDay);
                           }}
-                          className={`p-1.5 rounded-lg border text-left ${eqName === p.name ? 'bg-blue-950 border-blue-500 text-blue-200' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                          className={`p-2 rounded-lg border text-left transition-all ${eqName === p.name ? 'bg-blue-950/80 border-blue-500 text-blue-200 ring-1 ring-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
                         >
                           <div className="font-semibold text-[11px] truncate">{p.name}</div>
-                          <div className="text-[9px] text-zinc-500">{p.tiers} shelves × {p.traysPerTier} tray{p.traysPerTier > 1 ? 's' : ''}</div>
+                          <div className="text-[10px] text-zinc-400 flex items-center justify-between mt-0.5">
+                            <span>{p.tiers} levels · {p.tiers * p.traysPerTier} × 1020 trays</span>
+                            {p.rackType === 'ebb_and_flow' && <span className="text-cyan-400 font-medium">🌊 Flood & Drain</span>}
+                          </div>
                         </button>
                       ))}
                     </div>
                   </div>
+
+                  {/* Rack Operation Mode: Standard vs Ebb & Flow */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-300 block mb-1.5">Irrigation & Rack Architecture</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRackType('standard')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackType === 'standard' ? 'bg-zinc-800 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">Standard Wire Rack</div>
+                        <div className="text-[10px] text-zinc-500">Hand-watered 1020 flats / seed trays</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRackType('ebb_and_flow')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackType === 'ebb_and_flow' ? 'bg-cyan-950/80 border-cyan-500 text-cyan-200 ring-1 ring-cyan-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold flex items-center gap-1">🌊 Ebb &amp; Flow Flood Unit</div>
+                        <div className="text-[10px] text-zinc-400">Vertical flood manifold + bottom tank</div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Ebb & Flow specific configuration */}
+                  {rackType === 'ebb_and_flow' && (
+                    <div className="p-2.5 rounded-lg bg-cyan-950/30 border border-cyan-800/60 space-y-2">
+                      <div className="flex items-center justify-between text-xs text-cyan-300 font-medium">
+                        <span>🌊 Flood &amp; Drain Specifications</span>
+                        <span className="font-mono text-[11px]">{rackTierCount * rackTraysPerTier} × 1020 Flood Trays</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Bottom Reservoir Tank (Liters)</label>
+                          <input
+                            type="number"
+                            min="20"
+                            max="300"
+                            value={rackIntegratedResL}
+                            onChange={e => setRackIntegratedResL(Math.max(10, parseInt(e.target.value) || 60))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200 font-mono"
+                          />
+                          <span className="text-[9px] text-zinc-500 font-mono">≈ {Math.round(rackIntegratedResL * 0.264)} gallons solution</span>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Automated Floods / Day</label>
+                          <select
+                            value={rackFloodsPerDay}
+                            onChange={e => setRackFloodsPerDay(parseInt(e.target.value) || 6)}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200"
+                          >
+                            <option value="2">2 × per day (every 12 hrs)</option>
+                            <option value="4">4 × per day (every 6 hrs)</option>
+                            <option value="6">6 × per day (every 4 hrs)</option>
+                            <option value="8">8 × per day (every 3 hrs)</option>
+                          </select>
+                          <span className="text-[9px] text-zinc-500 font-mono">15 min flood duration</span>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-cyan-400/90 leading-relaxed">
+                        Nutrient pump feeds all {rackTierCount} levels simultaneously. Plants in these 1020 trays get flood-and-drain watering with hydro nutrients (pH 5.8 baseline).
+                      </p>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelves</label>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Levels / Shelves</label>
                       <input type="number" min="1" max="8" value={rackTierCount}
                         onChange={e => setRackTierCount(Math.max(1, Math.min(8, parseInt(e.target.value) || 1)))}
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Trays / Shelf</label>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Trays / Level</label>
                       <input type="number" min="1" max="4" value={rackTraysPerTier}
                         onChange={e => setRackTraysPerTier(Math.max(1, Math.min(4, parseInt(e.target.value) || 1)))}
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelf Spacing (ft)</label>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Level Spacing (ft)</label>
                       <input type="number" min="0.5" max="3" step="0.25" value={rackSpacingFt}
                         onChange={e => setRackSpacingFt(Math.max(0.5, Math.min(3, parseFloat(e.target.value) || 1)))}
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tray Insert (every shelf; change per shelf later in the inspector)</label>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Tray Insert (customizable per shelf in inspector)</label>
                     <select value={rackInsert} onChange={e => setRackInsert(e.target.value as TrayInsertType)}
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200">
                       {TRAY_INSERT_TYPES.map(t => (
@@ -2152,9 +2238,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       ))}
                     </select>
                   </div>
-                  <div className="text-[10px] text-zinc-400 font-mono flex flex-wrap justify-between gap-2">
-                    <span>{rackTierCount * rackTraysPerTier} trays · {getRackCapacity(preview)} plant sites</span>
-                    <span>{dims.length}′ × {dims.width}′ × {dims.height}′</span>
+                  <div className="text-[10px] text-zinc-400 font-mono flex flex-wrap justify-between gap-2 border-t border-zinc-800 pt-2">
+                    <span className="text-emerald-400 font-semibold">{rackTierCount * rackTraysPerTier} × 1020 trays · {getRackCapacity(preview)} total plant/seed sites</span>
+                    <span>{dims.length}′ L × {dims.width}′ W × {dims.height}′ H</span>
                   </div>
                 </div>
               );

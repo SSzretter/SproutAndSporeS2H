@@ -7,6 +7,7 @@ import { ensurePersonNpcFields } from './npcWorker';
 import { ensureRoomDoorLinks } from './roomDoorways';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
+export const BACKUP_STORAGE_KEY = 'sprout_spore_grow_sim_v2_backup';
 
 export const DEFAULT_OUTDOOR_LOCATION: OutdoorLocation = {
   zipCode: '01507',
@@ -448,13 +449,55 @@ export function createDefaultSimulationState(): SimulationState {
 /**
  * Loads simulation state from local storage or returns fresh default state
  */
+/**
+ * Loads simulation state from local storage with automatic secondary backup recovery
+ */
 export function loadSimulation(): SimulationState {
+  let raw: string | null = null;
+  let isFromBackup = false;
+
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
+      // Attempt fallback to secondary rolling backup
+      raw = localStorage.getItem(BACKUP_STORAGE_KEY);
+      if (raw) {
+        console.warn('Primary storage empty, recovered simulation state from secondary backup.');
+        isFromBackup = true;
+      }
+    }
+  } catch (readErr) {
+    console.warn('Could not read primary storage key, attempting backup:', readErr);
+    try {
+      raw = localStorage.getItem(BACKUP_STORAGE_KEY);
+      if (raw) isFromBackup = true;
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!raw) {
+    return createDefaultSimulationState();
+  }
+
+  try {
+    let state: SimulationState;
+    try {
+      state = JSON.parse(raw);
+    } catch (parseErr) {
+      console.warn('Primary JSON corrupted, attempting backup restore:', parseErr);
+      const backupRaw = localStorage.getItem(BACKUP_STORAGE_KEY);
+      if (backupRaw) {
+        state = JSON.parse(backupRaw);
+        isFromBackup = true;
+      } else {
+        throw parseErr;
+      }
+    }
+
+    if (!state || typeof state !== 'object') {
       return createDefaultSimulationState();
     }
-    const state: SimulationState = JSON.parse(raw);
     
     // Migration checks for new properties
     if (!state.outside || !state.outside.co2Ppm) {
@@ -466,8 +509,8 @@ export function loadSimulation(): SimulationState {
 
     // Migration for multi-room support
     if (!state.rooms || !Array.isArray(state.rooms) || state.rooms.length === 0) {
-      state.rooms = [state.room];
-      state.activeRoomId = state.room.id;
+      state.rooms = [state.room || createDefaultSimulationState().room];
+      state.activeRoomId = state.rooms[0].id;
     } else {
       if (!state.activeRoomId) {
         state.activeRoomId = state.rooms[0].id;
@@ -480,6 +523,15 @@ export function loadSimulation(): SimulationState {
         state.activeRoomId = state.rooms[0].id;
       }
     }
+
+    // Sanitize every room so items and tents are guaranteed arrays
+    state.rooms = state.rooms.map(rm => ({
+      ...rm,
+      items: Array.isArray(rm.items) ? rm.items : [],
+      tents: Array.isArray(rm.tents) ? rm.tents : [],
+      doors: rm.doors || {}
+    }));
+
     state.rooms = ensureRoomDoorLinks(state.rooms);
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
@@ -494,26 +546,30 @@ export function loadSimulation(): SimulationState {
       state.room.roomCo2BaselinePpm = 420;
     }
 
-    if (!state.room.climate.co2Ppm) {
-      state.room.climate.co2Ppm = 420;
+    if (!state.room.climate || !state.room.climate.co2Ppm) {
+      state.room.climate = {
+        ...(state.room.climate || { tempF: 70, rh: 50, lightPPFD: 0 }),
+        co2Ppm: 420
+      };
     }
 
-    const hasBiologicalOccupant = state.room.items.some(i => i.category === 'person' || i.category === 'pet');
+    const hasBiologicalOccupant = (state.room.items || []).some(i => i.category === 'person' || i.category === 'pet');
     if (!hasBiologicalOccupant && (state.room.climate.co2Ppm === 610 || state.room.climate.co2Ppm === 620)) {
       state.room.climate.co2Ppm = 420;
     }
 
     const migrateTent = (t: Tent, tIdx: number, roomDimensions: any): Tent => {
-      const isShroomTent = t.items.some(i => i.category === 'mushroom');
-      let tentCo2 = t.climate.co2Ppm;
+      const tentItems = Array.isArray(t.items) ? t.items : [];
+      const isShroomTent = tentItems.some(i => i.category === 'mushroom');
+      let tentCo2 = t.climate?.co2Ppm;
       if (!tentCo2 || tentCo2 < 350) {
         tentCo2 = isShroomTent 
           ? 820 
-          : Math.max(380, state.room.climate.co2Ppm - 30);
+          : Math.max(380, (state.room.climate?.co2Ppm || 420) - 30);
       }
 
-      let tentRh = t.climate.rh;
-      const hasActiveMushroomFogger = t.items.some(
+      let tentRh = t.climate?.rh ?? 60;
+      const hasActiveMushroomFogger = tentItems.some(
         i => i.category === 'equipment' && i.type === 'humidifier' && (i as EquipmentItem).powerOn && ((i as EquipmentItem).targetRh || (i as EquipmentItem).setting || 0) >= 75
       ) || isShroomTent;
 
@@ -531,153 +587,180 @@ export function loadSimulation(): SimulationState {
         climate: {
           ...t.climate,
           rh: tentRh,
-          vpdKpa: calculateVPD(t.climate.tempF, tentRh, t.climate.lightPPFD || 0),
+          vpdKpa: calculateVPD(t.climate?.tempF ?? 75, tentRh, t.climate?.lightPPFD || 0),
           co2Ppm: tentCo2
         },
-        items: t.items.map((i, iIdx) => {
-          const itemPos = i.position || getDefaultSpatialPosition(i.category, t.dimensions, iIdx, (i as any).type);
-          const itemDims = i.dimensions || getDefaultItemDimensions({
-            category: i.category,
-            type: (i as any).type,
-            species: (i as any).species,
-            stage: (i as any).stage,
-            containerType: (i as any).containerType,
-            petType: (i as any).petType
-          });
+        items: tentItems.map((i, iIdx) => {
+          try {
+            const itemPos = i.position || getDefaultSpatialPosition(i.category, t.dimensions, iIdx, (i as any).type);
+            const itemDims = i.dimensions || getDefaultItemDimensions({
+              category: i.category,
+              type: (i as any).type,
+              species: (i as any).species,
+              stage: (i as any).stage,
+              containerType: (i as any).containerType,
+              petType: (i as any).petType
+            });
 
-          if (i.category === 'plant') {
-            const p = i as PlantItem;
-            const age = p.ageDays || 10;
-            const sim = state.simTime || Date.now();
-            const isSeed = (p.propagationType || 'seed') === 'seed';
-            const keyDates = p.keyDates || {
-              plantedDate: sim - age * 86400000,
-              ...(p.stage !== 'germination' && p.stage !== 'rooting' ? {
-                sproutedDate: isSeed ? sim - Math.max(1, age - 4) * 86400000 : undefined,
-                rootedDate: !isSeed ? sim - Math.max(1, age - 10) * 86400000 : undefined,
-                seedlingDate: sim - Math.max(1, age - 4) * 86400000
-              } : {}),
-              ...(['mature_seedling', 'vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
-                matureSeedlingDate: sim - Math.max(1, age - 12) * 86400000
-              } : {}),
-              ...(['vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
-                vegetativeDate: sim - Math.max(1, age - 20) * 86400000
-              } : {}),
-              ...(['flowering', 'ripening', 'ready'].includes(p.stage) ? {
-                floweringDate: sim - Math.max(1, age - 35) * 86400000
-              } : {}),
-              ...(['ripening', 'ready'].includes(p.stage) ? {
-                ripeningDate: sim - Math.max(1, age - 48) * 86400000
-              } : {}),
-              ...(p.stage === 'ready' ? {
-                readyDate: sim - 86400000
-              } : {})
-            };
+            if (i.category === 'plant') {
+              const p = i as PlantItem;
+              const age = p.ageDays || 10;
+              const sim = state.simTime || Date.now();
+              const isSeed = (p.propagationType || 'seed') === 'seed';
+              const keyDates = p.keyDates || {
+                plantedDate: sim - age * 86400000,
+                ...(p.stage !== 'germination' && p.stage !== 'rooting' ? {
+                  sproutedDate: isSeed ? sim - Math.max(1, age - 4) * 86400000 : undefined,
+                  rootedDate: !isSeed ? sim - Math.max(1, age - 10) * 86400000 : undefined,
+                  seedlingDate: sim - Math.max(1, age - 4) * 86400000
+                } : {}),
+                ...(['mature_seedling', 'vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                  matureSeedlingDate: sim - Math.max(1, age - 12) * 86400000
+                } : {}),
+                ...(['vegetative', 'flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                  vegetativeDate: sim - Math.max(1, age - 20) * 86400000
+                } : {}),
+                ...(['flowering', 'ripening', 'ready'].includes(p.stage) ? {
+                  floweringDate: sim - Math.max(1, age - 35) * 86400000
+                } : {}),
+                ...(['ripening', 'ready'].includes(p.stage) ? {
+                  ripeningDate: sim - Math.max(1, age - 48) * 86400000
+                } : {}),
+                ...(p.stage === 'ready' ? {
+                  readyDate: sim - 86400000
+                } : {})
+              };
 
+              return {
+                ...p,
+                dimensions: itemDims,
+                position: itemPos,
+                propagationType: p.propagationType || 'seed',
+                keyDates,
+                currentStageDays: p.currentStageDays ?? Math.min(age, 5),
+                germinationDaysExpected: p.germinationDaysExpected || 4,
+                rootingDaysExpected: p.rootingDaysExpected || 10,
+                seedlingDaysExpected: p.seedlingDaysExpected || 8,
+                matureSeedlingDaysExpected: p.matureSeedlingDaysExpected || 8,
+                vegetativeDaysExpected: p.vegetativeDaysExpected || 28,
+                floweringDaysExpected: p.floweringDaysExpected || 56,
+                ripeningDaysExpected: p.ripeningDaysExpected || 10,
+                rootTempF: p.rootTempF || 68.2
+              };
+            }
+            if (i.category === 'equipment') {
+              const eq = i as EquipmentItem;
+              if (eq.type === 'exhaust_fan') {
+                return {
+                  ...eq,
+                  dimensions: itemDims,
+                  position: itemPos,
+                  controlMode: eq.controlMode || 'auto',
+                  autoTriggers: eq.autoTriggers || (isShroomTent ? {
+                    tempTriggerHighF: 76,
+                    rhTriggerHigh: 98,
+                    rhTriggerLow: 82,
+                    co2TriggerHighPpm: 920,
+                    minSpeedPercent: 0,
+                    maxSpeedPercent: 50,
+                    cycleOnMinutes: 3,
+                    cycleOffMinutes: 15
+                  } : {
+                    tempTriggerHighF: 78,
+                    rhTriggerHigh: 68,
+                    rhTriggerLow: 45,
+                    co2TriggerHighPpm: 1500,
+                    co2TriggerLowPpm: 380,
+                    minSpeedPercent: 0,
+                    maxSpeedPercent: 70
+                  })
+                };
+              }
+              if (eq.type === 'grow_light') {
+                return {
+                  ...eq,
+                  dimensions: itemDims,
+                  position: itemPos,
+                  controlMode: eq.controlMode || 'schedule',
+                  schedule: eq.schedule || { enabled: true, onHour: 6, offHour: 0 }
+                };
+              }
+              if (eq.type === 'humidifier' || eq.type === 'dehumidifier' || eq.type === 'co2_regulator') {
+                return {
+                  ...eq,
+                  dimensions: itemDims,
+                  position: itemPos,
+                  controlMode: eq.controlMode || 'auto'
+                };
+              }
+              return {
+                ...eq,
+                dimensions: itemDims,
+                position: itemPos
+              };
+            }
             return {
-              ...p,
-              dimensions: itemDims,
-              position: itemPos,
-              propagationType: p.propagationType || 'seed',
-              keyDates,
-              currentStageDays: p.currentStageDays ?? Math.min(age, 5),
-              germinationDaysExpected: p.germinationDaysExpected || 4,
-              rootingDaysExpected: p.rootingDaysExpected || 10,
-              seedlingDaysExpected: p.seedlingDaysExpected || 8,
-              matureSeedlingDaysExpected: p.matureSeedlingDaysExpected || 8,
-              vegetativeDaysExpected: p.vegetativeDaysExpected || 28,
-              floweringDaysExpected: p.floweringDaysExpected || 56,
-              ripeningDaysExpected: p.ripeningDaysExpected || 10,
-              rootTempF: p.rootTempF || 68.2
-            };
-          }
-          if (i.category === 'equipment') {
-            const eq = i as EquipmentItem;
-            if (eq.type === 'exhaust_fan') {
-              return {
-                ...eq,
-                dimensions: itemDims,
-                position: itemPos,
-                controlMode: eq.controlMode || 'auto',
-                autoTriggers: eq.autoTriggers || (isShroomTent ? {
-                  tempTriggerHighF: 76,
-                  rhTriggerHigh: 98,
-                  rhTriggerLow: 82,
-                  co2TriggerHighPpm: 920,
-                  minSpeedPercent: 0,
-                  maxSpeedPercent: 50,
-                  cycleOnMinutes: 3,
-                  cycleOffMinutes: 15
-                } : {
-                  tempTriggerHighF: 78,
-                  rhTriggerHigh: 68,
-                  rhTriggerLow: 45,
-                  co2TriggerHighPpm: 1500,
-                  co2TriggerLowPpm: 380,
-                  minSpeedPercent: 0,
-                  maxSpeedPercent: 70
-                })
-              };
-            }
-            if (eq.type === 'grow_light') {
-              return {
-                ...eq,
-                dimensions: itemDims,
-                position: itemPos,
-                controlMode: eq.controlMode || 'schedule',
-                schedule: eq.schedule || { enabled: true, onHour: 6, offHour: 0 }
-              };
-            }
-            if (eq.type === 'humidifier' || eq.type === 'dehumidifier' || eq.type === 'co2_regulator') {
-              return {
-                ...eq,
-                dimensions: itemDims,
-                position: itemPos,
-                controlMode: eq.controlMode || 'auto'
-              };
-            }
-            return {
-              ...eq,
+              ...i,
               dimensions: itemDims,
               position: itemPos
             };
+          } catch {
+            return i;
           }
-          return {
-            ...i,
-            dimensions: itemDims,
-            position: itemPos
-          };
         })
       };
     };
 
-    state.rooms = state.rooms.map(rm => ({
-      ...rm,
-      items: rm.items.map((i, iIdx) => ({
-        ...i,
-        dimensions: i.dimensions || getDefaultItemDimensions({
-          category: i.category,
-          type: (i as any).type,
-          species: (i as any).species,
-          stage: (i as any).stage,
-          containerType: (i as any).containerType,
-          petType: (i as any).petType
+    state.rooms = state.rooms.map(rm => {
+      const roomItems = Array.isArray(rm.items) ? rm.items : [];
+      const roomTents = Array.isArray(rm.tents) ? rm.tents : [];
+      return {
+        ...rm,
+        items: roomItems.map((i, iIdx) => {
+          try {
+            return {
+              ...i,
+              dimensions: i.dimensions || getDefaultItemDimensions({
+                category: i.category,
+                type: (i as any).type,
+                species: (i as any).species,
+                stage: (i as any).stage,
+                containerType: (i as any).containerType,
+                petType: (i as any).petType
+              }),
+              position: i.position || getDefaultSpatialPosition(i.category, rm.dimensions, iIdx, (i as any).type)
+            };
+          } catch {
+            return i;
+          }
         }),
-        position: i.position || getDefaultSpatialPosition(i.category, rm.dimensions, iIdx, (i as any).type)
-      })),
-      tents: rm.tents.map((t, tIdx) => migrateTent(t, tIdx, rm.dimensions))
-    }));
+        tents: roomTents.map((t, tIdx) => migrateTent(t, tIdx, rm.dimensions))
+      };
+    });
 
-    // Backfill crop container sizes and growth-based dimensions (plants saved before pots had physical size)
+    // Backfill crop container sizes and growth-based dimensions
     state.rooms = state.rooms.map(rm => ({
       ...rm,
-      items: rm.items.map(syncItemGeometry),
-      tents: rm.tents.map(t => ({ ...t, items: t.items.map(syncItemGeometry) }))
+      items: (rm.items || []).map(i => {
+        try { return syncItemGeometry(i); } catch { return i; }
+      }),
+      tents: (rm.tents || []).map(t => ({
+        ...t,
+        items: (t.items || []).map(i => {
+          try { return syncItemGeometry(i); } catch { return i; }
+        })
+      }))
     }));
 
-    // Backfill humidifier reservoir fields and drop dangling hose links (tent deleted / unit moved into a tent)
-    // and re-seat plants in their grow rack cells (unlinking any whose rack or slot is gone)
-    state.rooms = state.rooms.map(rm => syncRoomRacks(migrateEquipmentLinks(migrateRoomClimateControl(rm))));
+    // Backfill equipment links and re-seat plants in their grow rack cells
+    state.rooms = state.rooms.map(rm => {
+      try {
+        return syncRoomRacks(migrateEquipmentLinks(migrateRoomClimateControl(rm)));
+      } catch (rackErr) {
+        console.warn('Non-fatal error syncing room racks:', rackErr);
+        return rm;
+      }
+    });
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
     // Ensure backwards compatibility for harvest records
@@ -692,33 +775,109 @@ export function loadSimulation(): SimulationState {
       state.harvests = [];
     }
 
-        // Ensure all PersonItem occupants have full NPC role, inventory, and actionLog fields
+    // Ensure all PersonItem occupants have full NPC role, inventory, and actionLog fields
     const migratePerson = (item: any) => item.category === 'person' ? ensurePersonNpcFields(item) : item;
     state.rooms = state.rooms.map(r => ({
       ...r,
-      items: r.items.map(migratePerson),
-      tents: r.tents.map(t => ({
+      items: (r.items || []).map(migratePerson),
+      tents: (r.tents || []).map(t => ({
         ...t,
-        items: t.items.map(migratePerson)
+        items: (t.items || []).map(migratePerson)
       }))
     }));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
 
+    // If successfully loaded from backup, write back to primary storage
+    if (isFromBackup) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch {
+        // ignore
+      }
+    }
+
     return state;
   } catch (err) {
-    console.error('Failed to parse saved simulation, creating default:', err);
+    console.error('Failed to parse saved simulation, checking backup before creating default:', err);
+    try {
+      const backupRaw = localStorage.getItem(BACKUP_STORAGE_KEY);
+      if (backupRaw) {
+        const backupState = JSON.parse(backupRaw);
+        if (backupState && backupState.rooms && backupState.rooms.length > 0) {
+          console.warn('Successfully recovered facility state from secondary backup!');
+          return backupState;
+        }
+      }
+    } catch {
+      // ignore
+    }
     return createDefaultSimulationState();
   }
 }
 
 /**
- * Saves simulation state to local storage
+ * Saves simulation state to local storage with secondary rolling backup and quota handling
  */
 export function saveSimulation(state: SimulationState): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (err) {
+    const serialized = JSON.stringify(state);
+    localStorage.setItem(STORAGE_KEY, serialized);
+    // Write secondary rolling backup
+    try {
+      localStorage.setItem(BACKUP_STORAGE_KEY, serialized);
+    } catch {
+      // ignore backup quota if tight
+    }
+  } catch (err: any) {
     console.error('Failed to save simulation to local storage:', err);
+    // If quota exceeded, trim old journals and retry
+    if (err?.name === 'QuotaExceededError' || err?.code === 22) {
+      try {
+        const trimmedState: SimulationState = {
+          ...state,
+          journal: (state.journal || []).slice(-30)
+        };
+        const trimmedStr = JSON.stringify(trimmedState);
+        localStorage.setItem(STORAGE_KEY, trimmedStr);
+        console.warn('Trimmed journal history to fit within browser storage quota');
+      } catch (retryErr) {
+        console.error('Critical: localStorage quota fully exhausted', retryErr);
+      }
+    }
+  }
+}
+
+/**
+ * Exports complete facility state as a JSON string for offline backup or transfer between dev and preview URLs
+ */
+export function exportSimulationJson(state: SimulationState): string {
+  return JSON.stringify(state, null, 2);
+}
+
+/**
+ * Imports facility state from a JSON string, validates and saves it to local storage
+ */
+export function importSimulationJson(jsonStr: string): SimulationState {
+  const parsed = JSON.parse(jsonStr);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid JSON format: expected a simulation state object');
+  }
+  if (!parsed.room && (!parsed.rooms || parsed.rooms.length === 0)) {
+    throw new Error('Invalid facility backup: missing rooms configuration');
+  }
+  saveSimulation(parsed as SimulationState);
+  return loadSimulation();
+}
+
+/**
+ * Checks if a valid backup snapshot exists in local storage
+ */
+export function hasSimulationBackup(): boolean {
+  try {
+    const raw = localStorage.getItem(BACKUP_STORAGE_KEY);
+    return !!raw && raw.length > 50;
+  } catch {
+    return false;
   }
 }
 
@@ -727,5 +886,6 @@ export function saveSimulation(state: SimulationState): void {
  */
 export function resetSimulation(): SimulationState {
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(BACKUP_STORAGE_KEY);
   return createDefaultSimulationState();
 }

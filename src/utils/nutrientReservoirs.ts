@@ -243,11 +243,47 @@ export function stepRoomNutrientReservoirs(
   events: SimulationEvent[]
 ): Item[][] {
   const all = containers.flatMap(c => c.items);
-  if (!all.some(isNutrientReservoir)) return containers.map(c => c.items);
+  const hasRes = all.some(isNutrientReservoir);
+  const hasEbbRack = all.some(i => isGrowRack(i) && (i as EquipmentItem).rackType === 'ebb_and_flow');
+  if (!hasRes && !hasEbbRack) return containers.map(c => c.items);
   const { simTime, elapsedMinutes } = params;
   const hours = Math.max(1e-6, elapsedMinutes / 60);
   const days = elapsedMinutes / 1440;
   const updated = new Map<string, Item>();
+
+  // Step dedicated Ebb & Flow multi-tier racks with integrated flood cycles
+  for (const container of containers) {
+    for (const rack of container.items.filter(i => isGrowRack(i) && (i as EquipmentItem).rackType === 'ebb_and_flow')) {
+      const eq = rack as EquipmentItem;
+      const floodsPerDay = eq.ebbFlowFloodsPerDay || 6;
+      const floodIntervalMs = (24 / floodsPerDay) * 3600 * 1000;
+      const cycleProgress = (simTime % floodIntervalMs);
+      const floodDurationMs = (eq.ebbFlowFloodDurationMin || 15) * 60 * 1000;
+      const isFlooding = eq.powerOn !== false && (cycleProgress < floodDurationMs || eq.ebbFlowManualFloodActive);
+
+      if (isFlooding) {
+        const rackPlants = all.filter((i): i is PlantItem => i.category === 'plant' && i.rackSlot?.rackId === eq.id)
+          .map(p => (updated.get(p.id) as PlantItem | undefined) ?? p);
+
+        for (const plant of rackPlants) {
+          updated.set(plant.id, {
+            ...plant,
+            soilMoisture: 92,
+            ecTdsPpm: 900,
+            soilPh: 5.8,
+            reservoirTempF: 68.0,
+            rootTempF: plant.rootTempF ? plant.rootTempF + (68.0 - plant.rootTempF) * 0.25 : 68.0,
+            aerationOxygenPct: 90,
+            lastWateredTime: simTime
+          });
+        }
+      }
+
+      if (eq.ebbFlowManualFloodActive) {
+        updated.set(eq.id, { ...eq, ebbFlowManualFloodActive: false });
+      }
+    }
+  }
 
   for (const container of containers) {
     for (const res of container.items.filter(isNutrientReservoir)) {
