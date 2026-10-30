@@ -62,8 +62,9 @@ import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/sp
 import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
 import {
   createRackTiers, getFreeRackSlots, getInsertCellCount, getInsertCellDimensions, getInsertCellVolumeGallons, getRackCapacity,
-  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, isGrowRack, isEbbAndFlowRack, getRack1020TrayCount, TRAY_INSERTS, TRAY_INSERT_TYPES
+  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, describeTrayLayout, DEFAULT_BOTTOM_SHELF_FT, isGrowRack, isEbbAndFlowRack, getRack1020TrayCount, TRAY_INSERTS, TRAY_INSERT_TYPES
 } from '../utils/growRacks';
+import { CommitNumberInput } from './CommitNumberInput';
 import {
   DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getReservoirDimensions, NUTRIENT_RESERVOIR_PRESETS, RESERVOIR_FED_SYSTEMS
 } from '../utils/nutrientReservoirs';
@@ -192,6 +193,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [rackTierCount, setRackTierCount] = useState(GROW_RACK_PRESETS[0].tiers); // Grow rack shelves
   const [rackTraysPerTier, setRackTraysPerTier] = useState(GROW_RACK_PRESETS[0].traysPerTier);
   const [rackSpacingFt, setRackSpacingFt] = useState(GROW_RACK_PRESETS[0].tierSpacingFt);
+  const [rackBottomShelfFt, setRackBottomShelfFt] = useState(GROW_RACK_PRESETS[0].bottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT);
   const [rackInsert, setRackInsert] = useState<TrayInsertType>(GROW_RACK_PRESETS[0].insert);
   const [rackType, setRackType] = useState<'standard' | 'ebb_and_flow'>(GROW_RACK_PRESETS[0].rackType || 'standard');
   const [rackTrayLayout, setRackTrayLayout] = useState<'side_by_side' | 'end_to_end'>(GROW_RACK_PRESETS[0].trayLayout || 'side_by_side');
@@ -583,6 +585,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       newEq.setting = rackType === 'ebb_and_flow' ? 100 : 0;
       newEq.rackTiers = createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert });
       newEq.rackTierSpacingFt = rackSpacingFt;
+      newEq.rackBottomShelfFt = rackBottomShelfFt;
       if (rackType === 'ebb_and_flow') {
         newEq.integratedReservoirL = rackIntegratedResL;
         newEq.ebbFlowIntegratedPump = true;
@@ -2117,9 +2120,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               const preview = {
                 rackTiers: createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert }),
                 rackTierSpacingFt: rackSpacingFt,
+                rackBottomShelfFt: rackBottomShelfFt,
                 trayLayout: rackTrayLayout
               } as EquipmentItem;
               const dims = getRackDimensions(preview);
+              const targetDims = (destinationTent || room).dimensions;
               return (
                 <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
                   <div>
@@ -2134,8 +2139,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                             setRackTierCount(p.tiers);
                             setRackTraysPerTier(p.traysPerTier);
                             setRackSpacingFt(p.tierSpacingFt);
+                            setRackBottomShelfFt(p.bottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT);
                             setRackInsert(p.insert);
-                            setRackTrayLayout(p.trayLayout || 'side_by_side');
+                            setRackTrayLayout(p.trayLayout || 'end_to_end');
                             if (p.rackType) setRackType(p.rackType);
                             if (p.integratedReservoirL) setRackIntegratedResL(p.integratedReservoirL);
                             if (p.floodsPerDay) setRackFloodsPerDay(p.floodsPerDay);
@@ -2161,16 +2167,16 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         onClick={() => setRackTrayLayout('side_by_side')}
                         className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'side_by_side' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
                       >
-                        <div className="font-semibold">Side-by-Side (3 across 36" wide)</div>
-                        <div className="text-[10px] text-zinc-500">Short side along shelf (fits 3x2 tents)</div>
+                        <div className="font-semibold">Side-by-Side</div>
+                        <div className="text-[10px] text-zinc-500">{describeTrayLayout('side_by_side', rackTraysPerTier)}</div>
                       </button>
                       <button
                         type="button"
                         onClick={() => setRackTrayLayout('end_to_end')}
                         className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'end_to_end' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
                       >
-                        <div className="font-semibold">End-to-End (Linear)</div>
-                        <div className="text-[10px] text-zinc-500">Long side along shelf (linear racks)</div>
+                        <div className="font-semibold">End-to-End</div>
+                        <div className="text-[10px] text-zinc-500">{describeTrayLayout('end_to_end', rackTraysPerTier)}</div>
                       </button>
                     </div>
                   </div>
@@ -2239,23 +2245,25 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div>
                       <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Levels / Shelves</label>
-                      <input type="number" min="1" max="8" value={rackTierCount}
-                        onChange={e => setRackTierCount(Math.max(1, Math.min(8, parseInt(e.target.value) || 1)))}
+                      <CommitNumberInput integer min={1} max={8} value={rackTierCount} onCommit={setRackTierCount}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                     <div>
                       <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Trays / Level</label>
-                      <input type="number" min="1" max="4" value={rackTraysPerTier}
-                        onChange={e => setRackTraysPerTier(Math.max(1, Math.min(4, parseInt(e.target.value) || 1)))}
+                      <CommitNumberInput integer min={1} max={4} value={rackTraysPerTier} onCommit={setRackTraysPerTier}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Level Spacing (ft)</label>
-                      <input type="number" min="0.5" max="3" step="0.25" value={rackSpacingFt}
-                        onChange={e => setRackSpacingFt(Math.max(0.5, Math.min(3, parseFloat(e.target.value) || 1)))}
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1" title="Height of each level, shelf to shelf. Rack height = 4″ bottom shelf + levels × this.">Level Height (ft)</label>
+                      <CommitNumberInput min={0.5} max={3} step={0.05} value={rackSpacingFt} onCommit={setRackSpacingFt}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1" title="How high the bottom level sits. 0 = the bottom trays sit on the floor, like the built-in shelf of a propagation tent.">Bottom Level (in)</label>
+                      <CommitNumberInput min={0} max={24} step={0.5} value={Math.round(rackBottomShelfFt * 120) / 10} onCommit={v => setRackBottomShelfFt(v / 12)}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
                     </div>
                   </div>
@@ -2278,7 +2286,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                             setEqName('AC Infinity 2-Tier Propagation Shelf (36" × 24")');
                             setRackTierCount(2);
                             setRackTraysPerTier(3);
-                            setRackSpacingFt(0.85);
+                            setRackSpacingFt(1.0);
+                            setRackBottomShelfFt(0);
                             setRackTrayLayout('side_by_side');
                           }}
                           className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-sans font-bold"

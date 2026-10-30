@@ -11,12 +11,14 @@ import {
   JournalEntry, 
   JournalCategory,
   OutdoorLocation,
-  OutsideConditions 
+  OutsideConditions,
+  Dimensions
 } from './types/sim';
 import { loadSimulation, saveSimulation, resetSimulation, importSimulationJson } from './utils/storage';
 import { simulateEnvironmentTick } from './utils/physics';
 import { simulateNpcRoomTick } from './utils/npcWorker';
-import { syncItemGeometry, placeItemInFreeSpace, syncRoomRacks, placeNewRoomContents } from './utils/spatial';
+import { syncItemGeometry, placeItemInFreeSpace, syncRoomRacks, placeNewRoomContents, clampItemPosition } from './utils/spatial';
+import { isGrowRack } from './utils/growRacks';
 import { migrateEquipmentLinks } from './utils/equipmentLinks';
 import { getPlantStageStartSize } from './utils/plantLifecycle';
 import { getCachedHourlyWeather, getOutdoorConditionsForSimTime, CachedWeatherPackage } from './utils/weatherService';
@@ -433,6 +435,12 @@ export default function App() {
         if (found) targetRoomId = found.id;
       }
 
+      // A rack's size follows its shelves, so keep it inside its walls when that changes
+      const fitToContainer = (container: Dimensions): Item =>
+        isGrowRack(updatedItem) && updatedItem.position
+          ? { ...updatedItem, position: clampItemPosition(updatedItem.position, updatedItem.dimensions, container) }
+          : updatedItem;
+
       const updatedRooms = currentRooms.map(rm => {
         if (rm.id !== targetRoomId) return rm;
 
@@ -441,18 +449,20 @@ export default function App() {
             ...rm,
             tents: rm.tents.map(t => {
               if (t.id === parentTentId) {
+                const fitted = fitToContainer(t.dimensions);
                 return {
                   ...t,
-                  items: t.items.map(i => i.id === updatedItem.id ? updatedItem : i)
+                  items: t.items.map(i => i.id === fitted.id ? fitted : i)
                 };
               }
               return t;
             })
           };
         } else {
+          const fitted = fitToContainer(rm.dimensions);
           return {
             ...rm,
-            items: rm.items.map(i => i.id === updatedItem.id ? updatedItem : i)
+            items: rm.items.map(i => i.id === fitted.id ? fitted : i)
           };
         }
       }).map(rm => (rm.id === targetRoomId ? syncRoomRacks(rm) : rm)); // moving / reshelving a rack carries its plants

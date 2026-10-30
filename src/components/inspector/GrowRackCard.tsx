@@ -5,8 +5,9 @@ import {
   countRackPlants, getCellLabel, getInsertCellCount, getRackCapacity, getRackOccupancy, getRackTiers,
   getRackTierSpacingFt, isEbbAndFlowRack, rackSlotKey, TRAY_INSERTS, TRAY_INSERT_TYPES,
   GROW_RACK_PRESETS, createRackTiers, getRackDimensions, isTrayDomed, isTrayDomeVented, setTrayDome,
-  calculateTrayMicroclimate
+  calculateTrayMicroclimate, isTrayWet, mistRackTray, getRackTrayLayout, describeTrayLayout, DEFAULT_BOTTOM_SHELF_FT
 } from '../../utils/growRacks';
+import { CommitNumberInput } from '../CommitNumberInput';
 import type { ItemSectionProps, EquipmentLocals } from './types';
 
 // Cell colors in the tray map, by growth stage
@@ -22,7 +23,7 @@ const STAGE_CELL_COLOR: Record<PlantStage, string> = {
 };
 
 export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq'>> = (props) => {
-  const { room, selectedParentTentId, onUpdateItem, onSelectItem, onOpenAddItem, eq } = props;
+  const { room, selectedParentTentId, onUpdateItem, onSelectItem, onOpenAddItem, eq, simTime = Date.now() } = props;
   if (eq.type !== 'grow_rack') return null;
 
   const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
@@ -32,7 +33,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
   const capacity = getRackCapacity(eq);
   const isEbb = isEbbAndFlowRack(eq);
   const total1020Trays = tiers.reduce((n, t) => n + t.trays, 0);
-  const isSideBySide = eq.trayLayout === 'side_by_side';
+  const isSideBySide = getRackTrayLayout(eq) === 'side_by_side';
   const dims = getRackDimensions(eq);
   const ambientClimate = hostTent ? hostTent.climate : room.climate;
   const hasFloorHeatMat = containerItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
@@ -44,6 +45,14 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
 
   const updateTier = (index: number, patch: Partial<RackTier>) => {
     setTiers(tiers.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  };
+
+  // Mist one tray: the rack records it and every sown cell's surface gets damper
+  const handleMistTray = (tierIndex: number, trayIndex: number) => {
+    const misted = mistRackTray(eq.id, containerItems, tierIndex, trayIndex, simTime);
+    misted.forEach((item, i) => {
+      if (item !== containerItems[i]) onUpdateItem(item, selectedParentTentId);
+    });
   };
 
   const topOccupied = countRackPlants(eq, containerItems, tiers.length - 1) > 0;
@@ -90,7 +99,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
             </span>
           </div>
           <p className="text-[10px] text-zinc-400">
-            {tiers.length} levels · {total1020Trays} × 1020 trays · {isSideBySide ? 'Side-by-Side (3 across 36" shelf)' : 'End-to-End linear'}
+            {tiers.length} levels · {total1020Trays} × 1020 trays · {isSideBySide ? 'Side-by-Side' : 'End-to-End'} ({describeTrayLayout(getRackTrayLayout(eq), tiers[0]?.trays || 1)})
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -103,7 +112,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
         <label className="text-[10px] font-mono uppercase text-zinc-400 block">Quick Rack Presets:</label>
         <div className="flex flex-wrap items-center gap-1.5">
           {GROW_RACK_PRESETS.map(p => {
-            const isMatch = eq.name === p.name || (tiers.length === p.tiers && tiers[0]?.trays === p.traysPerTier && (eq.trayLayout || 'side_by_side') === (p.trayLayout || 'side_by_side'));
+            const isMatch = eq.name === p.name || (tiers.length === p.tiers && tiers[0]?.trays === p.traysPerTier && getRackTrayLayout(eq) === getRackTrayLayout(p));
             return (
               <button
                 key={p.name}
@@ -112,8 +121,9 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                   const nextEq: EquipmentItem = {
                     ...eq,
                     name: p.name,
-                    trayLayout: p.trayLayout || 'side_by_side',
+                    trayLayout: getRackTrayLayout(p),
                     rackTierSpacingFt: p.tierSpacingFt,
+                    rackBottomShelfFt: p.bottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT,
                     rackType: p.rackType || 'standard',
                     integratedReservoirL: p.integratedReservoirL,
                     ebbFlowFloodsPerDay: p.floodsPerDay,
@@ -150,7 +160,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                   isSideBySide ? 'bg-amber-500 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                Side-by-Side (Fits 3x2 Tent)
+                Side-by-Side
               </button>
               <button
                 type="button"
@@ -169,14 +179,13 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
 
           <label className="flex items-center gap-1.5 text-xs text-zinc-300">
             <span className="text-[11px] text-zinc-400">Shelf Spacing:</span>
-            <input
-              type="number"
-              min="0.5"
-              max="2.5"
-              step="0.05"
+            <CommitNumberInput
+              min={0.5}
+              max={3}
+              step={0.05}
               value={getRackTierSpacingFt(eq)}
-              onChange={e => {
-                const updated = { ...eq, rackTierSpacingFt: Math.max(0.5, Math.min(2.5, parseFloat(e.target.value) || 0.85)) };
+              onCommit={val => {
+                const updated = { ...eq, rackTierSpacingFt: val };
                 onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
               }}
               className="w-16 bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-xs font-mono text-zinc-200 text-center"
@@ -342,8 +351,12 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                     trayIndex: tr,
                     ambientClimate,
                     floorHeatMatActive: hasFloorHeatMat,
-                    overheadLightPpfd: ambientClimate.lightPPFD
+                    overheadLightPpfd: ambientClimate.lightPPFD,
+                    hasWetMedia: isTrayWet(eq, containerItems, ti, tr),
+                    simTime
                   });
+                  const mistedAt = tier.mistedAt?.[tr];
+                  const mistedMinAgo = mistedAt ? Math.max(0, Math.round((simTime - mistedAt) / 60000)) : null;
 
                   return (
                     <div
@@ -360,6 +373,16 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                           <span className="font-bold text-zinc-200">Tray {tr + 1}</span>
                           <span className="text-[10px] font-mono text-zinc-400">({sownInTray}/{spec.cols * spec.rows})</span>
                         </div>
+                        <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMistTray(ti, tr)}
+                          title={mistedMinAgo === null ? 'Mist this tray: dampens the surface and raises humidity under the dome' : `Last misted ${mistedMinAgo < 120 ? `${mistedMinAgo} min` : `${Math.round(mistedMinAgo / 60)} h`} ago`}
+                          className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 text-teal-300 hover:bg-teal-900/60 transition-all flex items-center gap-1"
+                        >
+                          <Droplets className="w-3 h-3" />
+                          <span>Mist</span>
+                        </button>
                         {/* Humidity Dome Toggle */}
                         <button
                           type="button"
@@ -376,6 +399,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                           <Shield className="w-3 h-3" />
                           <span>{domed ? 'Dome: ON' : '+ Add Dome'}</span>
                         </button>
+                        </div>
                       </div>
 
                       {/* Dome Controls & Microclimate Info */}
@@ -399,12 +423,12 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                               }`}
                             >
                               <Wind className="w-2.5 h-2.5" />
-                              <span>{vented ? 'Vents: OPEN (~80% RH)' : 'Vents: CLOSED (~92% RH)'}</span>
+                              <span>{vented ? 'Vents: OPEN' : 'Vents: CLOSED'}</span>
                             </button>
                           </div>
 
                           <div className="flex items-center justify-between font-mono text-[9px] text-indigo-300">
-                            <span>Microclimate: {trayMicro.tempF}°F · {trayMicro.rh}% RH</span>
+                            <span>Microclimate: {trayMicro.tempF}°F · {trayMicro.rh}% RH{mistedMinAgo !== null && mistedMinAgo < 24 * 60 ? ` · misted ${mistedMinAgo < 120 ? `${mistedMinAgo}m` : `${Math.round(mistedMinAgo / 60)}h`} ago` : ''}</span>
                             <span>{trayMicro.vpdKpa} kPa VPD</span>
                           </div>
 

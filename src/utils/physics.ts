@@ -8,7 +8,7 @@ import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomC
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
 import { getRootZoneWaterL, stepRoomNutrientReservoirs } from './nutrientReservoirs';
-import { calculateTrayMicroclimate } from './growRacks';
+import { calculateTrayMicroclimate, isTrayWet } from './growRacks';
 
 export interface SimulationEvent {
   type: 'warning' | 'info' | 'success' | 'action';
@@ -1247,7 +1247,9 @@ function simulateCropItem(params: {
       ambientClimate: enclosureClimate,
       floorHeatMatActive: hasFloorHeatMat,
       overheadLightPpfd: enclosureClimate.lightPPFD,
-      plantStage: plant.stage
+      plantStage: plant.stage,
+      hasWetMedia: isTrayWet(rackItem, enclosureItems, plant.rackSlot.tier, plant.rackSlot.tray),
+      simTime: currentSimTime
     }) : undefined;
 
     const cropClimate = trayMicro ? {

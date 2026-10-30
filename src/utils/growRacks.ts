@@ -22,9 +22,9 @@ export const TRAY_1020 = {
   domeHeightFt: 7.0 * IN // 0.5833 ft (7.0 inches standard propagation dome)
 };
 
-// Rack frame: posts / shelf lip around the trays, and the bottom shelf's height off the floor
+// Rack frame: posts / shelf lip around the trays, and a freestanding rack's bottom shelf height off the floor
 const FRAME_MARGIN_FT = 0.1;
-const BOTTOM_SHELF_FT = 4 * IN;
+export const DEFAULT_BOTTOM_SHELF_FT = 4 * IN;
 // Cells sit on the tray floor
 const TRAY_FLOOR_FT = 0.25 * IN;
 
@@ -58,6 +58,7 @@ export interface GrowRackPreset {
   tiers: number;
   traysPerTier: number;
   tierSpacingFt: number;
+  bottomShelfFt?: number; // 0 = bottom trays sit on the floor (default 4")
   insert: TrayInsertType;
   rackType?: 'standard' | 'ebb_and_flow';
   trayLayout?: 'side_by_side' | 'end_to_end';
@@ -71,11 +72,12 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     name: 'AC Infinity 2-Tier Propagation Shelf (36" × 24")',
     tiers: 2,
     traysPerTier: 3,
-    tierSpacingFt: 0.85,
+    tierSpacingFt: 1.0,
+    bottomShelfFt: 0,
     insert: 'cells_72',
     rackType: 'standard',
     trayLayout: 'side_by_side',
-    desc: '2-tier propagation rack engineered for 36" × 24" × 24" (3x2x2) tents. Fits 3 1020 trays on bottom and 3 on top (6 trays total).'
+    desc: 'The center wire shelf of a 36" × 24" × 24" (3x2x2) propagation tent: 3 1020 trays on the tent floor and 3 on the shelf 12" up (6 trays total).'
   },
   {
     name: 'Rootrimmer 5-Level Ebb & Flow Unit',
@@ -84,6 +86,7 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     tierSpacingFt: 1.0,
     insert: 'cells_72',
     rackType: 'ebb_and_flow',
+    trayLayout: 'end_to_end',
     integratedReservoirL: 60,
     floodsPerDay: 6,
     desc: '5 vertical flood levels (5 × 1020 trays) with automated flood manifold & bottom tank'
@@ -95,6 +98,7 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     tierSpacingFt: 1.5,
     insert: 'cells_50',
     rackType: 'ebb_and_flow',
+    trayLayout: 'end_to_end',
     integratedReservoirL: 100,
     floodsPerDay: 4,
     desc: 'Heavy-duty 4-tier rack holding 8 total 1020 flood trays for high-throughput ebb & flow'
@@ -106,6 +110,7 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     tierSpacingFt: 1.0,
     insert: 'cells_72',
     rackType: 'standard',
+    trayLayout: 'end_to_end',
     desc: 'Standard 5-shelf wire frame holding 5 1020 flat trays for seed starting'
   },
   {
@@ -115,6 +120,7 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     tierSpacingFt: 1.5,
     insert: 'cells_72',
     rackType: 'standard',
+    trayLayout: 'end_to_end',
     desc: 'Standard commercial wire shelf holding 8 1020 trays'
   },
   {
@@ -124,6 +130,7 @@ export const GROW_RACK_PRESETS: GrowRackPreset[] = [
     tierSpacingFt: 1.25,
     insert: 'pots_3_5in_18',
     rackType: 'standard',
+    trayLayout: 'end_to_end',
     desc: 'Caster-mounted nursery rack with square pots'
   }
 ];
@@ -155,6 +162,23 @@ export function getRackTiers(rack: EquipmentItem): RackTier[] {
   return rack.rackTiers && rack.rackTiers.length > 0 ? rack.rackTiers : [{ trays: 1, insert: 'cells_72' }];
 }
 
+/** How the 1020s sit on a shelf; racks saved before the option existed are end-to-end. */
+export function getRackTrayLayout(rack: Pick<EquipmentItem, 'trayLayout'>): 'side_by_side' | 'end_to_end' {
+  return rack.trayLayout === 'side_by_side' ? 'side_by_side' : 'end_to_end';
+}
+
+/** Short description of a layout for a given number of trays, e.g. 3 trays side by side → 35″ wide × 24″ deep. */
+export function describeTrayLayout(layout: 'side_by_side' | 'end_to_end', traysPerTier: number): string {
+  const dims = getRackDimensions({ trayLayout: layout, rackTiers: createRackTiers({ tiers: 1, traysPerTier, insert: 'cells_72' }) } as EquipmentItem);
+  const across = layout === 'side_by_side' ? '10″ side facing front' : '20″ side facing front';
+  return `${across} · ${traysPerTier} tray${traysPerTier > 1 ? 's' : ''} → ${Math.round(dims.length * 12)}″ wide × ${Math.round(dims.width * 12)}″ deep`;
+}
+
+/** Height of the bottom level off the floor (ft); 0 when the trays sit on the floor. */
+export function getRackBottomShelfFt(rack: Pick<EquipmentItem, 'rackBottomShelfFt'>): number {
+  return Math.max(0, rack.rackBottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT);
+}
+
 export function getRackTierSpacingFt(rack: EquipmentItem): number {
   return Math.max(0.5, rack.rackTierSpacingFt || 1.0);
 }
@@ -180,20 +204,20 @@ export function getInsertCellDimensions(insert: TrayInsertType): Dimensions {
 export function getRackDimensions(rack: EquipmentItem): Dimensions {
   const tiers = getRackTiers(rack);
   const maxTrays = Math.max(1, ...tiers.map(t => t.trays));
-  const isSideBySide = rack.trayLayout === 'side_by_side';
+  const isSideBySide = getRackTrayLayout(rack) === 'side_by_side';
   const trayLenX = isSideBySide ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
   const trayWidY = isSideBySide ? TRAY_1020.lengthFt : TRAY_1020.widthFt;
   return {
     length: roundFt(maxTrays * trayLenX + FRAME_MARGIN_FT * 2),
     width: roundFt(trayWidY + FRAME_MARGIN_FT * 2),
-    height: roundFt(BOTTOM_SHELF_FT + tiers.length * getRackTierSpacingFt(rack)),
+    height: roundFt(getRackBottomShelfFt(rack) + tiers.length * getRackTierSpacingFt(rack)),
     unit: 'ft'
   };
 }
 
 /** Height of a shelf's surface above the rack's base (ft). */
 export function getTierShelfHeightFt(rack: EquipmentItem, tier: number): number {
-  return BOTTOM_SHELF_FT + tier * getRackTierSpacingFt(rack);
+  return getRackBottomShelfFt(rack) + tier * getRackTierSpacingFt(rack);
 }
 
 export function getTierCellCount(tier: RackTier): number {
@@ -218,7 +242,7 @@ export function getRackSlotPosition(rack: EquipmentItem, slot: RackSlot): Positi
   const tier = getRackTiers(rack)[slot.tier];
   const spec = TRAY_INSERTS[tier.insert];
   const base = rack.position || { x: 0, y: 0, z: 0 };
-  const isSideBySide = rack.trayLayout === 'side_by_side';
+  const isSideBySide = getRackTrayLayout(rack) === 'side_by_side';
 
   const trayLenX = isSideBySide ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
   const trayWidY = isSideBySide ? TRAY_1020.lengthFt : TRAY_1020.widthFt;
@@ -304,6 +328,13 @@ export function countRackPlants(rack: EquipmentItem, items: Item[], tier: number
   return n;
 }
 
+/** True when a tray holds sown cells whose media is still damp, i.e. something a dome can trap moisture from. */
+export function isTrayWet(rack: EquipmentItem, items: Item[], tier: number, tray: number): boolean {
+  return items.some(i =>
+    i.category === 'plant' && i.rackSlot?.rackId === rack.id && i.rackSlot.tier === tier && i.rackSlot.tray === tray && i.soilMoisture > 15
+  );
+}
+
 export function isRackedPlant(item: Item): boolean {
   return item.category === 'plant' && !!item.rackSlot;
 }
@@ -349,6 +380,54 @@ export function setTrayDome(
   return { ...rack, rackTiers: nextTiers };
 }
 
+// Misting wets the media surface a little and fills the air under a dome with fine droplets
+const MIST_SURFACE_MOISTURE_PCT = 8;
+// How long that mist lingers (e-folding minutes): a sealed dome holds it, vents and open air lose it fast
+const MIST_LINGER_MIN = { sealed: 240, vented: 60, open: 15 };
+
+/** 0–1: how much of a tray's last misting is still wet (1 right after, fading with time). */
+export function getTrayMistWetness(rack: EquipmentItem, tierIndex: number, trayIndex: number, simTime: number): number {
+  const mistedAt = rack.rackTiers?.[tierIndex]?.mistedAt?.[trayIndex];
+  if (!mistedAt || simTime < mistedAt) return 0;
+  const linger = !isTrayDomed(rack, tierIndex, trayIndex) ? MIST_LINGER_MIN.open
+    : isTrayDomeVented(rack, tierIndex, trayIndex) ? MIST_LINGER_MIN.vented : MIST_LINGER_MIN.sealed;
+  return Math.exp(-(simTime - mistedAt) / 60000 / linger);
+}
+
+/**
+ * Mists one tray: records the time on the rack and dampens the surface of every cell sown in it.
+ * Takes and returns the rack's whole container item list (the rack and its plants both change).
+ */
+export function mistRackTray(rackId: string, items: Item[], tierIndex: number, trayIndex: number, simTime: number): Item[] {
+  return items.map(item => {
+    if (item.id === rackId && isGrowRack(item)) {
+      const rackTiers = getRackTiers(item).map((t, ti) => {
+        if (ti !== tierIndex) return t;
+        const mistedAt = [...(t.mistedAt || [])];
+        while (mistedAt.length < t.trays) mistedAt.push(0);
+        mistedAt[trayIndex] = simTime;
+        return { ...t, mistedAt };
+      });
+      return { ...item, rackTiers };
+    }
+    if (item.category === 'plant' && item.rackSlot?.rackId === rackId && item.rackSlot.tier === tierIndex && item.rackSlot.tray === trayIndex) {
+      return { ...item, soilMoisture: Math.min(100, item.soilMoisture + MIST_SURFACE_MOISTURE_PCT) };
+    }
+    return item;
+  });
+}
+
+/** The shelf and tray under a point given relative to the rack's footprint center (x along the shelf) and base (height). */
+export function getRackTrayAt(rack: EquipmentItem, alongFt: number, heightFt: number): { tier: number; tray: number } {
+  const tiers = getRackTiers(rack);
+  let tier = 0;
+  tiers.forEach((_, ti) => { if (heightFt >= getTierShelfHeightFt(rack, ti) - 0.05) tier = ti; });
+  const trayAlong = getRackTrayLayout(rack) === 'side_by_side' ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
+  const trays = tiers[tier].trays;
+  const tray = Math.max(0, Math.min(trays - 1, Math.floor((alongFt + (trays * trayAlong) / 2) / trayAlong)));
+  return { tier, tray };
+}
+
 export interface TrayMicroclimate {
   hasDome: boolean;
   ventsOpen: boolean;
@@ -379,8 +458,8 @@ function calcSimpleVPD(tempF: number, rh: number, lightPPFD: number = 0): number
  * - Shelf height (tier 0 near floor heat mat vs tier 1 near ceiling lights)
  * - Heat mat conduction
  * - Overhead light PPFD & shelf shading
- * - Humidity dome moisture retention (88-96% closed vs 75-85% vented)
- * - Greenhouse solar oven effect under lighting
+ * - Humidity dome: traps the moisture of wet, sown cells (an empty tray has none to trap)
+ * - Greenhouse effect: only light heats a dome, in proportion to PPFD
  * - Damping-off and thermal shock risk indicators
  */
 export function calculateTrayMicroclimate(params: {
@@ -392,6 +471,8 @@ export function calculateTrayMicroclimate(params: {
   floorHeatMatRiseF?: number;
   overheadLightPpfd?: number;
   plantStage?: PlantStage;
+  hasWetMedia?: boolean; // Tray holds sown cells / damp media that can evaporate under a dome
+  simTime?: number; // Needed for a recent misting to count
 }): TrayMicroclimate {
   const {
     rack,
@@ -401,7 +482,9 @@ export function calculateTrayMicroclimate(params: {
     floorHeatMatActive,
     floorHeatMatRiseF = 8,
     overheadLightPpfd = 0,
-    plantStage
+    plantStage,
+    hasWetMedia = false,
+    simTime
   } = params;
 
   const tiers = getRackTiers(rack);
@@ -421,31 +504,36 @@ export function calculateTrayMicroclimate(params: {
   const isTopTier = tierIndex === tiers.length - 1;
   const effectivePpfd = isTopTier ? overheadLightPpfd : Math.round(overheadLightPpfd * 0.3);
 
-  // 3. Ambient temperature & dome greenhouse effect:
+  // 3. Temperature: the mat warms the tray from below. A dome adds nothing on its own; it only traps
+  // the heat of light absorbed inside it (≈ +5°F sealed at 800 PPFD, about half with vents open).
   let effectiveTempF = ambientClimate.tempF + conductedMatHeatF;
-  let effectiveRh = ambientClimate.rh;
+  if (hasDome) {
+    const domeRisePerPpfd = ventsOpen ? 0.0032 : 0.0065;
+    effectiveTempF += Math.min(ventsOpen ? 4 : 8, effectivePpfd * domeRisePerPpfd);
+  }
+
+  // 4. Humidity: the air keeps the enclosure's moisture, so warming it lowers RH. Only a dome over
+  // wet cells adds vapour: sealed it approaches saturation, vented it settles halfway there.
+  const svpKpa = (tF: number) => {
+    const tC = ((tF - 32) * 5) / 9;
+    return 0.61078 * Math.exp((17.27 * tC) / (tC + 237.3));
+  };
+  // A fresh misting wets the tray's surfaces too, and the droplets push RH toward saturation for a while.
+  const mistWetness = simTime !== undefined ? getTrayMistWetness(rack, tierIndex, trayIndex, simTime) : 0;
+  const isWet = hasWetMedia || mistWetness > 0.25;
+  let effectiveRh = Math.min(100, ambientClimate.rh * (svpKpa(ambientClimate.tempF) / svpKpa(effectiveTempF)));
+  if (hasDome && isWet) {
+    const sealedRh = 95;
+    effectiveRh = Math.max(effectiveRh, ventsOpen ? effectiveRh + (sealedRh - effectiveRh) * 0.5 : sealedRh);
+  }
+  const mistReach = !hasDome ? 0.3 : ventsOpen ? 0.6 : 1;
+  effectiveRh = Math.min(99, effectiveRh + (99 - effectiveRh) * mistWetness * mistReach);
 
   let warning: string | undefined;
   let isOverheating = false;
   let isDampingOffRisk = false;
 
   if (hasDome) {
-    if (ventsOpen) {
-      // Vents cracked open: humidity elevated to 75% - 85% RH, slight air exchange
-      effectiveRh = Math.min(88, Math.max(75, ambientClimate.rh + 22));
-      effectiveTempF += 1.5;
-    } else {
-      // Vents closed: sealed moisture trap (88% - 96% RH)
-      effectiveRh = Math.min(96, Math.max(88, ambientClimate.rh + 36));
-      effectiveTempF += 3.0;
-    }
-
-    // Solar greenhouse oven effect under strong light:
-    if (effectivePpfd > 120) {
-      const solarRise = Math.min(8, (effectivePpfd - 120) * 0.035);
-      effectiveTempF += solarRise;
-    }
-
     // Check Negative Scenarios:
     // A. Overheating:
     if (effectiveTempF > 88) {

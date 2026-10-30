@@ -18,8 +18,15 @@ import {
   adjustToTargets, DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getFeedingReservoir, getNutrientCapacityL, getNutrientLevelL,
   isNutrientReservoir, mixFreshSolution, topOffWithWater
 } from './nutrientReservoirs';
+import {
+  calculateTrayMicroclimate, getRackSlotCode, getRackTiers, getTrayMistWetness, isGrowRack, isTrayDomed, isTrayWet, mistRackTray
+} from './growRacks';
 
 const DAY_MS = 86400000;
+// Seed / seedling trays: don't mist the same tray again sooner than this
+const TRAY_MIST_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+// Stages that need a damp surface and humid air (seeds, cuttings, new seedlings)
+const MIST_STAGES = new Set(['germination', 'rooting', 'seedling']);
 // A reservoir's solution is dosed back to target once it drifts this far
 const RESERVOIR_EC_TOLERANCE = 0.15; // of the target strength
 const RESERVOIR_PH_TOLERANCE = 0.3;
@@ -680,6 +687,74 @@ export function simulateNpcRoomTick(
           actionLog,
           inventory
         };
+      }
+    }
+
+    // 2b. MIST SEED / SEEDLING TRAYS (Grower, Caretaker): when the cell surfaces dry out, or the air
+    // under a dome has lost its humidity
+    if (!acted && (role === 'grower' || role === 'caretaker')) {
+      const surfaceThreshold = (settings.mistThresholdPct ?? 45) + 20;
+      const containers: Array<{ tent?: Tent }> = [{}, ...nextTents.map(tent => ({ tent }))];
+      for (const { tent } of containers) {
+        const items = tent ? tent.items : nextRoomItems;
+        const climate = (tent ?? room).climate;
+        const floorHeatMatActive = items.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+        for (const rack of items) {
+          if (!isGrowRack(rack)) continue;
+          const tiers = getRackTiers(rack);
+          for (let ti = 0; ti < tiers.length; ti++) {
+            for (let tr = 0; tr < tiers[ti].trays; tr++) {
+              const young = items.filter((i): i is PlantItem =>
+                i.category === 'plant' && !i.isHarvested && i.rackSlot?.rackId === rack.id && i.rackSlot.tier === ti && i.rackSlot.tray === tr && MIST_STAGES.has(i.stage)
+              );
+              if (young.length === 0) continue;
+              const lastMist = tiers[ti].mistedAt?.[tr] ?? 0;
+              if (simTime - lastMist < TRAY_MIST_COOLDOWN_MS || getTrayMistWetness(rack, ti, tr, simTime) > 0.2) continue;
+              const domed = isTrayDomed(rack, ti, tr);
+              const micro = calculateTrayMicroclimate({
+                rack, tierIndex: ti, trayIndex: tr, ambientClimate: climate, floorHeatMatActive,
+                overheadLightPpfd: climate.lightPPFD, hasWetMedia: isTrayWet(rack, items, ti, tr), simTime
+              });
+              const driest = Math.min(...young.map(p => p.soilMoisture));
+              if (driest >= surfaceThreshold && !(domed && micro.rh < 80)) continue;
+
+              // Like the other worker actions, update the items in place: the people are being mapped over these lists
+              mistRackTray(rack.id, items, ti, tr, simTime).forEach((next, i) => {
+                if (next !== items[i]) Object.assign(items[i], next);
+              });
+
+              const code = getRackSlotCode(rack, { rackId: rack.id, tier: ti, tray: tr, cell: 0 }).split('-')[0];
+              const loc = tent ? tent.name : room.name;
+              const why = driest < surfaceThreshold ? `surface moisture down to ${Math.round(driest)}%` : `dome humidity down to ${micro.rh}%`;
+              const details = `Misted tray ${code} on ${rack.name} in ${loc} (${young.length} seed${young.length === 1 ? '' : 's'}/seedling${young.length === 1 ? '' : 's'}, ${why}).`;
+              addLog({
+                actionType: 'mist',
+                title: `Misted tray ${code}`,
+                details,
+                targetName: rack.name,
+                targetId: rack.id,
+                locationName: loc,
+                result: 'success'
+              });
+              journalEvents.push({
+                type: 'action',
+                category: 'care',
+                title: `${person.name} Misted tray ${code}`,
+                message: details,
+                author: person.name
+              });
+              acted = true;
+              return {
+                ...person,
+                currentAction: `Misting tray ${code} (${loc})`,
+                currentActionUntil: simTime + 2.5 * 60 * 1000,
+                currentActionTargetId: rack.id,
+                actionLog,
+                inventory
+              };
+            }
+          }
+        }
       }
     }
 

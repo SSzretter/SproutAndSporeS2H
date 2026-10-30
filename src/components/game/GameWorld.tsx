@@ -23,6 +23,7 @@ import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
 import { getCropIssues } from '../../utils/cropIssues';
 import { syncRoomRacks } from '../../utils/spatial';
+import { getRackSlotCode, getRackTrayAt, isGrowRack, mistRackTray } from '../../utils/growRacks';
 import { getEquipmentActivity } from '../../utils/equipmentStatus';
 import { migrateEquipmentLinks, getReservoirLiters, getReservoirLevelL, isReservoirEmpty, refillReservoir, getBucketCapacityL, getBucketLevelL, isBucketFull, emptyBucket } from '../../utils/equipmentLinks';
 import { 
@@ -679,6 +680,9 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         return next;
       });
       addFloatingText('+Nutrients & Vitality 🧪', px, py, '#a78bfa');
+    } else if (activeTool === 'mist' && crop.category === 'plant' && crop.rackSlot) {
+      // A sown cell: mist its whole tray (seeds and seedlings share the tray and its dome)
+      mistTray(crop.rackSlot.rackId, tentId, crop.rackSlot.tier, crop.rackSlot.tray, px, py);
     } else if (activeTool === 'mist') {
       soundEffects.playWater();
       onUpdateState(prev => {
@@ -865,10 +869,48 @@ export const GameWorld: React.FC<GameWorldProps> = ({
     };
   };
 
+  // Mist one grow rack tray: dampens every sown cell's surface and fills its dome with mist
+  const mistTray = (rackId: string, tentId: string | undefined, tier: number, tray: number, px: number, py: number) => {
+    soundEffects.playWater();
+    onUpdateState(prev => {
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const updatedRooms = currentRooms.map(rm => {
+        if (rm.id !== activeRId) return rm;
+        if (tentId) {
+          return { ...rm, tents: rm.tents.map(t => (t.id === tentId ? { ...t, items: mistRackTray(rackId, t.items, tier, tray, prev.simTime) } : t)) };
+        }
+        return { ...rm, items: mistRackTray(rackId, rm.items, tier, tray, prev.simTime) };
+      });
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+      const rack = [...updatedActiveRoom.items, ...updatedActiveRoom.tents.flatMap(t => t.items)].find(i => i.id === rackId);
+      const code = rack && isGrowRack(rack) ? getRackSlotCode(rack, { rackId, tier, tray, cell: 0 }).split('-')[0] : '';
+      const next: SimulationState = { ...prev, rooms: updatedRooms, room: updatedActiveRoom };
+      next.journal = [...prev.journal, {
+        id: `j-${Date.now()}`,
+        time: prev.simTime,
+        type: 'action',
+        category: 'care',
+        title: `💨 Misted tray ${code}${rack ? ` on ${rack.name}` : ''}`,
+        message: 'Fine mist over the tray: cell surfaces dampened and humidity raised under the dome.'
+      }];
+      broadcastSimulationState(next);
+      return next;
+    });
+    addFloatingText('Tray Misted 💨', px, py, '#2dd4bf');
+  };
+
   // Canvas Mouse Click handler (Walk to or interact with item)
   // ---- 3D scene interactions ----
-  const handleSceneClickItem = (item: Item, tentId: string | undefined, worldPos: Vec3) => {
+  const handleSceneClickItem = (item: Item, tentId: string | undefined, worldPos: Vec3, hitPoint?: Vec3) => {
     const [x, , y] = worldPos;
+    // Mist tool on a grow rack: mist the tray that was clicked
+    if (activeTool === 'mist' && isGrowRack(item)) {
+      const [hx, hy] = hitPoint ?? worldPos;
+      const { tier, tray } = getRackTrayAt(item, hx - worldPos[0], hy - worldPos[1]);
+      mistTray(item.id, tentId, tier, tray, x, y);
+      return;
+    }
     // For farming crop actions (watering/feeding/misting/harvesting plants & mushrooms with hotbar tools)
     if ((item.category === 'plant' || item.category === 'mushroom') && activeTool !== 'inspect') {
       applyToolToCrop(item, tentId, x, y);

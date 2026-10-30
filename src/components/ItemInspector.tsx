@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Tent, Item, EquipmentItem, Dimensions } from '../types/sim';
+import { Tent, Item, EquipmentItem, Dimensions, Position3D } from '../types/sim';
 import { clampItemPosition } from '../utils/spatial';
-import { getRackDimensions } from '../utils/growRacks';
+import { getRackBottomShelfFt, getRackDimensions } from '../utils/growRacks';
 import { RoomPanel } from './inspector/RoomPanel';
 import { TentPanel } from './inspector/TentPanel';
 import { ItemPanel } from './inspector/ItemPanel';
@@ -102,7 +102,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
       const eq = currentItem as EquipmentItem;
       if (key === 'height') {
         const tierCount = Math.max(1, eq.rackTiers?.length || 1);
-        const spacing = Math.max(0.4, Math.min(2.5, (value - 0.33) / tierCount));
+        const spacing = Math.max(0.4, Math.min(2.5, (value - getRackBottomShelfFt(eq)) / tierCount));
         const updated = { ...eq, rackTierSpacingFt: parseFloat(spacing.toFixed(2)) };
         onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
         return;
@@ -139,17 +139,14 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   };
 
   // Position change helper for Item
-  const handleItemPositionChange = (axis: 'x' | 'y' | 'z', value: number) => {
-    if (!currentItem || isNaN(value)) return;
+  // One update for every axis in the patch, so moving X and Y together doesn't drop one of them
+  const handleItemPositionChange = (patch: Partial<Position3D>) => {
+    if (!currentItem || Object.values(patch).some(v => v === undefined || isNaN(v))) return;
     const currentPos = currentItem.position || { x: 1.0, y: 1.0, z: 0 };
     const containerDims = currentTent ? currentTent.dimensions : room.dimensions;
     onUpdateItem({
       ...currentItem,
-      position: clampItemPosition(
-        { ...currentPos, [axis]: Math.max(0, parseFloat(value.toFixed(1))) },
-        currentItem.dimensions,
-        containerDims
-      )
+      position: clampItemPosition({ ...currentPos, ...patch }, currentItem.dimensions, containerDims)
     }, selectedParentTentId);
   };
 

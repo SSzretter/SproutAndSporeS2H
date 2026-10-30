@@ -14,6 +14,7 @@ import {
   JournalCategory,
   HarvestRecord,
   StageConditionRequirements,
+  Position3D,
 } from '../../types/sim';
 import { evaluatePlantStageSuitability } from '../../utils/plantLifecycle';
 
@@ -78,7 +79,7 @@ export interface InspectorContext extends Omit<ItemInspectorProps, 'rooms' | 'ou
   handleTentDimensionChange: (key: keyof Dimensions, value: number) => void;
   handleItemDimensionChange: (key: keyof Dimensions, value: number) => void;
   handleTentPositionChange: (axis: 'x' | 'y' | 'z', value: number) => void;
-  handleItemPositionChange: (axis: 'x' | 'y' | 'z', value: number) => void;
+  handleItemPositionChange: (patch: Partial<Position3D>) => void;
 }
 
 export type TentSectionProps = InspectorContext & { currentTent: Tent };

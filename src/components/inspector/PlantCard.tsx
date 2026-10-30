@@ -1,7 +1,7 @@
 import React from 'react';
 import { PlantItem, EquipmentItem } from '../../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS } from '../../utils/plantLifecycle';
-import { calculateTrayMicroclimate } from '../../utils/growRacks';
+import { calculateTrayMicroclimate, isTrayWet } from '../../utils/growRacks';
 import { PlantVigorCard } from './PlantVigorCard';
 import { PlantGeneticsCard } from './PlantGeneticsCard';
 import { PlantLifecycleCard } from './PlantLifecycleCard';
@@ -45,7 +45,9 @@ export const PlantCard: React.FC<ItemSectionProps> = (props) => {
           ambientClimate: enclosureClimate,
           floorHeatMatActive: hasFloorHeatMat,
           overheadLightPpfd: enclosureClimate.lightPPFD,
-          plantStage: plant.stage
+          plantStage: plant.stage,
+          hasWetMedia: isTrayWet(rack, hostItems, plant.rackSlot.tier, plant.rackSlot.tray),
+          simTime: props.simTime
         }) : undefined;
 
         const effectiveClimate = trayMicro ? {

@@ -11,7 +11,7 @@ import { Vec3 } from './coords';
  * React 19 errors on when the canvas unmounts.)
  */
 
-export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'doorAdd' | 'badge' | 'float' | 'issueCritical' | 'issueWarning' | 'npc';
+export type LabelVariant = 'tent' | 'tentActive' | 'door' | 'doorAdd' | 'badge' | 'float' | 'issueCritical' | 'issueWarning' | 'npc' | 'dome';
 
 export interface WorldLabel {
   id: string;
@@ -79,6 +79,7 @@ const VARIANT_CLASSES: Record<LabelVariant, string> = {
   badge: 'w-6 h-6 rounded-full bg-amber-400 text-black text-xs font-bold flex items-center justify-center shadow-lg animate-bounce',
   issueCritical: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-rose-600/95 border-rose-300 text-white shadow-lg animate-pulse',
   issueWarning: 'px-1.5 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-amber-400/95 border-amber-200 text-zinc-950 shadow-lg',
+  dome: 'grid grid-cols-2 gap-x-1.5 px-1.5 py-0.5 rounded bg-indigo-950/85 border border-indigo-700/70 text-[9px] font-mono leading-tight shadow',
   npc: 'px-2 py-0.5 rounded-full border text-[10px] font-bold whitespace-nowrap bg-zinc-950/90 border-zinc-700 text-zinc-100 shadow-md backdrop-blur-sm',
   float: 'text-xs font-bold whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]'
 };
@@ -131,6 +132,13 @@ export function LabelLayer({ labels, registry }: { labels: WorldLabel[]; registr
                   {label.subText}
                 </div>
               )}
+            </div>
+          ) : label.variant === 'dome' ? (
+            // A humidity dome's own microclimate: compact readings, no icons
+            <div className={VARIANT_CLASSES.dome}>
+              {label.stats?.map((stat, i) => (
+                <span key={i} className={`whitespace-nowrap ${stat.className ?? 'text-zinc-200'}`}>{stat.value}</span>
+              ))}
             </div>
           ) : label.stats ? (
             <div className="flex flex-col items-center gap-0.5">

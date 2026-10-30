@@ -6,8 +6,9 @@ import { NpcDossier } from '../NpcDossier';
 import { PlantCard } from './PlantCard';
 import { MushroomCard } from './MushroomCard';
 import { EquipmentCard } from './EquipmentCard';
-import { describeRackSlot, isGrowRack, getRackTiers, getRackDimensions, getRackTierSpacingFt, createRackTiers } from '../../utils/growRacks';
-import { placeItemInFreeSpace, syncItemGeometry } from '../../utils/spatial';
+import { describeRackSlot, isGrowRack, getRackTiers, getRackDimensions, getRackTierSpacingFt, createRackTiers, getRackTrayLayout, describeTrayLayout, getRackBottomShelfFt } from '../../utils/growRacks';
+import { CommitNumberInput } from '../CommitNumberInput';
+import { placeItemInFreeSpace, syncItemGeometry, describePositionRange } from '../../utils/spatial';
 import type { ItemSectionProps } from './types';
 
 export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
@@ -113,7 +114,7 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
             const tierCount = tiers.length;
             const traysPerTier = tiers[0]?.trays || 1;
             const spacing = getRackTierSpacingFt(eq);
-            const isSideBySide = eq.trayLayout === 'side_by_side';
+            const isSideBySide = getRackTrayLayout(eq) === 'side_by_side';
             const containerDims = currentTent ? currentTent.dimensions : room.dimensions;
             const fitsLength = dims.length <= containerDims.length + 0.15;
             const fitsWidth = dims.width <= containerDims.width + 0.15;
@@ -152,7 +153,8 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                         ...eq,
                         name: 'AC Infinity 2-Tier Propagation Shelf (36" × 24")',
                         trayLayout: 'side_by_side',
-                        rackTierSpacingFt: 0.85,
+                        rackTierSpacingFt: 1.0,
+                        rackBottomShelfFt: 0,
                         rackTiers: createRackTiers({ tiers: 2, traysPerTier: 3, insert: tiers[0]?.insert || 'cells_72' })
                       };
                       onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
@@ -164,18 +166,17 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                 </div>
 
                 {/* Architecture Inputs */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                   <div>
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
                       Shelves / Levels
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="6"
+                    <CommitNumberInput
+                      integer
+                      min={1}
+                      max={8}
                       value={tierCount}
-                      onChange={e => {
-                        const count = Math.max(1, Math.min(6, parseInt(e.target.value) || 1));
+                      onCommit={count => {
                         const updated: EquipmentItem = {
                           ...eq,
                           rackTiers: createRackTiers({ tiers: count, traysPerTier, insert: tiers[0]?.insert || 'cells_72' })
@@ -190,13 +191,12 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
                       1020 Trays / Level
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="4"
+                    <CommitNumberInput
+                      integer
+                      min={1}
+                      max={4}
                       value={traysPerTier}
-                      onChange={e => {
-                        const count = Math.max(1, Math.min(4, parseInt(e.target.value) || 1));
+                      onCommit={count => {
                         const updated: EquipmentItem = {
                           ...eq,
                           rackTiers: createRackTiers({ tiers: tierCount, traysPerTier: count, insert: tiers[0]?.insert || 'cells_72' })
@@ -209,20 +209,35 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
 
                   <div>
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                      Level Spacing (ft)
+                      Level Height (ft)
                     </label>
-                    <input
-                      type="number"
-                      min="0.5"
-                      max="2.5"
-                      step="0.05"
+                    <CommitNumberInput
+                      min={0.5}
+                      max={3}
+                      step={0.05}
                       value={spacing}
-                      onChange={e => {
-                        const val = Math.max(0.5, Math.min(2.5, parseFloat(e.target.value) || 0.85));
+                      onCommit={val => {
                         const updated: EquipmentItem = {
                           ...eq,
                           rackTierSpacingFt: val
                         };
+                        onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1" title="How high the bottom level sits. 0 = the bottom trays sit on the floor, like the built-in shelf of a propagation tent.">
+                      Bottom Level (in)
+                    </label>
+                    <CommitNumberInput
+                      min={0}
+                      max={24}
+                      step={0.5}
+                      value={Math.round(getRackBottomShelfFt(eq) * 120) / 10}
+                      onCommit={inches => {
+                        const updated: EquipmentItem = { ...eq, rackBottomShelfFt: inches / 12 };
                         onUpdateItem({ ...updated, dimensions: getRackDimensions(updated) }, selectedParentTentId);
                       }}
                       className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
@@ -244,8 +259,8 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                       }}
                       className="w-full bg-zinc-900 border border-zinc-750 focus:border-emerald-500 rounded-lg px-2 py-1 text-xs font-mono text-zinc-100"
                     >
-                      <option value="side_by_side">Side-by-Side (3 across 36" shelf)</option>
-                      <option value="end_to_end">End-to-End (Linear)</option>
+                      <option value="side_by_side">Side-by-Side ({describeTrayLayout('side_by_side', traysPerTier)})</option>
+                      <option value="end_to_end">End-to-End ({describeTrayLayout('end_to_end', traysPerTier)})</option>
                     </select>
                   </div>
                 </div>
@@ -343,29 +358,27 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                      X Offset (ft)
+                      X Center (ft)
                     </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
+                    <CommitNumberInput
+                      step={0.05}
+                      min={0}
                       max={containerDims.length}
                       value={curPos.x}
-                      onChange={e => handleItemPositionChange('x', parseFloat(e.target.value))}
+                      onCommit={v => handleItemPositionChange({ x: v })}
                       className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                     />
                   </div>
                   <div>
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                      Y Depth (ft)
+                      Y Center (ft)
                     </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
+                    <CommitNumberInput
+                      step={0.05}
+                      min={0}
                       max={containerDims.width}
                       value={curPos.y}
-                      onChange={e => handleItemPositionChange('y', parseFloat(e.target.value))}
+                      onCommit={v => handleItemPositionChange({ y: v })}
                       className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                     />
                   </div>
@@ -373,16 +386,19 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                     <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
                       Z Elevation (ft)
                     </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
+                    <CommitNumberInput
+                      step={0.05}
+                      min={0}
                       max={containerDims.height}
                       value={curPos.z}
-                      onChange={e => handleItemPositionChange('z', parseFloat(e.target.value))}
+                      onCommit={v => handleItemPositionChange({ z: v })}
                       className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-2.5 py-1 text-xs font-mono text-zinc-100"
                     />
                   </div>
+                </div>
+
+                <div className="text-[10px] text-zinc-500 font-mono">
+                  {describePositionRange(currentItem.dimensions, containerDims)}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
@@ -390,7 +406,7 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                   <button
                     type="button"
                     onClick={() => {
-                      handleItemPositionChange('z', 0);
+                      handleItemPositionChange({ z: 0 });
                     }}
                     className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
                   >
@@ -399,7 +415,7 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                   <button
                     type="button"
                     onClick={() => {
-                      handleItemPositionChange('z', Math.max(0, parseFloat((containerDims.height - 1.2).toFixed(1))));
+                      handleItemPositionChange({ z: Math.max(0, parseFloat((containerDims.height - 1.2).toFixed(1))) });
                     }}
                     className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
                   >
@@ -408,7 +424,7 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                   <button
                     type="button"
                     onClick={() => {
-                      handleItemPositionChange('z', 2.5);
+                      handleItemPositionChange({ z: 2.5 });
                     }}
                     className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
                   >
@@ -417,8 +433,7 @@ export const ItemPanel: React.FC<ItemSectionProps> = (props) => {
                   <button
                     type="button"
                     onClick={() => {
-                      handleItemPositionChange('x', parseFloat((containerDims.length / 2).toFixed(1)));
-                      handleItemPositionChange('y', parseFloat((containerDims.width / 2).toFixed(1)));
+                      handleItemPositionChange({ x: containerDims.length / 2, y: containerDims.width / 2 });
                     }}
                     className="px-2 py-0.5 rounded bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-mono border border-zinc-750 transition-colors"
                   >

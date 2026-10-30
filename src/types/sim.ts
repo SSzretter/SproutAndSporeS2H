@@ -112,6 +112,7 @@ export interface RackTier {
   domes?: boolean[];      // Per-tray boolean: true if a humidity dome is placed over tray [tr]
   domeVentsOpen?: boolean[]; // Per-tray boolean: true if the humidity dome's top vents are rotated open
   domeHeightsIn?: number[]; // Per-tray dome height in inches: e.g. 7 (standard propagation dome) or 4
+  mistedAt?: number[];      // Per-tray sim time it was last misted (wet surfaces and mist inside the dome)
 }
 
 /** What a nutrient reservoir's pump feeds: a plant, or a grow rack (one shelf, or every shelf when tier is unset). */
@@ -335,6 +336,7 @@ export interface EquipmentItem {
   attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
   rackTiers?: RackTier[]; // Grow rack: shelves, bottom to top
   rackTierSpacingFt?: number; // Grow rack: shelf-to-shelf spacing (ft)
+  rackBottomShelfFt?: number; // Grow rack: bottom level's height off the floor (ft); 0 = trays sit on the floor (a tent's built-in shelf). Default 4"
   rackType?: 'standard' | 'ebb_and_flow'; // Standard wire shelving vs automated Ebb & Flow flood rack
   trayLayout?: 'side_by_side' | 'end_to_end'; // Side-by-side (3 trays in 36" width) vs end-to-end
   ebbFlowIntegratedPump?: boolean; // Ebb & Flow rack: integrated submersible flood pump

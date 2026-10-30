@@ -87,8 +87,8 @@ export function getDefaultItemDimensions(params: {
       case 'nutrient_reservoir':
         return getReservoirDimensions(102); // 27 gal tote
       case 'grow_rack': {
-        const preset = GROW_RACK_PRESETS[0]; // 5-tier single-tray seedling rack
-        return getRackDimensions({ rackTiers: createRackTiers(preset), rackTierSpacingFt: preset.tierSpacingFt } as EquipmentItem);
+        const preset = GROW_RACK_PRESETS[0];
+        return getRackDimensions({ rackTiers: createRackTiers(preset), rackTierSpacingFt: preset.tierSpacingFt, rackBottomShelfFt: preset.bottomShelfFt, trayLayout: preset.trayLayout } as EquipmentItem);
       }
       default:
         return { length: 1.2, width: 1.0, height: 1.0, unit: 'ft' };
@@ -290,6 +290,16 @@ export function clampItemPosition(position: Position3D, itemDims: Dimensions, co
     y: roundFt(clampAxis(position.y, itemDims.width / 2, containerDims.width)),
     z: roundFt(Math.max(0, Math.min(Math.max(0, containerDims.height - itemDims.height), position.z)))
   };
+}
+
+/** Where an item's center can go without poking through a wall, e.g. "X 1.44–1.56 · Y 1 (fills the width)". */
+export function describePositionRange(itemDims: Dimensions, containerDims: Dimensions): string {
+  const axis = (label: string, size: number, max: number, span: string) => {
+    const lo = roundFt(Math.min(size / 2, max / 2));
+    const hi = roundFt(Math.max(max - size / 2, max / 2));
+    return hi - lo < 0.02 ? `${label} ${lo} (fills the ${span})` : `${label} ${lo}–${hi}`;
+  };
+  return `Center from the back-left corner: ${axis('X', itemDims.length, containerDims.length, 'width')} · ${axis('Y', itemDims.width, containerDims.width, 'depth')} · Z 0–${roundFt(Math.max(0, containerDims.height - itemDims.height))}`;
 }
 
 /**

@@ -18,6 +18,7 @@ import { HoseModel, ExhaustDuctModel, FeedLinesModel } from './HoseModel';
 import { getEquipmentActivity, EquipmentActivity } from '../../utils/equipmentStatus';
 import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
 import { isLightScheduledOn } from '../../utils/roomThermal';
+import { calculateTrayMicroclimate, getRackTiers, getRackTrayLayout, getTierShelfHeightFt, isGrowRack, isTrayWet, TRAY_1020 } from '../../utils/growRacks';
 
 export type { Doorway } from './EnvironmentModels';
 export type { PlayerState } from './CharacterModels';
@@ -49,7 +50,7 @@ interface GameSceneProps {
   playerRef: React.MutableRefObject<PlayerState>;
   cameraYawRef: React.MutableRefObject<number>;
   onHover: (target: HoverTarget | null) => void;
-  onClickItem: (item: Item, tentId: string | undefined, worldPos: Vec3) => void;
+  onClickItem: (item: Item, tentId: string | undefined, worldPos: Vec3, hitPoint?: Vec3) => void;
   onClickTent: (tent: Tent) => void;
   onClickDoor: (door: Doorway) => void;
   onClickFloor: (x: number, y: number) => void;
@@ -153,7 +154,7 @@ function ItemNode({
     onClick: (e: ThreeEvent<MouseEvent>) => {
       if (e.delta > DRAG_CLICK_THRESHOLD_PX) return;
       e.stopPropagation();
-      onClickItem(item, tent?.id, position);
+      onClickItem(item, tent?.id, position, [e.point.x, e.point.y, e.point.z]);
     },
     // Right click (not a camera orbit drag) opens the properties panel
     onContextMenu: (e: ThreeEvent<MouseEvent>) => {
@@ -615,7 +616,8 @@ function buildWorldLabels(
   floatingTexts: FloatingText[],
   hoveredId: string | null,
   tempUnit: 'F' | 'C',
-  showTentStats: boolean
+  showTentStats: boolean,
+  simTime: number
 ): WorldLabel[] {
   const labels: WorldLabel[] = [];
   for (const tent of room.tents) {
@@ -715,6 +717,44 @@ function buildWorldLabels(
   room.tents.forEach(t => addBadges(t.items, t));
   addBadges(room.items);
 
+  // Each humidity dome is its own microclimate: small readings just above the dome
+  const addDomeLabels = (items: Item[], tent?: Tent) => {
+    const climate = (tent ?? room).climate;
+    const floorHeatMatActive = items.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+    for (const rack of items) {
+      if (!isGrowRack(rack)) continue;
+      const [rx, ry, rz] = itemWorldPosition(rack, room, tent);
+      const trayAlong = getRackTrayLayout(rack) === 'side_by_side' ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
+      getRackTiers(rack).forEach((tier, ti) => {
+        for (let tr = 0; tr < tier.trays; tr++) {
+          if (!tier.domes?.[tr]) continue;
+          const micro = calculateTrayMicroclimate({
+            rack, tierIndex: ti, trayIndex: tr, ambientClimate: climate, floorHeatMatActive,
+            overheadLightPpfd: climate.lightPPFD, hasWetMedia: isTrayWet(rack, items, ti, tr), simTime
+          });
+          const domeTop = getTierShelfHeightFt(rack, ti) + TRAY_1020.heightFt + (tier.domeHeightsIn?.[tr] || 7) / 12;
+          const tempC = ((micro.tempF - 32) * 5) / 9;
+          labels.push({
+            id: `dome-${rack.id}-${ti}-${tr}`,
+            position: [rx - (tier.trays * trayAlong) / 2 + (tr + 0.5) * trayAlong, ry + domeTop + 0.05, rz],
+            text: '',
+            variant: 'dome',
+            stats: [
+              { icon: 'temp', value: tempUnit === 'F' ? `${micro.tempF.toFixed(1)}°F` : `${tempC.toFixed(1)}°C`, className: micro.isOverheating ? 'text-rose-300' : 'text-amber-300' },
+              { icon: 'rh', value: `${micro.rh}%`, className: 'text-cyan-300' },
+              { icon: 'vpd', value: `${micro.vpdKpa.toFixed(2)} kPa`, className: getVpdZone(micro.vpdKpa, 'plant').color },
+              { icon: 'co2', value: `${Math.round(climate.co2Ppm || 0)} ppm`, className: 'text-purple-300' }
+            ]
+          });
+        }
+      });
+    }
+  };
+  if (showTentStats) {
+    room.tents.forEach(t => addDomeLabels(t.items, t));
+    addDomeLabels(room.items);
+  }
+
   // Add 3D Overhead Labels for NPCs (Residents & Workers)
   const addPersonLabels = (items: Item[], tent?: Tent) => {
     for (const item of items) {
@@ -810,7 +850,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
 
 export function GameScene(props: GameSceneProps) {
   const labelRegistry: LabelRegistry = useRef(new Map<string, HTMLDivElement>());
-  const labels = buildWorldLabels(props.room, props.doorways, props.floatingTexts, props.hoveredId, props.tempUnit, props.showTentStats);
+  const labels = buildWorldLabels(props.room, props.doorways, props.floatingTexts, props.hoveredId, props.tempUnit, props.showTentStats, props.simTime);
   return (
     <div className="absolute inset-0">
       <Canvas
