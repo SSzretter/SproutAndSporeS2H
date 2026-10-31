@@ -20,7 +20,9 @@ import {
   Gamepad2,
   ExternalLink
 } from 'lucide-react';
+import { User } from '@supabase/supabase-js';
 import { SimulationState } from '../types/sim';
+import { CloudAccountButton } from './cloud/CloudAccountButton';
 
 interface HeaderClockProps {
   state: SimulationState;
@@ -34,6 +36,8 @@ interface HeaderClockProps {
   lastSavedAt: number;
   onSwitchToGame?: () => void;
   onPopOutGame?: () => void;
+  currentUser?: User | null;
+  onOpenCloudSimulations?: () => void;
 }
 
 export const HeaderClock: React.FC<HeaderClockProps> = ({
@@ -47,7 +51,9 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
   onImportJson,
   lastSavedAt,
   onSwitchToGame,
-  onPopOutGame
+  onPopOutGame,
+  currentUser,
+  onOpenCloudSimulations
 }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -249,6 +255,14 @@ export const HeaderClock: React.FC<HeaderClockProps> = ({
               <ExternalLink className="w-3 h-3 text-emerald-400" />
               <span>Screen 2 ↗</span>
             </button>
+          )}
+
+          {/* Cloud Saves & Account */}
+          {onOpenCloudSimulations && (
+            <CloudAccountButton
+              currentUser={currentUser || null}
+              onClick={onOpenCloudSimulations}
+            />
           )}
 
           {/* Save Status */}

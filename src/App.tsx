@@ -34,12 +34,20 @@ import { AddRoomModal } from './components/AddRoomModal';
 import { broadcastSimulationState, subscribeToSimulationSync } from './utils/syncChannel';
 import { WallSide } from './types/sim';
 import { connectRooms, findFirstFreeWall, getWallDisplayName } from './utils/roomDoorways';
+import { User } from '@supabase/supabase-js';
+import { getCurrentUser, subscribeToAuthState } from './services/cloudSimService';
+import { CloudAuthModal } from './components/cloud/CloudAuthModal';
+import { CloudSimulationsModal } from './components/cloud/CloudSimulationsModal';
 
 // The 3D game view (three.js) is only downloaded when the game view is opened
 const GameWorld = lazy(() => import('./components/game/GameWorld').then(m => ({ default: m.GameWorld })));
 
 export default function App() {
   const [state, setState] = useState<SimulationState>(() => loadSimulation());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isCloudAuthModalOpen, setIsCloudAuthModalOpen] = useState(false);
+  const [isCloudSimsModalOpen, setIsCloudSimsModalOpen] = useState(false);
+  const [cloudToast, setCloudToast] = useState<{ message: string; type: 'success' | 'warning' | 'info' } | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<number>(Date.now());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAddRoomModalOpen, setIsAddRoomModalOpen] = useState(false);
@@ -90,6 +98,37 @@ export default function App() {
       isMounted = false;
     };
   }, [state.outdoorLocation.zipCode]);
+
+  // Supabase Auth listener & Magic Link / OAuth redirect handler
+  useEffect(() => {
+    // Check if URL has auth callback parameters or errors
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      const search = window.location.search;
+      if (hash.includes('error_description') || search.includes('error_description')) {
+        const params = new URLSearchParams(hash.replace('#', '?') || search);
+        const desc = params.get('error_description') || 'Authentication failed.';
+        setCloudToast({ message: desc.replace(/\+/g, ' '), type: 'warning' });
+      } else if (hash.includes('access_token') || search.includes('code=')) {
+        setCloudToast({ message: 'Authenticating with Supabase Cloud...', type: 'info' });
+      }
+    }
+
+    getCurrentUser().then(user => setCurrentUser(user));
+    const unsubscribe = subscribeToAuthState(user => {
+      setCurrentUser(user);
+      if (user && typeof window !== 'undefined') {
+        const hash = window.location.hash;
+        const search = window.location.search;
+        if (hash.includes('access_token') || search.includes('code=')) {
+          // Clean auth tokens from URL bar without reload
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setCloudToast({ message: `Successfully logged in as ${user.email}!`, type: 'success' });
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Auto-save debounced / on-change to browser localStorage
   useEffect(() => {
@@ -349,6 +388,31 @@ export default function App() {
         weatherPackageRef.current = pkg;
       });
     }
+  }, []);
+
+  // Load Cloud Simulation from Supabase
+  const handleLoadCloudSimulation = useCallback((loadedState: SimulationState, saveName: string) => {
+    try {
+      saveSimulation(loadedState);
+      const loaded = loadSimulation();
+      setState(loaded);
+      broadcastSimulationState(loaded);
+      if (loaded.outdoorLocation) {
+        getCachedHourlyWeather(loaded.outdoorLocation.lat, loaded.outdoorLocation.lon, loaded.simTime).then(pkg => {
+          weatherPackageRef.current = pkg;
+        });
+      }
+      setCloudToast({ message: `Loaded "${saveName}" from Supabase Cloud!`, type: 'success' });
+      setTimeout(() => setCloudToast(null), 4000);
+    } catch (err: any) {
+      setCloudToast({ message: `Failed to load simulation: ${err.message}`, type: 'warning' });
+      setTimeout(() => setCloudToast(null), 4000);
+    }
+  }, []);
+
+  const handleCloudNotify = useCallback((message: string, type: 'success' | 'warning' | 'info') => {
+    setCloudToast({ message, type });
+    setTimeout(() => setCloudToast(null), 4000);
   }, []);
 
   // Selection handlers
@@ -1048,6 +1112,14 @@ export default function App() {
             onExportJson={handleExportJson}
             onImportJson={handleImportJson}
             lastSavedAt={lastSavedAt}
+            currentUser={currentUser}
+            onOpenCloudSimulations={() => {
+              if (currentUser) {
+                setIsCloudSimsModalOpen(true);
+              } else {
+                setIsCloudAuthModalOpen(true);
+              }
+            }}
             onSwitchToGame={() => {
               window.location.hash = '#game';
               setViewMode('game');
@@ -1246,6 +1318,45 @@ export default function App() {
           });
         }}
       />
+
+      {/* Cloud Authentication Modal */}
+      <CloudAuthModal
+        isOpen={isCloudAuthModalOpen}
+        onClose={() => setIsCloudAuthModalOpen(false)}
+        onSuccess={() => {
+          setIsCloudAuthModalOpen(false);
+          setIsCloudSimsModalOpen(true);
+          handleCloudNotify('Signed in to Supabase!', 'success');
+        }}
+      />
+
+      {/* Cloud Simulations Manager Modal */}
+      <CloudSimulationsModal
+        isOpen={isCloudSimsModalOpen}
+        onClose={() => setIsCloudSimsModalOpen(false)}
+        currentUser={currentUser}
+        onOpenAuth={() => {
+          setIsCloudSimsModalOpen(false);
+          setIsCloudAuthModalOpen(true);
+        }}
+        currentSimState={state}
+        onLoadSimulation={handleLoadCloudSimulation}
+        onNotify={handleCloudNotify}
+      />
+
+      {/* Floating Cloud Notification Toast */}
+      {cloudToast && (
+        <div className="fixed bottom-6 right-6 z-60 flex items-center gap-2.5 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl text-xs text-zinc-100 animate-in fade-in slide-in-from-bottom-2">
+          {cloudToast.type === 'success' ? (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+          ) : cloudToast.type === 'warning' ? (
+            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+          ) : (
+            <span className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />
+          )}
+          <span>{cloudToast.message}</span>
+        </div>
+      )}
     </div>
   );
 }
