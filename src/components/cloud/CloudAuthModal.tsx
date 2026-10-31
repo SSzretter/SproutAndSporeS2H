@@ -35,6 +35,8 @@ interface CloudAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  isRequired?: boolean;
+  initialError?: string | null;
 }
 
 type AuthMode = 'password' | 'otp';
@@ -43,7 +45,9 @@ type PasswordSubMode = 'signin' | 'signup';
 export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
   isOpen,
   onClose,
-  onSuccess
+  onSuccess,
+  isRequired = false,
+  initialError = null
 }) => {
   const [authMode, setAuthMode] = useState<AuthMode>('password');
   const [passwordMode, setPasswordMode] = useState<PasswordSubMode>('signin');
@@ -59,8 +63,14 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
 
   // Status states
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(initialError);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (initialError) {
+      setErrorMsg(initialError);
+    }
+  }, [initialError]);
 
   if (!isOpen) return null;
 
@@ -210,28 +220,39 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+    <div className={`fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto ${isRequired ? 'cursor-default' : ''}`}>
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl text-zinc-100 relative my-6 animate-in fade-in zoom-in-95 duration-150">
-        {/* Close Button */}
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-          aria-label="Close"
-        >
-          <X className="w-5 h-5" />
-        </button>
+        {/* Close Button (Hidden when sign-in is required) */}
+        {!isRequired && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
 
         {/* Modal Header */}
-        <div className="flex items-center gap-3 mb-5 pr-8">
+        <div className={`flex items-center gap-3 mb-5 ${!isRequired ? 'pr-8' : ''}`}>
           <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-            <Sparkles className="w-5 h-5" />
+            {isRequired ? <Lock className="w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
           </div>
           <div>
-            <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
-              Supabase Cloud Storage
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold text-zinc-100">
+                Sprout &amp; Spore Authentication
+              </h2>
+              {isRequired && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[10px] font-semibold flex items-center gap-1">
+                  Required
+                </span>
+              )}
+            </div>
             <p className="text-xs text-zinc-400">
-              Save and load multiple indoor grow simulations securely in the cloud
+              {isRequired 
+                ? 'Sign-in required to access cultivation controls, environment telemetry, and facility saves' 
+                : 'Save and load multiple indoor grow simulations securely in the cloud'}
             </p>
           </div>
         </div>
@@ -313,7 +334,19 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
           <div className="mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 flex items-start gap-2.5 text-rose-300 text-xs">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div className="flex-1">
-              <span>{errorMsg}</span>
+              <span className="font-medium">{errorMsg}</span>
+              {errorMsg.toLowerCase().includes('expired') && (
+                <div className="mt-2 pt-2 border-t border-rose-800/40 flex items-center justify-between text-[11px]">
+                  <span className="text-rose-300/80">Links expire after a short time or once clicked.</span>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('password'); setErrorMsg(null); }}
+                    className="text-emerald-400 hover:underline font-semibold"
+                  >
+                    Use Password instead ➔
+                  </button>
+                </div>
+              )}
               {errorMsg.toLowerCase().includes('redirect') && (
                 <div className="mt-1.5 text-[11px] text-rose-400/90 underline cursor-pointer" onClick={() => setShowConfigHelp(true)}>
                   Click here to view how to whitelist this URL in Supabase

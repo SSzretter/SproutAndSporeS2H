@@ -45,6 +45,8 @@ const GameWorld = lazy(() => import('./components/game/GameWorld').then(m => ({ 
 export default function App() {
   const [state, setState] = useState<SimulationState>(() => loadSimulation());
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [authInitialError, setAuthInitialError] = useState<string | null>(null);
   const [isCloudAuthModalOpen, setIsCloudAuthModalOpen] = useState(false);
   const [isCloudSimsModalOpen, setIsCloudSimsModalOpen] = useState(false);
   const [cloudToast, setCloudToast] = useState<{ message: string; type: 'success' | 'warning' | 'info' } | null>(null);
@@ -99,34 +101,73 @@ export default function App() {
     };
   }, [state.outdoorLocation.zipCode]);
 
-  // Supabase Auth listener & Magic Link / OAuth redirect handler
+  // Supabase Auth listener, URL error handler, and session manager
   useEffect(() => {
-    // Check if URL has auth callback parameters or errors
+    // 1. Check if URL has error parameters (e.g. otp_expired, access_denied)
     if (typeof window !== 'undefined') {
       const hash = window.location.hash;
       const search = window.location.search;
-      if (hash.includes('error_description') || search.includes('error_description')) {
-        const params = new URLSearchParams(hash.replace('#', '?') || search);
-        const desc = params.get('error_description') || 'Authentication failed.';
-        setCloudToast({ message: desc.replace(/\+/g, ' '), type: 'warning' });
+      if (hash.includes('error') || search.includes('error')) {
+        const rawParams = hash.replace(/^#/, '?') || search;
+        const params = new URLSearchParams(rawParams.startsWith('?') ? rawParams : `?${rawParams}`);
+        const errorCode = params.get('error_code');
+        const errorType = params.get('error');
+        const errorDesc = params.get('error_description');
+
+        let friendlyError = 'Authentication error. Please try signing in again.';
+        if (errorCode === 'otp_expired' || errorDesc?.toLowerCase().includes('expired')) {
+          friendlyError = 'Your email login link has expired or was already used. Please request a new link, or sign in with your email & password.';
+        } else if (errorCode === 'access_denied' || errorType === 'access_denied') {
+          friendlyError = 'Access was denied. Please sign in with your email & password or request a new link.';
+        } else if (errorDesc) {
+          friendlyError = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
+        }
+
+        setAuthInitialError(friendlyError);
+        setCloudToast({ message: friendlyError, type: 'warning' });
+        setIsCloudAuthModalOpen(true);
+        // Clean error parameters from URL without page reload
+        window.history.replaceState({}, document.title, window.location.pathname);
       } else if (hash.includes('access_token') || search.includes('code=')) {
         setCloudToast({ message: 'Authenticating with Supabase Cloud...', type: 'info' });
       }
     }
 
-    getCurrentUser().then(user => setCurrentUser(user));
+    // 2. Initial user session check
+    getCurrentUser()
+      .then(user => {
+        setCurrentUser(user);
+        setIsAuthChecking(false);
+        if (!user) {
+          setIsCloudAuthModalOpen(true);
+        }
+      })
+      .catch(() => {
+        setIsAuthChecking(false);
+        setIsCloudAuthModalOpen(true);
+      });
+
+    // 3. Auth state listener
     const unsubscribe = subscribeToAuthState(user => {
       setCurrentUser(user);
-      if (user && typeof window !== 'undefined') {
-        const hash = window.location.hash;
-        const search = window.location.search;
-        if (hash.includes('access_token') || search.includes('code=')) {
-          // Clean auth tokens from URL bar without reload
-          window.history.replaceState({}, document.title, window.location.pathname);
-          setCloudToast({ message: `Successfully logged in as ${user.email}!`, type: 'success' });
+      setIsAuthChecking(false);
+      if (user) {
+        setIsCloudAuthModalOpen(false);
+        setAuthInitialError(null);
+        if (typeof window !== 'undefined') {
+          const hash = window.location.hash;
+          const search = window.location.search;
+          if (hash.includes('access_token') || search.includes('code=')) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            setCloudToast({ message: `Successfully logged in as ${user.email}!`, type: 'success' });
+          }
         }
+      } else {
+        // Enforce required login when signed out
+        setIsCloudAuthModalOpen(true);
       }
     });
+
     return () => unsubscribe();
   }, []);
 
@@ -179,13 +220,13 @@ export default function App() {
     };
   }, []);
 
-  // Main Simulation Loop
+  // Main Simulation Loop (pauses when not authenticated or speed is 0)
   useEffect(() => {
-    if (state.speed === 0) return;
+    if (state.speed === 0 || !currentUser) return;
 
     const interval = setInterval(() => {
       const cur = stateRef.current;
-      if (cur.speed === 0) return;
+      if (cur.speed === 0 || !currentUser) return;
 
       const elapsedMinutes = cur.speed;
       const newSimTime = cur.simTime + elapsedMinutes * 60 * 1000;
@@ -1064,6 +1105,22 @@ export default function App() {
     });
   }, []);
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-4 text-zinc-100 font-sans">
+        <div className="flex flex-col items-center gap-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-400 rounded-full animate-spin" />
+          </div>
+          <div className="text-center">
+            <h1 className="text-base font-bold tracking-tight text-zinc-100">Sprout &amp; Spore S2H</h1>
+            <p className="text-xs text-zinc-400 mt-1">Verifying facility credentials...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const activeRoom = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
 
   return (
@@ -1321,10 +1378,17 @@ export default function App() {
 
       {/* Cloud Authentication Modal */}
       <CloudAuthModal
-        isOpen={isCloudAuthModalOpen}
-        onClose={() => setIsCloudAuthModalOpen(false)}
+        isOpen={isCloudAuthModalOpen || !currentUser}
+        isRequired={!currentUser}
+        initialError={authInitialError}
+        onClose={() => {
+          if (currentUser) {
+            setIsCloudAuthModalOpen(false);
+          }
+        }}
         onSuccess={() => {
           setIsCloudAuthModalOpen(false);
+          setAuthInitialError(null);
           setIsCloudSimsModalOpen(true);
           handleCloudNotify('Signed in to Supabase!', 'success');
         }}
