@@ -14,13 +14,10 @@ import {
   ShieldCheck,
   Copy,
   Check,
-  ExternalLink,
   HelpCircle,
   ChevronDown,
   ChevronUp,
   Info,
-  Link,
-  Clipboard,
   Eye
 } from 'lucide-react';
 import { 
@@ -29,7 +26,6 @@ import {
   signInWithOtp, 
   verifyEmailOtp, 
   signInWithGoogle,
-  setSessionFromUrlOrHash,
   sendPasswordResetEmail
 } from '../../services/cloudSimService';
 import { isSupabaseConfigured } from '../../lib/supabase';
@@ -61,12 +57,9 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otpToken, setOtpToken] = useState('');
-  const [pastedUrl, setPastedUrl] = useState('');
-  const [showPasteBox, setShowPasteBox] = useState(false);
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [showConfigHelp, setShowConfigHelp] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [googleAuthUrl, setGoogleAuthUrl] = useState<string | null>(null);
 
   // Status states
   const [isLoading, setIsLoading] = useState(false);
@@ -220,33 +213,9 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
     }
   };
 
-  const handlePasteUrlAuth = async (inputUrl: string) => {
-    if (!inputUrl.trim()) {
-      setErrorMsg('Please paste the URL containing access_token.');
-      return;
-    }
-    setIsLoading(true);
-    resetForm();
-    try {
-      const { user, error } = await setSessionFromUrlOrHash(inputUrl.trim());
-      if (error) {
-        setErrorMsg(error.message);
-      } else if (user) {
-        setInfoMsg(`Signed in successfully as ${user.email}!`);
-        onSuccess();
-        onClose();
-      }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to authenticate from pasted URL.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleGoogleAuth = async () => {
     setIsLoading(true);
     resetForm();
-    setGoogleAuthUrl(null);
 
     const isIframe = typeof window !== 'undefined' && window.self !== window.top;
     let popup: Window | null = null;
@@ -267,16 +236,12 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
     }
 
     try {
-      const { error, url } = await signInWithGoogle(popup);
-      if (url) {
-        setGoogleAuthUrl(url);
-        setShowPasteBox(true);
-      }
+      const { error } = await signInWithGoogle(popup);
       if (error) {
         if (popup && !popup.closed) popup.close();
         setErrorMsg(error.message);
       } else {
-        setInfoMsg('Connecting with Google... Complete login in the popup. If redirected to GitHub Pages or localhost, paste the URL below to complete login.');
+        setInfoMsg('Connecting with Google... Please complete login in the popup window.');
       }
     } catch (err: any) {
       if (popup && !popup.closed) popup.close();
@@ -353,68 +318,13 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
             <span>Continue with Google</span>
           </button>
 
-          {googleAuthUrl && (
-            <div className="mt-2 text-center p-2 rounded-lg bg-zinc-950 border border-zinc-800">
-              <p className="text-[11px] text-zinc-400 mb-1">Popup didn't appear or was blocked?</p>
-              <a
-                href={googleAuthUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-amber-400 hover:underline inline-flex items-center gap-1 font-semibold"
-              >
-                <span>Click here to open Google Login directly in a new tab</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          )}
-        </div>
-
-        {/* Quick Paste Token/URL box (Accessible for both Google redirect and Magic link) */}
-        <div className="mb-4">
-          <button
-            type="button"
-            onClick={() => setShowPasteBox(!showPasteBox)}
-            className="w-full py-1.5 px-3 rounded-xl bg-zinc-950/70 hover:bg-zinc-950 border border-zinc-800 text-left text-[11px] text-zinc-400 hover:text-zinc-200 flex items-center justify-between transition-colors"
-          >
-            <span className="flex items-center gap-1.5 font-medium text-amber-400/90">
-              <Link className="w-3.5 h-3.5" />
-              <span>Redirected to GitHub Pages or localhost? Paste URL here</span>
-            </span>
-            {showPasteBox ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-
-          {showPasteBox && (
-            <div className="mt-2 p-3 rounded-xl bg-zinc-950 border border-amber-900/40 space-y-2 text-xs animate-in fade-in duration-150">
-              <p className="text-[11px] text-zinc-300 leading-normal">
-                If Google login or email link opened in another tab and ends with <code className="text-amber-200 bg-amber-950/80 px-1 py-0.5 rounded font-mono text-[10px]">#access_token=...</code>, paste that address bar URL below to sign in this preview instantly:
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={pastedUrl}
-                  onChange={e => setPastedUrl(e.target.value)}
-                  placeholder="Paste URL with #access_token=... or code=... here"
-                  className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono text-[10px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => handlePasteUrlAuth(pastedUrl)}
-                  disabled={isLoading || !pastedUrl.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs shrink-0 flex items-center gap-1 transition-all shadow-md disabled:opacity-50"
-                >
-                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
-                  <span>Sign In</span>
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Divider */}
         <div className="relative flex items-center justify-center my-4">
           <div className="border-t border-zinc-800 w-full" />
-          <span className="bg-zinc-900 px-3 text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
-            or continue with email
+          <span className="bg-zinc-900 px-3 text-[11px] font-medium text-emerald-400 uppercase tracking-wider">
+            or sign in with password (instant)
           </span>
         </div>
 
@@ -650,35 +560,6 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
         {/* Method 2: Email OTP / Magic Link */}
         {authMode === 'otp' && (
           <div className="space-y-4">
-            {/* Quick Helper for Localhost Redirect (Active even if OTP is not sent yet!) */}
-            <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/40 text-xs space-y-2">
-              <div className="flex items-center gap-2 text-amber-300 font-semibold text-xs">
-                <Link className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Redirected to localhost:3000? Paste URL here:</span>
-              </div>
-              <p className="text-[11px] text-zinc-300 leading-normal">
-                If the email button redirected to <code className="text-amber-200 bg-amber-950/80 px-1 py-0.5 rounded font-mono text-[10px]">http://localhost:3000/#access_token=...</code>, paste that full link below to log in immediately:
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={pastedUrl}
-                  onChange={e => setPastedUrl(e.target.value)}
-                  placeholder="Paste http://localhost:3000/#access_token=... here"
-                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono text-[10px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => handlePasteUrlAuth(pastedUrl)}
-                  disabled={isLoading || !pastedUrl.trim()}
-                  className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs shrink-0 flex items-center gap-1.5 transition-all shadow-md disabled:opacity-50"
-                >
-                  {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
-                  <span>Sign In</span>
-                </button>
-              </div>
-            </div>
-
             {!isOtpSent ? (
               <form onSubmit={handleSendOtp} className="space-y-3.5 pt-1">
                 <div>

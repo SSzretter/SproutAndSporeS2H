@@ -36,6 +36,7 @@ import { WallSide } from './types/sim';
 import { connectRooms, findFirstFreeWall, getWallDisplayName } from './utils/roomDoorways';
 import { User } from '@supabase/supabase-js';
 import { getCurrentUser, subscribeToAuthState, setSessionFromUrlOrHash, autoSaveSimulation, getLatestUserSimulation, setActiveCloudSaveId } from './services/cloudSimService';
+import { supabase } from './lib/supabase';
 import { CloudAuthModal } from './components/cloud/CloudAuthModal';
 import { CloudSimulationsModal } from './components/cloud/CloudSimulationsModal';
 
@@ -165,27 +166,39 @@ export default function App() {
         setIsCloudAuthModalOpen(true);
       });
 
+    // Capture initial raw tokens on mount before SDK cleans URL
+    const initialRawHash = typeof window !== 'undefined' ? (window.location.hash || window.location.search) : '';
+
     // 3. Auth state listener
-    const unsubscribe = subscribeToAuthState(user => {
+    const unsubscribe = subscribeToAuthState(async (user, session) => {
       setCurrentUser(user);
       setIsAuthChecking(false);
       if (user) {
         setIsCloudAuthModalOpen(false);
         setAuthInitialError(null);
         if (typeof window !== 'undefined') {
-          // If this is a popup window, notify the opener parent with tokens and close self
+          // If this is a popup window (opened by an AI Studio preview or standalone window)
           if (window.opener && window.opener !== window) {
             try {
               window.opener.postMessage({ 
                 type: 'OAUTH_AUTH_SUCCESS',
-                hash: window.location.hash || window.location.search
+                tokens: session ? {
+                  access_token: session.access_token,
+                  refresh_token: session.refresh_token,
+                } : undefined,
+                user: session?.user || user,
+                hash: window.location.hash || window.location.search || initialRawHash
               }, '*');
-              setTimeout(() => {
-                window.close();
-              }, 400);
-            } catch {
-              // ignore
+            } catch (e) {
+              console.warn('postMessage to opener failed:', e);
             }
+
+            // Close popup once authentication succeeds
+            setTimeout(() => {
+              try {
+                window.close();
+              } catch {}
+            }, 600);
           }
 
           const hash = window.location.hash;
@@ -203,9 +216,22 @@ export default function App() {
 
     const handleOAuthMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        if (event.data?.hash) {
+        let signedIn = false;
+        if (event.data?.tokens?.access_token) {
           try {
-            await setSessionFromUrlOrHash(event.data.hash);
+            const { data, error } = await supabase.auth.setSession({
+              access_token: event.data.tokens.access_token,
+              refresh_token: event.data.tokens.refresh_token || '',
+            });
+            if (!error && data.user) signedIn = true;
+          } catch (e) {
+            console.warn('setSession from message tokens failed:', e);
+          }
+        }
+        if (!signedIn && event.data?.hash) {
+          try {
+            const { user } = await setSessionFromUrlOrHash(event.data.hash);
+            if (user) signedIn = true;
           } catch {
             // ignore
           }
@@ -215,6 +241,9 @@ export default function App() {
           setCurrentUser(u);
           setIsCloudAuthModalOpen(false);
           setCloudToast({ message: `Successfully logged in as ${u.email}!`, type: 'success' });
+          try {
+            (event.source as Window | null)?.postMessage({ type: 'OAUTH_AUTH_ACK' }, '*');
+          } catch {}
         }
       }
     };
@@ -1530,6 +1559,7 @@ export default function App() {
           <span>{cloudToast.message}</span>
         </div>
       )}
+
     </div>
   );
 }

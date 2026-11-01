@@ -57,9 +57,9 @@ export async function getCurrentSession(): Promise<Session | null> {
   return session;
 }
 
-export function subscribeToAuthState(callback: (user: User | null) => void) {
+export function subscribeToAuthState(callback: (user: User | null, session: Session | null) => void) {
   const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-    callback(session?.user ?? null);
+    callback(session?.user ?? null, session ?? null);
   });
   return () => subscription.unsubscribe();
 }
@@ -104,6 +104,12 @@ export async function signInWithPassword(email: string, password: string): Promi
  */
 export function getAuthRedirectUrl(): string | undefined {
   if (typeof window === 'undefined') return undefined;
+  const envUrl = 
+    (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_APP_URL || import.meta.env.APP_URL)) ||
+    '';
+  if (envUrl && envUrl.startsWith('http')) {
+    return envUrl.endsWith('/') ? envUrl : `${envUrl}/`;
+  }
   const origin = window.location.origin;
   const pathname = window.location.pathname;
   const cleanPath = pathname.replace(/\/index\.html$/, '');
@@ -164,13 +170,26 @@ export async function setSessionFromUrlOrHash(input: string): Promise<{ user: Us
       return { user: null, error: new Error('Please paste the URL containing access_token.') };
     }
 
+    // Check if raw JWT access_token was pasted directly (e.g. eyJhbGciOi...)
+    if (raw.startsWith('ey') && raw.split('.').length >= 3) {
+      try {
+        const { data, error } = await supabase.auth.setSession({
+          access_token: raw,
+          refresh_token: '',
+        });
+        if (!error && data.user) return { user: data.user, error: null };
+      } catch {
+        // Fall through
+      }
+    }
+
     // Check if JSON session object was pasted directly
     if (raw.startsWith('{') && raw.endsWith('}')) {
       try {
         const parsed = JSON.parse(raw);
-        const accessToken = parsed.access_token || parsed.currentSession?.access_token;
-        const refreshToken = parsed.refresh_token || parsed.currentSession?.refresh_token;
-        if (accessToken && refreshToken) {
+        const accessToken = parsed.access_token || parsed.currentSession?.access_token || parsed.session?.access_token;
+        const refreshToken = parsed.refresh_token || parsed.currentSession?.refresh_token || parsed.session?.refresh_token || '';
+        if (accessToken) {
           const { data, error } = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
@@ -198,7 +217,7 @@ export async function setSessionFromUrlOrHash(input: string): Promise<{ user: Us
       }
     }
 
-    // Handle hash containing access_token & refresh_token (Implicit Magic Link)
+    // Handle hash or query containing access_token (Implicit Magic Link / OAuth)
     let hashPart = raw;
     if (hashPart.includes('#')) {
       hashPart = hashPart.split('#')[1];
@@ -208,12 +227,12 @@ export async function setSessionFromUrlOrHash(input: string): Promise<{ user: Us
 
     const params = new URLSearchParams(hashPart);
     const accessToken = params.get('access_token');
-    const refreshToken = params.get('refresh_token');
+    const refreshToken = params.get('refresh_token') || '';
 
-    if (!accessToken || !refreshToken) {
+    if (!accessToken) {
       return { 
         user: null, 
-        error: new Error('Could not find access_token and refresh_token in the provided URL. Make sure to paste the full URL.') 
+        error: new Error('Could not find access_token in the provided input. Make sure to paste the full URL or session key.') 
       };
     }
 
@@ -237,10 +256,9 @@ export async function setSessionFromUrlOrHash(input: string): Promise<{ user: Us
  */
 export async function signInWithGoogle(preOpenedPopup?: Window | null): Promise<{ error: Error | null; url?: string }> {
   const isIframe = typeof window !== 'undefined' && window.self !== window.top;
-  // In AI Studio, external popups cannot open *.run.app directly because Google's applet-auth-bridge blocks it with 403.
-  // Instead, route through your GitHub Pages URL as an external auth bridge.
+  const configuredAppUrl = (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_APP_URL || import.meta.env.APP_URL)) || 'https://sszretter.github.io/SproutAndSporeS2H/';
   const redirectUrl = isIframe && typeof window !== 'undefined' && window.location.hostname.includes('run.app')
-    ? 'https://sszretter.github.io/SproutAndSporeS2H/'
+    ? configuredAppUrl
     : getAuthRedirectUrl();
 
   if (isIframe) {
