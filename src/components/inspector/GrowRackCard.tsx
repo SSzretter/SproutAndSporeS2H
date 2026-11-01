@@ -1,12 +1,13 @@
 import React from 'react';
-import { Layers, Plus, Minus, Sprout, Waves, Droplets, Shield, Wind, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Layers, Plus, Minus, Sprout, Waves, Droplets, Shield, Wind, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
 import { EquipmentItem, PlantItem, PlantStage, RackTier, TrayInsertType } from '../../types/sim';
 import {
   countRackPlants, getCellLabel, getInsertCellCount, getRackCapacity, getRackOccupancy, getRackTiers,
   getRackTierSpacingFt, isEbbAndFlowRack, rackSlotKey, TRAY_INSERTS, TRAY_INSERT_TYPES,
   GROW_RACK_PRESETS, createRackTiers, getRackDimensions, isTrayDomed, isTrayDomeVented, setTrayDome,
-  calculateTrayMicroclimate, isTrayWet, mistRackTray, getRackTrayLayout, describeTrayLayout, DEFAULT_BOTTOM_SHELF_FT
+  calculateTrayMicroclimate, isTrayWet, mistRackTray, getRackTrayLayout, describeTrayLayout, DEFAULT_BOTTOM_SHELF_FT, describeRackTray
 } from '../../utils/growRacks';
+import { getRackTrayMatRiseF, hasRackFloorHeatMat } from '../../utils/equipmentLinks';
 import { CommitNumberInput } from '../CommitNumberInput';
 import type { ItemSectionProps, EquipmentLocals } from './types';
 
@@ -23,7 +24,9 @@ const STAGE_CELL_COLOR: Record<PlantStage, string> = {
 };
 
 export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq'>> = (props) => {
-  const { room, selectedParentTentId, onUpdateItem, onSelectItem, onOpenAddItem, eq, simTime = Date.now() } = props;
+  const { room, selectedParentTentId, onUpdateItem, onRemoveItems, onLogJournalEntry, onSelectItem, onOpenAddItem, eq, simTime = Date.now() } = props;
+  // Tray awaiting a second click to confirm clearing it ("tier:tray")
+  const [confirmClearTray, setConfirmClearTray] = React.useState<string | null>(null);
   if (eq.type !== 'grow_rack') return null;
 
   const hostTent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
@@ -36,7 +39,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
   const isSideBySide = getRackTrayLayout(eq) === 'side_by_side';
   const dims = getRackDimensions(eq);
   const ambientClimate = hostTent ? hostTent.climate : room.climate;
-  const hasFloorHeatMat = containerItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+  const hasFloorHeatMat = hasRackFloorHeatMat(containerItems);
 
   const setTiers = (next: RackTier[]) => {
     const updated = { ...eq, rackTiers: next } as EquipmentItem;
@@ -45,6 +48,22 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
 
   const updateTier = (index: number, patch: Partial<RackTier>) => {
     setTiers(tiers.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  };
+
+  // Empty one tray: removes every plant sown in its cells
+  const handleClearTray = (tierIndex: number, trayIndex: number) => {
+    const sown = containerItems.filter(i =>
+      i.category === 'plant' && i.rackSlot?.rackId === eq.id && i.rackSlot.tier === tierIndex && i.rackSlot.tray === trayIndex
+    );
+    setConfirmClearTray(null);
+    if (sown.length === 0 || !onRemoveItems) return;
+    onRemoveItems(sown.map(p => p.id), selectedParentTentId);
+    onLogJournalEntry?.({
+      title: `🧹 Cleared Tray: ${eq.name}`,
+      message: `Emptied ${describeRackTray(eq, tierIndex, trayIndex)}: removed ${sown.length} plant${sown.length === 1 ? '' : 's'}.`,
+      type: 'action',
+      category: 'care'
+    });
   };
 
   // Mist one tray: the rack records it and every sown cell's surface gets damper
@@ -351,6 +370,7 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                     trayIndex: tr,
                     ambientClimate,
                     floorHeatMatActive: hasFloorHeatMat,
+                    trayMatRiseF: getRackTrayMatRiseF(eq.id, ti, tr, containerItems),
                     overheadLightPpfd: ambientClimate.lightPPFD,
                     hasWetMedia: isTrayWet(eq, containerItems, ti, tr),
                     simTime
@@ -374,6 +394,34 @@ export const GrowRackCard: React.FC<ItemSectionProps & Pick<EquipmentLocals, 'eq
                           <span className="text-[10px] font-mono text-zinc-400">({sownInTray}/{spec.cols * spec.rows})</span>
                         </div>
                         <div className="flex items-center gap-1">
+                        {onRemoveItems && sownInTray > 0 && (confirmClearTray === `${ti}:${tr}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleClearTray(ti, tr)}
+                              className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-700 text-white hover:bg-rose-600 transition-all"
+                            >
+                              Remove {sownInTray}?
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmClearTray(null)}
+                              className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmClearTray(`${ti}:${tr}`)}
+                            title="Empty this tray: removes every plant sown in it"
+                            className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 text-rose-300 hover:bg-rose-950/60 transition-all flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Clear</span>
+                          </button>
+                        ))}
                         <button
                           type="button"
                           onClick={() => handleMistTray(ti, tr)}

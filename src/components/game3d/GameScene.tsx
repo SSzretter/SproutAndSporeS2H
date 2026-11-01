@@ -16,7 +16,7 @@ import { getVpdZone } from '../../utils/physics';
 import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
 import { HoseModel, ExhaustDuctModel, FeedLinesModel } from './HoseModel';
 import { getEquipmentActivity, EquipmentActivity } from '../../utils/equipmentStatus';
-import { getDuctTargetTent, getHeatMatTarget } from '../../utils/equipmentLinks';
+import { getDuctTargetTent, getHeatMatTarget, getRackTrayMatRiseF, hasRackFloorHeatMat } from '../../utils/equipmentLinks';
 import { isLightScheduledOn } from '../../utils/roomThermal';
 import { calculateTrayMicroclimate, getRackTiers, getRackTrayLayout, getTierShelfHeightFt, isGrowRack, isTrayWet, TRAY_1020 } from '../../utils/growRacks';
 
@@ -175,7 +175,8 @@ function ItemNode({
     const matTarget = getHeatMatTarget(item, tent ? tent.items : room.items, tent);
     const matMount: HeatMatMount | undefined = !matTarget ? undefined
       : matTarget.kind === 'tent_floor' ? { kind: 'under_tray' }
-      : matTarget.wrapped ? { kind: 'wrap', radius: matTarget.item.dimensions.length / 2, height: matTarget.item.dimensions.height }
+      : matTarget.kind === 'rack_tray' ? { kind: 'rack_tray', longAlongX: getRackTrayLayout(matTarget.rack) !== 'side_by_side' }
+      : matTarget.kind === 'item' && matTarget.wrapped ? { kind: 'wrap', radius: matTarget.item.dimensions.length / 2, height: matTarget.item.dimensions.height }
       : undefined;
     model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} simHour={hour} />;
   }
@@ -720,7 +721,7 @@ function buildWorldLabels(
   // Each humidity dome is its own microclimate: small readings just above the dome
   const addDomeLabels = (items: Item[], tent?: Tent) => {
     const climate = (tent ?? room).climate;
-    const floorHeatMatActive = items.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+    const floorHeatMatActive = hasRackFloorHeatMat(items);
     for (const rack of items) {
       if (!isGrowRack(rack)) continue;
       const [rx, ry, rz] = itemWorldPosition(rack, room, tent);
@@ -730,6 +731,7 @@ function buildWorldLabels(
           if (!tier.domes?.[tr]) continue;
           const micro = calculateTrayMicroclimate({
             rack, tierIndex: ti, trayIndex: tr, ambientClimate: climate, floorHeatMatActive,
+            trayMatRiseF: getRackTrayMatRiseF(rack.id, ti, tr, items),
             overheadLightPpfd: climate.lightPPFD, hasWetMedia: isTrayWet(rack, items, ti, tr), simTime
           });
           const domeTop = getTierShelfHeightFt(rack, ti) + TRAY_1020.heightFt + (tier.domeHeightsIn?.[tr] || 7) / 12;

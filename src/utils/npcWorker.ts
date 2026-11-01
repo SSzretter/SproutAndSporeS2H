@@ -18,6 +18,7 @@ import {
   adjustToTargets, DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getFeedingReservoir, getNutrientCapacityL, getNutrientLevelL,
   isNutrientReservoir, mixFreshSolution, topOffWithWater
 } from './nutrientReservoirs';
+import { getRackTrayMatRiseF, hasRackFloorHeatMat } from './equipmentLinks';
 import {
   calculateTrayMicroclimate, getRackSlotCode, getRackTiers, getTrayMistWetness, isGrowRack, isTrayDomed, isTrayWet, mistRackTray
 } from './growRacks';
@@ -698,7 +699,7 @@ export function simulateNpcRoomTick(
       for (const { tent } of containers) {
         const items = tent ? tent.items : nextRoomItems;
         const climate = (tent ?? room).climate;
-        const floorHeatMatActive = items.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+        const floorHeatMatActive = hasRackFloorHeatMat(items);
         for (const rack of items) {
           if (!isGrowRack(rack)) continue;
           const tiers = getRackTiers(rack);
@@ -713,6 +714,7 @@ export function simulateNpcRoomTick(
               const domed = isTrayDomed(rack, ti, tr);
               const micro = calculateTrayMicroclimate({
                 rack, tierIndex: ti, trayIndex: tr, ambientClimate: climate, floorHeatMatActive,
+                trayMatRiseF: getRackTrayMatRiseF(rack.id, ti, tr, items),
                 overheadLightPpfd: climate.lightPPFD, hasWetMedia: isTrayWet(rack, items, ti, tr), simTime
               });
               const driest = Math.min(...young.map(p => p.soilMoisture));

@@ -6,6 +6,8 @@ import type { ItemSectionProps, PlantLocals } from './types';
 
 export const PlantLifecycleCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant' | 'isSeed' | 'suitability' | 'expectedDays' | 'currentStageDays' | 'milestones'>> = (props) => {
   const { selectedParentTentId, simTime, onUpdateItem, setShow3dGrowthTimelapse, plant, isSeed, suitability, expectedDays, currentStageDays, milestones } = props;
+  // Same genetic factor physics applies to stage progress
+  const geneticSpeed = (plant.stage === 'germination' ? plant.traits?.germinationVigor : plant.traits?.growthRateMultiplier) || 1;
 
   return (
     <>
@@ -47,7 +49,9 @@ export const PlantLifecycleCard: React.FC<ItemSectionProps & Pick<PlantLocals, '
             />
           </div>
           <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono">
-            <span>Rate: {suitability.overallScore.toFixed(2)}x base speed</span>
+            <span title="Stage speed = environment score (conditions, capped at 1.5x) × genetic speed (emergence vigor while sprouting, growth rate after)">
+              Rate: {suitability.overallScore.toFixed(2)}x environment × {geneticSpeed.toFixed(2)}x genetics = {(suitability.overallScore * geneticSpeed).toFixed(2)}x
+            </span>
             <span>Remaining in Stage: ~{Math.max(0, expectedDays - currentStageDays).toFixed(1)} days</span>
           </div>
         </div>

@@ -31,6 +31,7 @@ export interface ItemInspectorProps {
   onUpdateItem: (item: Item, parentTentId?: string | null) => void;
   onDeleteTent: (tentId: string) => void;
   onDeleteItem: (itemId: string, parentTentId?: string | null) => void;
+  onRemoveItems?: (itemIds: string[], parentTentId?: string | null) => void; // Several at once, selection kept
   onDeleteRoom?: (roomId: string) => void;
   onOpenAddRoom?: () => void;
   onOpenLocationModal?: () => void;

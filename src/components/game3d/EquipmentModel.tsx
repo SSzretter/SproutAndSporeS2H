@@ -169,7 +169,8 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
 }
 
 /** How an attached heat mat is shown: as a band wrapped around a tank, or faintly under a tent's floor tray. */
-export type HeatMatMount = { kind: 'wrap'; radius: number; height: number } | { kind: 'under_tray' };
+// rack_tray: under one 1020 tray of a grow rack, its long side turned to match the tray's
+export type HeatMatMount = { kind: 'wrap'; radius: number; height: number } | { kind: 'under_tray' } | { kind: 'rack_tray'; longAlongX: boolean };
 
 export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq: EquipmentItem; hangFt?: number; matMount?: HeatMatMount; simHour?: number }) {
   const { length: L, width: W, height: H } = eq.dimensions;
@@ -384,9 +385,12 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
           </mesh>
         );
       }
+      const [matX, matZ] = matMount?.kind === 'rack_tray'
+        ? (matMount.longAlongX ? [Math.max(L, W), Math.min(L, W)] : [Math.min(L, W), Math.max(L, W)])
+        : [L, W];
       return (
         <mesh position={[0, h / 2, 0]}>
-          <boxGeometry args={[L, h, W]} />
+          <boxGeometry args={[matX, h, matZ]} />
           <meshStandardMaterial
             color={matColor}
             emissive={glow}

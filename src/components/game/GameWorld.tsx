@@ -22,6 +22,7 @@ import { PlayerInventoryModal } from './PlayerInventoryModal';
 import { ItemInspector } from '../ItemInspector';
 import { broadcastSimulationState } from '../../utils/syncChannel';
 import { getCropIssues } from '../../utils/cropIssues';
+import { isPlantHarvestable } from '../../utils/plantLifecycle';
 import { syncRoomRacks } from '../../utils/spatial';
 import { getRackSlotCode, getRackTrayAt, isGrowRack, mistRackTray } from '../../utils/growRacks';
 import { getEquipmentActivity } from '../../utils/equipmentStatus';
@@ -78,6 +79,7 @@ interface GameWorldProps {
   onUpdateItem?: (item: Item, parentTentId?: string | null) => void;
   onDeleteTent?: (tentId: string) => void;
   onDeleteItem?: (itemId: string, parentTentId?: string | null) => void;
+  onRemoveItems?: (itemIds: string[], parentTentId?: string | null) => void;
   onDeleteRoom?: (roomId: string) => void;
   onHarvestPlant?: (plant: PlantItem, tentId?: string) => void;
   onHarvestMushroom?: (mushroom: MushroomItem, tentId?: string) => void;
@@ -98,6 +100,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   onUpdateItem,
   onDeleteTent,
   onDeleteItem,
+  onRemoveItems,
   onDeleteRoom,
   onHarvestPlant,
   onHarvestMushroom,
@@ -743,7 +746,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       addFloatingText('Fine Mist Applied 💨', px, py, '#2dd4bf');
     } else if (activeTool === 'harvest') {
       const isReady = crop.category === 'plant' 
-        ? ((crop as PlantItem).stage === 'ready' || ((crop as PlantItem).stage === 'ripening' && (crop as PlantItem).stageProgress > 70))
+        ? isPlantHarvestable(crop as PlantItem)
         : ((crop as MushroomItem).stage === 'ready' || (crop as MushroomItem).stage === 'mature');
 
       if (!isReady) {
@@ -1684,6 +1687,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
                 onUpdateItem={handleUpdateItemFromGame}
                 onDeleteTent={handleDeleteTentFromGame}
                 onDeleteItem={handleDeleteItemFromGame}
+                onRemoveItems={onRemoveItems}
                 onDeleteRoom={handleDeleteRoomFromGame}
                 onOpenAddRoom={onOpenAddRoom}
                 onAddHarvestsToFacility={(harvests) => {

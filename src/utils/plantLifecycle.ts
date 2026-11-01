@@ -6,11 +6,12 @@ export interface StageSuitabilityReport {
   limitingFactor?: string;
   tempStatus: 'ideal' | 'too_cold' | 'too_hot';
   rhStatus: 'ideal' | 'too_dry' | 'too_humid';
-  vpdStatus: 'ideal' | 'too_low' | 'too_high';
-  ppfdStatus: 'ideal' | 'insufficient' | 'excessive_burn';
+  vpdStatus: 'ideal' | 'too_low' | 'too_high' | 'not_applicable'; // not_applicable: a seed has no leaves to transpire
+  ppfdStatus: 'ideal' | 'insufficient' | 'excessive_burn' | 'not_applicable'; // not_applicable: a germinating seed needs no light
   rootTempStatus: 'ideal' | 'chilled' | 'hot';
   moistureStatus: 'ideal' | 'underwatered' | 'waterlogged';
-  photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger';
+  // not_needed: a germinating seed doesn't use light; no_light: a stage that photosynthesizes has no light at all
+  photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger' | 'not_needed' | 'no_light';
   details: string[];
 }
 
@@ -272,6 +273,36 @@ export function getPlantStageStartSize(
   return getStageEndSize(species, prev, containerFactor);
 }
 
+// A ripening crop can be cut once it's this far through the stage
+const EARLY_HARVEST_RIPENING_PCT = 70;
+// Defoliating / lollipopping a flowering plant only helps in the first stretch of bloom
+const LATE_PRUNE_FLOWERING_PCT = 30;
+
+/** Ready, or far enough into ripening to take: the same rule the game's harvest shears use. */
+export function isPlantHarvestable(plant: PlantItem): boolean {
+  if (plant.isHarvested) return false;
+  return plant.stage === 'ready' || (plant.stage === 'ripening' && plant.stageProgress > EARLY_HARVEST_RIPENING_PCT);
+}
+
+// Media that hold soil biology a compost tea can feed (inert hydro media just clog and foul)
+const TEA_MEDIA = new Set(['living_organic_soil', 'peat_potting_mix', 'native_garden_loam', 'coco_perlite', 'coco_coir']);
+
+/** Compost tea feeds microbes around living roots: needs a soil-like medium and a plant past the seed / cutting stage. */
+export function canDrenchCompostTea(plant: PlantItem): boolean {
+  if (plant.isHarvested || plant.stage === 'germination' || plant.stage === 'rooting') return false;
+  if (plant.systemType === 'dwc' || plant.systemType === 'aeroponics') return false;
+  return TEA_MEDIA.has(plant.growingMedium ?? 'living_organic_soil');
+}
+
+/**
+ * Topping / pruning needs an established plant in its own container: vegetative growth, or the first
+ * weeks of flowering. Seeds, cuttings, seedlings and plugs still in a rack cell have nothing to cut.
+ */
+export function isPlantPrunable(plant: PlantItem): boolean {
+  if (plant.isHarvested || plant.rackSlot) return false;
+  return plant.stage === 'vegetative' || (plant.stage === 'flowering' && plant.stageProgress < LATE_PRUNE_FLOWERING_PCT);
+}
+
 /**
  * Target plant size for the current stage progress: interpolates from the stage's start
  * size to its end size, scaled by the container's root-zone volume.
@@ -304,6 +335,9 @@ export function evaluatePlantStageSuitability(
 ): StageSuitabilityReport {
   const req = plant.stageRequirements?.[plant.stage] || DEFAULT_STAGE_REQUIREMENTS[plant.stage];
   const details: string[] = [];
+  // Conditions that hurt growth, in check order; the first is reported as the limiting factor
+  const problems: string[] = [];
+  const flag = (message: string) => { details.push(message); problems.push(message); };
   let scoreMultiplier = 1.0;
 
   // Temperature
@@ -312,12 +346,12 @@ export function evaluatePlantStageSuitability(
     tempStatus = 'too_cold';
     const def = req.tempMinF - climate.tempF;
     scoreMultiplier *= Math.max(0.2, 1 - def * 0.08);
-    details.push(`Low ambient temp (${climate.tempF.toFixed(1)}°F < min ${req.tempMinF}°F). Growth slowed.`);
+    flag(`Low ambient temp (${climate.tempF.toFixed(1)}°F < min ${req.tempMinF}°F). Growth slowed.`);
   } else if (climate.tempF > req.tempMaxF) {
     tempStatus = 'too_hot';
     const exc = climate.tempF - req.tempMaxF;
     scoreMultiplier *= Math.max(0.3, 1 - exc * 0.08);
-    details.push(`High ambient temp (${climate.tempF.toFixed(1)}°F > max ${req.tempMaxF}°F). Heat stress.`);
+    flag(`High ambient temp (${climate.tempF.toFixed(1)}°F > max ${req.tempMaxF}°F). Heat stress.`);
   } else {
     details.push(`Temperature optimal (${climate.tempF.toFixed(1)}°F).`);
   }
@@ -328,57 +362,63 @@ export function evaluatePlantStageSuitability(
     rhStatus = 'too_dry';
     const def = req.rhMin - climate.rh;
     scoreMultiplier *= Math.max(0.3, 1 - def * 0.03);
-    details.push(`Air too dry (${climate.rh}% < target ${req.rhMin}%). High transpiration demand.`);
+    flag(`Air too dry (${climate.rh}% < target ${req.rhMin}%). High transpiration demand.`);
   } else if (climate.rh > req.rhMax) {
     rhStatus = 'too_humid';
     const exc = climate.rh - req.rhMax;
     scoreMultiplier *= Math.max(0.4, 1 - exc * 0.02);
-    details.push(`Air too humid (${climate.rh}% > max ${req.rhMax}%). Mold risk.`);
+    flag(`Air too humid (${climate.rh}% > max ${req.rhMax}%). Mold risk.`);
   } else {
     details.push(`Humidity aligned (${climate.rh}%).`);
   }
 
   // VPD (Vapor Pressure Deficit)
-  let vpdStatus: 'ideal' | 'too_low' | 'too_high' = 'ideal';
-  if (climate.vpdKpa < req.vpdMin) {
+  let vpdStatus: StageSuitabilityReport['vpdStatus'] = 'ideal';
+  if (plant.stage === 'germination') {
+    // VPD drives leaf transpiration; a seed has no leaves, and a sealed dome near saturation is what it wants
+    vpdStatus = 'not_applicable';
+    details.push(`VPD not judged until the seedling has leaves (${climate.vpdKpa} kPa).`);
+  } else if (climate.vpdKpa < req.vpdMin) {
     vpdStatus = 'too_low';
     scoreMultiplier *= 0.85;
-    details.push(`VPD low (${climate.vpdKpa} kPa). Transpiration sluggish.`);
+    flag(`VPD low (${climate.vpdKpa} kPa). Transpiration sluggish.`);
   } else if (climate.vpdKpa > req.vpdMax) {
     vpdStatus = 'too_high';
     scoreMultiplier *= 0.75;
-    details.push(`VPD high (${climate.vpdKpa} kPa). Leaf stomata closing.`);
+    flag(`VPD high (${climate.vpdKpa} kPa). Leaf stomata closing.`);
   } else {
     details.push(`VPD in the sweet spot (${climate.vpdKpa} kPa).`);
   }
 
   // Light PPFD
-  let ppfdStatus: 'ideal' | 'insufficient' | 'excessive_burn' = 'ideal';
+  let ppfdStatus: StageSuitabilityReport['ppfdStatus'] = 'ideal';
   if (plant.stage === 'germination') {
+    // Seeds sprout in the dark: light only matters if it's strong enough to cook the tray
+    ppfdStatus = 'not_applicable';
     if (climate.lightPPFD > 150) {
       ppfdStatus = 'excessive_burn';
       scoreMultiplier *= 0.7;
-      details.push(`Light too intense for seed germination (${climate.lightPPFD} PPFD). Dim lights.`);
+      flag(`Light too intense for seed germination (${climate.lightPPFD} PPFD). Dim lights.`);
     }
   } else if (plant.stage === 'rooting') {
     if (climate.lightPPFD > 250) {
       ppfdStatus = 'excessive_burn';
       scoreMultiplier *= 0.6;
-      details.push(`Light too intense for rootless clone (${climate.lightPPFD} PPFD). High transpiration.`);
+      flag(`Light too intense for rootless clone (${climate.lightPPFD} PPFD). High transpiration.`);
     } else if (climate.lightPPFD < req.ppfdMin) {
       ppfdStatus = 'insufficient';
       scoreMultiplier *= 0.8;
-      details.push(`Lighting dim for rooting cutting (${climate.lightPPFD} PPFD).`);
+      flag(`Lighting dim for rooting cutting (${climate.lightPPFD} PPFD).`);
     }
   } else {
     if (climate.lightPPFD < req.ppfdMin) {
       ppfdStatus = 'insufficient';
       scoreMultiplier *= Math.max(0.35, climate.lightPPFD / Math.max(1, req.ppfdMin));
-      details.push(`Insufficient PPFD (${climate.lightPPFD} < min ${req.ppfdMin}).`);
+      flag(`Insufficient PPFD (${climate.lightPPFD} < min ${req.ppfdMin}).`);
     } else if (climate.lightPPFD > req.ppfdOptimal * 1.45) {
       ppfdStatus = 'excessive_burn';
       scoreMultiplier *= 0.85;
-      details.push(`High PPFD (${climate.lightPPFD}). Ensure CO₂ supplementation.`);
+      flag(`High PPFD (${climate.lightPPFD}). Ensure CO₂ supplementation.`);
     }
   }
 
@@ -390,29 +430,29 @@ export function evaluatePlantStageSuitability(
     if (rootTempF < 64) {
       rootTempStatus = 'chilled';
       scoreMultiplier *= 0.15;
-      details.push(`Substrate critically cold (${rootTempF.toFixed(1)}°F < 75°F). Pepper seed germination stalled; high damping-off risk.`);
+      flag(`Substrate critically cold (${rootTempF.toFixed(1)}°F < 75°F). Pepper seed germination stalled; high damping-off risk.`);
     } else if (rootTempF < 72) {
       rootTempStatus = 'chilled';
       scoreMultiplier *= 0.45;
-      details.push(`Substrate cool (${rootTempF.toFixed(1)}°F). Pepper germination sluggish; heat mat recommended for 80-85°F.`);
+      flag(`Substrate cool (${rootTempF.toFixed(1)}°F). Pepper germination sluggish; heat mat recommended for 80-85°F.`);
     } else if (rootTempF >= 78 && rootTempF <= 88) {
       scoreMultiplier *= 1.45;
       details.push(`Substrate heat optimal (${rootTempF.toFixed(1)}°F). Vigorous seed coat imbibition & rapid radicle emergence!`);
     } else if (rootTempF > 92) {
       rootTempStatus = 'hot';
       scoreMultiplier *= 0.5;
-      details.push(`Substrate excessive heat (${rootTempF.toFixed(1)}°F > 92°F). Thermal seed dormancy triggered.`);
+      flag(`Substrate excessive heat (${rootTempF.toFixed(1)}°F > 92°F). Thermal seed dormancy triggered.`);
     } else {
       details.push(`Substrate temp acceptable (${rootTempF.toFixed(1)}°F).`);
     }
   } else if (rootTempF < 62) {
     rootTempStatus = 'chilled';
     scoreMultiplier *= 0.7;
-    details.push(`Root zone cold (${rootTempF.toFixed(1)}°F). Phosphorus & nutrient uptake stalled.`);
+    flag(`Root zone cold (${rootTempF.toFixed(1)}°F). Phosphorus & nutrient uptake stalled.`);
   } else if (rootTempF > 78 && plant.species !== 'Chili Pepper') {
     rootTempStatus = 'hot';
     scoreMultiplier *= 0.8;
-    details.push(`Root zone warm (${rootTempF.toFixed(1)}°F). Watch for pythium/root rot.`);
+    flag(`Root zone warm (${rootTempF.toFixed(1)}°F). Watch for pythium/root rot.`);
   } else {
     if (plant.stage === 'germination' || plant.stage === 'rooting') {
       if (rootTempF >= 72 && rootTempF <= 78) {
@@ -427,11 +467,11 @@ export function evaluatePlantStageSuitability(
   if (plant.soilMoisture < req.soilMoistureMin) {
     moistureStatus = 'underwatered';
     scoreMultiplier *= Math.max(0.1, plant.soilMoisture / req.soilMoistureMin);
-    details.push(`Soil drought (${plant.soilMoisture.toFixed(0)}% < min ${req.soilMoistureMin}%).`);
+    flag(`Soil drought (${plant.soilMoisture.toFixed(0)}% < min ${req.soilMoistureMin}%).`);
   } else if (plant.soilMoisture > 92) {
     moistureStatus = 'waterlogged';
     scoreMultiplier *= 0.65;
-    details.push(`Medium oversaturated (${plant.soilMoisture.toFixed(0)}%). Root suffocation.`);
+    flag(`Medium oversaturated (${plant.soilMoisture.toFixed(0)}%). Root suffocation.`);
   }
 
   // Soil & Hydroponic Dynamics Assessment:
@@ -443,10 +483,10 @@ export function evaluatePlantStageSuitability(
   if (isHydro) {
     if (currentPh < 5.3) {
       scoreMultiplier *= 0.7;
-      details.push(`Hydro solution acidic (pH ${currentPh.toFixed(1)} < 5.5). Calcium & magnesium locked out.`);
+      flag(`Hydro solution acidic (pH ${currentPh.toFixed(1)} < 5.5). Calcium & magnesium locked out.`);
     } else if (currentPh > 6.4) {
       scoreMultiplier *= 0.7;
-      details.push(`Hydro solution alkaline (pH ${currentPh.toFixed(1)} > 6.2). Iron & micronutrients precipitating.`);
+      flag(`Hydro solution alkaline (pH ${currentPh.toFixed(1)} > 6.2). Iron & micronutrients precipitating.`);
     } else {
       details.push(`Hydro reservoir pH optimal (${currentPh.toFixed(1)}).`);
     }
@@ -454,10 +494,10 @@ export function evaluatePlantStageSuitability(
     // Soil / Raised Bed / In-ground
     if (currentPh < 5.8) {
       scoreMultiplier *= 0.75;
-      details.push(`Soil medium acidic (pH ${currentPh.toFixed(1)} < 6.0). Micronutrient toxicity & phosphorus lockout.`);
+      flag(`Soil medium acidic (pH ${currentPh.toFixed(1)} < 6.0). Micronutrient toxicity & phosphorus lockout.`);
     } else if (currentPh > 7.1) {
       scoreMultiplier *= 0.75;
-      details.push(`Soil medium alkaline (pH ${currentPh.toFixed(1)} > 6.8). Iron & zinc locked out.`);
+      flag(`Soil medium alkaline (pH ${currentPh.toFixed(1)} > 6.8). Iron & zinc locked out.`);
     } else {
       details.push(`Soil pH in optimal absorption zone (${currentPh.toFixed(1)}).`);
     }
@@ -467,15 +507,15 @@ export function evaluatePlantStageSuitability(
   if (plant.stage === 'germination' || plant.stage === 'seedling' || plant.stage === 'rooting') {
     if (currentEc > 800) {
       scoreMultiplier *= 0.7;
-      details.push(`Nutrient strength too hot for delicate roots (${currentEc} PPM > 800 PPM).`);
+      flag(`Nutrient strength too hot for delicate roots (${currentEc} PPM > 800 PPM).`);
     }
   } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
     if (currentEc > 1850) {
       scoreMultiplier *= 0.8;
-      details.push(`High EC (${currentEc} PPM). Leaf tip burn and salt accumulation.`);
+      flag(`High EC (${currentEc} PPM). Leaf tip burn and salt accumulation.`);
     } else if (currentEc < 550) {
       scoreMultiplier *= 0.85;
-      details.push(`Low EC (${currentEc} PPM). Bloom underfed; cone/fruit swelling limited.`);
+      flag(`Low EC (${currentEc} PPM). Bloom underfed; cone/fruit swelling limited.`);
     }
   }
 
@@ -519,7 +559,7 @@ export function evaluatePlantStageSuitability(
       if (!domeInfo.vented) {
         // Damping-off risk! Stagnant humid air rots seedling collars
         scoreMultiplier *= 0.65;
-        details.push(`High damping-off fungal rot risk! Emerged seedling kept under unvented dome. Open dome vents or remove dome.`);
+        flag(`High damping-off fungal rot risk! Emerged seedling kept under unvented dome. Open dome vents or remove dome.`);
       } else {
         scoreMultiplier *= 0.95;
         details.push(`Transitional hardening under vented dome. Prepare to remove dome as true leaves develop.`);
@@ -528,14 +568,14 @@ export function evaluatePlantStageSuitability(
 
     if (climate.tempF > 88) {
       scoreMultiplier *= 0.6;
-      details.push(`Greenhouse solar heat trap! Tray dome interior overheating (${climate.tempF.toFixed(1)}°F > 88°F). Dim lights or open dome vents.`);
+      flag(`Greenhouse solar heat trap! Tray dome interior overheating (${climate.tempF.toFixed(1)}°F > 88°F). Dim lights or open dome vents.`);
     }
   } else {
     // Uncovered tray or open container
     if (plant.stage === 'germination') {
       if (climate.rh < 55) {
         scoreMultiplier *= 0.75;
-        details.push(`Uncovered tray in low humidity (${climate.rh}% RH). Topsoil crust drying risks stalling seed germination. Consider adding a humidity dome.`);
+        flag(`Uncovered tray in low humidity (${climate.rh}% RH). Topsoil crust drying risks stalling seed germination. Consider adding a humidity dome.`);
       } else {
         details.push(`Uncovered seed tray. Germination proceeding at baseline rate.`);
       }
@@ -543,17 +583,23 @@ export function evaluatePlantStageSuitability(
   }
 
   // Photoperiod Alignment
-  let photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger' = 'aligned';
-  if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+  let photoperiodStatus: StageSuitabilityReport['photoperiodStatus'] = 'aligned';
+  if (plant.stage === 'germination') {
+    photoperiodStatus = 'not_needed';
+  } else if (actualPhotoperiodHours <= 0) {
+    photoperiodStatus = 'no_light';
+    scoreMultiplier *= 0.3;
+    flag(`No light reaches this plant. It can't photosynthesize; add a grow light.`);
+  } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
     if (actualPhotoperiodHours > 13) {
       photoperiodStatus = 'flowering_interrupted';
       scoreMultiplier *= 0.4;
-      details.push(`Photoperiod too long (${actualPhotoperiodHours}h > 12h)! Risks revegetation/hermaphroditism.`);
+      flag(`Photoperiod too long (${actualPhotoperiodHours}h > 12h)! Risks revegetation/hermaphroditism.`);
     }
   } else if (plant.stage === 'vegetative' || plant.stage === 'seedling' || plant.stage === 'mature_seedling') {
     if (actualPhotoperiodHours <= 12) {
       photoperiodStatus = 'vegetative_trigger';
-      details.push(`Short photoperiod (${actualPhotoperiodHours}h) may trigger premature flowering.`);
+      flag(`Short photoperiod (${actualPhotoperiodHours}h) may trigger premature flowering.`);
     }
   }
 
@@ -564,7 +610,7 @@ export function evaluatePlantStageSuitability(
   return {
     overallScore: clampedScore,
     status,
-    limitingFactor: details.find(d => !d.includes('optimal') && !d.includes('aligned') && !d.includes('boosting') && !d.includes('delivering') && !d.includes('fueling')),
+    limitingFactor: problems[0],
     tempStatus,
     rhStatus,
     vpdStatus,

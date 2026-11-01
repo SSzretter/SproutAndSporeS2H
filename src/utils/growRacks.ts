@@ -293,6 +293,28 @@ export function getRackSlotCode(rack: EquipmentItem, slot: RackSlot): string {
   return `S${slot.tier + 1}${tier.trays > 1 ? `T${slot.tray + 1}` : ''}-${getCellLabel(tier.insert, slot.cell)}`;
 }
 
+/** A tray named the way people find it, e.g. "Shelf 1 (Bottom), tray 2 of 3 from left". */
+export function describeRackTray(rack: EquipmentItem, tierIndex: number, trayIndex: number): string {
+  const tiers = getRackTiers(rack);
+  const tier = tiers[tierIndex];
+  if (!tier) return 'Unknown shelf';
+  const shelf = `Shelf ${tierIndex + 1} (${describeTierLevel(tierIndex, tiers.length)})`;
+  return tier.trays > 1 ? `${shelf}, tray ${trayIndex + 1} of ${tier.trays} from left` : shelf;
+}
+
+/** Center of a tray's underside on its shelf, in the rack's container coordinates. */
+export function getRackTrayPosition(rack: EquipmentItem, tierIndex: number, trayIndex: number): Position3D {
+  const tier = getRackTiers(rack)[tierIndex];
+  const base = rack.position || { x: 0, y: 0, z: 0 };
+  const trayLenX = getRackTrayLayout(rack) === 'side_by_side' ? TRAY_1020.widthFt : TRAY_1020.lengthFt;
+  const trays = tier?.trays ?? 1;
+  return {
+    x: roundFt(base.x - (trays * trayLenX) / 2 + (trayIndex + 0.5) * trayLenX),
+    y: base.y,
+    z: roundFt((base.z || 0) + getTierShelfHeightFt(rack, tierIndex))
+  };
+}
+
 export function describeRackSlot(rack: EquipmentItem, slot: RackSlot): string {
   const tier = getRackTiers(rack)[slot.tier];
   if (!tier) return rack.name;
@@ -477,6 +499,7 @@ export function calculateTrayMicroclimate(params: {
   ambientClimate: Climate;
   floorHeatMatActive: boolean;
   floorHeatMatRiseF?: number;
+  trayMatRiseF?: number; // Mat placed directly under this tray: its full warmth, whatever the shelf height
   overheadLightPpfd?: number;
   plantStage?: PlantStage;
   hasWetMedia?: boolean; // Tray holds sown cells / damp media that can evaporate under a dome
@@ -489,6 +512,7 @@ export function calculateTrayMicroclimate(params: {
     ambientClimate,
     floorHeatMatActive,
     floorHeatMatRiseF = 8,
+    trayMatRiseF = 0,
     overheadLightPpfd = 0,
     plantStage,
     hasWetMedia = false,
@@ -505,7 +529,7 @@ export function calculateTrayMicroclimate(params: {
   // Tier 1 is higher up (~1.18ft), receiving only 20% residual convective warmth.
   const tierElevationFt = getTierShelfHeightFt(rack, tierIndex);
   const matShare = tierIndex === 0 ? 0.85 : 0.20;
-  const conductedMatHeatF = floorHeatMatActive ? floorHeatMatRiseF * matShare : 0;
+  const conductedMatHeatF = (floorHeatMatActive ? floorHeatMatRiseF * matShare : 0) + trayMatRiseF;
 
   // 2. Light distribution by tier height:
   // Top tier receives direct overhead light; lower tiers receive ~30% PPFD due to shelf shading.

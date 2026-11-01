@@ -4,6 +4,15 @@ import type { ItemSectionProps, PlantLocals } from './types';
 
 export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant' | 'enclosureClimate' | 'photoperiodHours' | 'suitability' | 'req' | 'trayMicro' | 'rack'>> = (props) => {
   const { plant, enclosureClimate, photoperiodHours, suitability, req, trayMicro, rack } = props;
+  const lightNotNeeded = suitability.ppfdStatus === 'not_applicable';
+  // One verdict for the light box, the most serious of intensity and daily hours first
+  const lightBadge: { label: string; tone: 'good' | 'neutral' | 'bad' } =
+    suitability.photoperiodStatus === 'no_light' ? { label: 'NO LIGHT', tone: 'bad' }
+    : suitability.ppfdStatus === 'excessive_burn' ? { label: 'TOO INTENSE', tone: 'bad' }
+    : suitability.ppfdStatus === 'insufficient' ? { label: 'TOO DIM', tone: 'bad' }
+    : suitability.photoperiodStatus === 'flowering_interrupted' || suitability.photoperiodStatus === 'vegetative_trigger' ? { label: 'WRONG CYCLE', tone: 'bad' }
+    : lightNotNeeded ? { label: 'N/A (SEED)', tone: 'neutral' }
+    : { label: 'IDEAL', tone: 'good' };
 
   return (
     <>
@@ -88,7 +97,7 @@ export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 
         )}
 
         {/* Audit Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
           {/* Temp */}
           <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
             <span className="text-[10px] text-zinc-400 font-medium block">Air Temp</span>
@@ -132,32 +141,36 @@ export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 
               {enclosureClimate.vpdKpa} kPa
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
-              Target: {req.vpdMin}-{req.vpdMax} kPa
+              {suitability.vpdStatus === 'not_applicable' ? 'Judged once leaves emerge' : `Target: ${req.vpdMin}-${req.vpdMax} kPa`}
             </div>
             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
-                      suitability.vpdStatus === 'ideal' 
-                        ? 'bg-emerald-950 text-emerald-400' 
-                        : 'bg-amber-950 text-amber-400'
+                      suitability.vpdStatus === 'ideal'
+                        ? 'bg-emerald-950 text-emerald-400'
+                        : suitability.vpdStatus === 'not_applicable'
+                          ? 'bg-zinc-800 text-zinc-400'
+                          : 'bg-amber-950 text-amber-400'
                     }`}>
-              {suitability.vpdStatus.replace('_', ' ').toUpperCase()}
+              {suitability.vpdStatus === 'not_applicable' ? 'N/A (NO LEAVES)' : suitability.vpdStatus.replace('_', ' ').toUpperCase()}
             </span>
           </div>
 
-          {/* PPFD */}
+          {/* Light: intensity (PPFD) and daily hours (photoperiod) */}
           <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
-            <span className="text-[10px] text-zinc-400 font-medium block">Light PPFD</span>
+            <span className="text-[10px] text-zinc-400 font-medium block">Light</span>
             <div className="font-mono font-bold text-zinc-100 text-sm">
-              {enclosureClimate.lightPPFD} μmol
+              {enclosureClimate.lightPPFD} μmol · {photoperiodHours}h
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
-              Opt: ~{req.ppfdOptimal} μmol
+              {lightNotNeeded ? 'Not needed until sprouting' : `Opt: ~${req.ppfdOptimal} μmol · ${req.targetPhotoperiodHours}h`}
             </div>
             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
-                      suitability.ppfdStatus === 'ideal' 
-                        ? 'bg-emerald-950 text-emerald-400' 
-                        : 'bg-rose-950 text-rose-400'
+                      lightBadge.tone === 'good'
+                        ? 'bg-emerald-950 text-emerald-400'
+                        : lightBadge.tone === 'neutral'
+                          ? 'bg-zinc-800 text-zinc-400'
+                          : 'bg-rose-950 text-rose-400'
                     }`}>
-              {suitability.ppfdStatus.replace('_', ' ').toUpperCase()}
+              {lightBadge.label}
             </span>
           </div>
 
@@ -176,24 +189,6 @@ export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 
                         : 'bg-amber-950 text-amber-400'
                     }`}>
               {suitability.rootTempStatus.toUpperCase()}
-            </span>
-          </div>
-
-          {/* Photoperiod */}
-          <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
-            <span className="text-[10px] text-zinc-400 font-medium block">Photoperiod</span>
-            <div className="font-mono font-bold text-zinc-100 text-sm">
-              {photoperiodHours}h Light
-            </div>
-            <div className="text-[10px] font-mono text-zinc-400">
-              Req: {req.targetPhotoperiodHours}h Light
-            </div>
-            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block text-center ${
-                      suitability.photoperiodStatus === 'aligned' 
-                        ? 'bg-emerald-950 text-emerald-400' 
-                        : 'bg-rose-950 text-rose-400'
-                    }`}>
-              {suitability.photoperiodStatus === 'aligned' ? 'ALIGNED' : 'MISALIGNED'}
             </span>
           </div>
         </div>

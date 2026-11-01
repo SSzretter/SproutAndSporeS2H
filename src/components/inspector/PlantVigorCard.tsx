@@ -1,6 +1,7 @@
 import React from 'react';
 import { Flower2, Droplets, Scissors, Award, Sparkles, Play } from 'lucide-react';
 import { PlantItem } from '../../types/sim';
+import { isPlantHarvestable, isPlantPrunable } from '../../utils/plantLifecycle';
 import type { ItemSectionProps, PlantLocals } from './types';
 
 export const PlantVigorCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant' | 'isSeed'>> = (props) => {
@@ -164,6 +165,7 @@ export const PlantVigorCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plan
             <span>Feed Organic Nutrients</span>
           </button>
 
+          {isPlantPrunable(plant) && (
           <button
             onClick={() => {
               onUpdateItem({
@@ -183,20 +185,19 @@ export const PlantVigorCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plan
             <Scissors className="w-4 h-4 text-amber-400" />
             <span>Prune / Top Canopy</span>
           </button>
+          )}
 
+          {isPlantHarvestable(plant) && (
           <button
             onClick={() => {
               onHarvestPlant(plant, currentTent?.id);
             }}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
-                      plant.stage === 'ready' || plant.stage === 'ripening'
-                        ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/50 animate-pulse'
-                        : 'bg-zinc-800 hover:bg-amber-950/60 hover:text-amber-300 text-zinc-400 border border-zinc-700'
-                    }`}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/50 animate-pulse"
           >
             <Award className="w-4 h-4" />
             <span>Harvest Crop ({plant.yieldPotentialGrams.toFixed(0)}g)</span>
           </button>
+          )}
         </div>
       </div>
     </>

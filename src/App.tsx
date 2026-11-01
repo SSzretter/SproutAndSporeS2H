@@ -779,6 +779,28 @@ export default function App() {
     });
   }, []);
 
+  // Remove several items from one container at once (e.g. clearing a rack tray), keeping the selection
+  const handleRemoveItems = useCallback((itemIds: string[], parentTentId?: string | null) => {
+    if (itemIds.length === 0) return;
+    const remove = new Set(itemIds);
+    setState(prev => {
+      const activeRId = prev.activeRoomId || prev.room.id;
+      const currentRooms = prev.rooms && prev.rooms.length > 0 ? prev.rooms : [prev.room];
+      const updatedRooms = currentRooms.map(rm => {
+        const holds = parentTentId ? rm.tents.some(t => t.id === parentTentId) : rm.items.some(i => remove.has(i.id));
+        if (!holds) return rm;
+        const next = parentTentId
+          ? { ...rm, tents: rm.tents.map(t => (t.id === parentTentId ? { ...t, items: t.items.filter(i => !remove.has(i.id)) } : t)) }
+          : { ...rm, items: rm.items.filter(i => !remove.has(i.id)) };
+        return migrateEquipmentLinks(next); // drop links to the removed items
+      });
+      const updatedActiveRoom = updatedRooms.find(r => r.id === activeRId) || updatedRooms[0];
+      const nextState: SimulationState = { ...prev, room: updatedActiveRoom, rooms: updatedRooms };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, []);
+
   // Delete Tent
   const handleDeleteTent = useCallback((tentId: string) => {
     setState(prev => {
@@ -1288,6 +1310,7 @@ export default function App() {
             onUpdateItem={handleUpdateItem}
             onDeleteTent={handleDeleteTent}
             onDeleteItem={handleDeleteItem}
+            onRemoveItems={handleRemoveItems}
             onDeleteRoom={handleDeleteRoom}
             onHarvestPlant={handleHarvestPlant}
             onHarvestMushroom={handleHarvestMushroom}
@@ -1422,6 +1445,7 @@ export default function App() {
               onUpdateTent={handleUpdateTent}
               onUpdateItem={handleUpdateItem}
               onDeleteItem={handleDeleteItem}
+              onRemoveItems={handleRemoveItems}
               onDeleteTent={handleDeleteTent}
               onDeleteRoom={handleDeleteRoom}
               onOpenAddRoom={handleOpenAddRoom}

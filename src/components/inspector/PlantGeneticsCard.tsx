@@ -1,10 +1,26 @@
 import React from 'react';
-import { Box, Thermometer, Check, Sparkles, Activity, Dna, FlaskConical } from 'lucide-react';
+import { Box, Thermometer, Check, Sparkles, Activity, Dna, FlaskConical, Pencil } from 'lucide-react';
+import { CommitNumberInput } from '../CommitNumberInput';
 import { generateSeedTraits, getGeneticTier, SeedGeneticTraits } from '../../utils/genetics';
+import { getHeatMatsFor } from '../../utils/equipmentLinks';
 import type { ItemSectionProps, PlantLocals } from './types';
 
+// Root-zone temperature that sprouts most seeds fastest
+const SEED_ROOT_TEMP_F = 82;
+
+// Editable genetic multipliers: [trait, label, what it drives in the simulation]
+const MULTIPLIER_TRAITS: [keyof SeedGeneticTraits, string, string][] = [
+  ['germinationVigor', 'Emergence Vigor', 'Germination / rooting speed'],
+  ['growthRateMultiplier', 'Growth Rate', 'Stage speed after sprouting'],
+  ['yieldMultiplier', 'Yield Capacity', 'Harvest mass'],
+  ['nutrientEfficiency', 'Nutrient Efficiency', 'Feeding tolerance'],
+  ['terpeneResinPotential', 'Resin / Terpenes', 'Aroma, oils, heat']
+];
+const RESISTANCE_LEVELS: SeedGeneticTraits['pestMoldResistance'][] = ['fragile', 'moderate', 'hardy', 'resilient'];
+
 export const PlantGeneticsCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant' | 'isSeed' | 'currentStageDays'>> = (props) => {
-  const { selectedParentTentId, onLogJournalEntry, onUpdateItem, plant, isSeed, currentStageDays } = props;
+  const { room, selectedParentTentId, onLogJournalEntry, onUpdateItem, plant, isSeed, currentStageDays } = props;
+  const [editingGenetics, setEditingGenetics] = React.useState(false);
 
   return (
     <>
@@ -12,6 +28,12 @@ export const PlantGeneticsCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'p
       {(() => {
         const traits = plant.traits || generateSeedTraits(plant.species, plant.strainName, plant.propagationType);
         const tierInfo = getGeneticTier(traits.germinationVigor, traits.viabilityPct, traits.yieldMultiplier);
+        const tent = selectedParentTentId ? room.tents.find(t => t.id === selectedParentTentId) : undefined;
+        const heatMats = getHeatMatsFor(plant, tent ? tent.items : room.items, tent?.id);
+        const matsAtTarget = heatMats.every(m => m.powerOn && m.targetTempF === SEED_ROOT_TEMP_F);
+        const rootTempF = plant.rootTempF ?? 0;
+        const setTraits = (patch: Partial<SeedGeneticTraits>) =>
+          onUpdateItem({ ...plant, traits: { ...traits, ...patch } }, selectedParentTentId);
 
         return (
           <div className="bg-gradient-to-r from-purple-950/30 via-zinc-950 to-zinc-950 border border-purple-800/60 rounded-xl p-4 space-y-4">
@@ -37,6 +59,16 @@ export const PlantGeneticsCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'p
 
               {/* Viability & Germination Status Banner */}
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingGenetics(v => !v)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                    editingGenetics ? 'bg-purple-700 text-white border-purple-500' : 'bg-zinc-900 text-purple-300 border-purple-800/60 hover:bg-purple-950'
+                  }`}
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  {editingGenetics ? 'Done' : 'Edit genetics'}
+                </button>
                 {traits.germinationOutcome === 'failed' ? (
                   <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-950 text-rose-300 border border-rose-700 text-xs font-bold">
                     <span>❌ Failed to Germinate</span>
@@ -182,6 +214,54 @@ export const PlantGeneticsCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'p
               </div>
             </div>
 
+            {/* Genetics editor: the values the simulation reads for this one plant */}
+            {editingGenetics && (
+              <div className="bg-zinc-900/90 border border-purple-800/50 rounded-xl p-3 space-y-2.5">
+                <p className="text-[11px] text-zinc-400">
+                  Multipliers are 1.00x for an average plant (seed packs roll about 0.80x to 1.30x). Changes apply to this plant right away.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-zinc-400 block">Viability %</span>
+                    <CommitNumberInput
+                      value={traits.viabilityPct}
+                      min={1}
+                      max={100}
+                      integer
+                      onCommit={v => setTraits({ viabilityPct: v })}
+                      className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-2 py-1 font-mono text-zinc-100"
+                    />
+                    <span className="text-[10px] text-zinc-500 block">Chance it sprouts</span>
+                  </label>
+                  {MULTIPLIER_TRAITS.map(([key, label, hint]) => (
+                    <label key={key} className="space-y-1">
+                      <span className="text-[10px] text-zinc-400 block">{label} (x)</span>
+                      <CommitNumberInput
+                        value={traits[key] as number}
+                        min={0.5}
+                        max={2}
+                        step={0.01}
+                        onCommit={v => setTraits({ [key]: parseFloat(v.toFixed(2)) })}
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-2 py-1 font-mono text-zinc-100"
+                      />
+                      <span className="text-[10px] text-zinc-500 block">{hint}</span>
+                    </label>
+                  ))}
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-zinc-400 block">Stress &amp; Mold</span>
+                    <select
+                      value={traits.pestMoldResistance}
+                      onChange={e => setTraits({ pestMoldResistance: e.target.value as SeedGeneticTraits['pestMoldResistance'] })}
+                      className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-2 py-1 text-zinc-100 capitalize"
+                    >
+                      {RESISTANCE_LEVELS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <span className="text-[10px] text-zinc-500 block">Pathogen tolerance</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
             {/* Phenotypic Expression Box */}
             <div className="p-3 bg-purple-950/20 border border-purple-800/40 rounded-xl flex items-start gap-3">
               <div className="p-2 rounded-lg bg-purple-900/40 text-purple-300 shrink-0">
@@ -232,25 +312,30 @@ export const PlantGeneticsCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'p
                   <span>Kelp &amp; Peroxide Seed Soak (+12% Viability)</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    onUpdateItem({
-                      ...plant,
-                      rootTempF: 82.0
-                    }, selectedParentTentId);
-                    onLogJournalEntry?.({
-                      title: `🌡️ Applied Bottom Heat Mat: ${plant.name}`,
-                      message: `Warmed substrate root zone to 82°F to break seed dormancy and accelerate radicle emergence.`,
-                      type: 'action',
-                      category: 'care'
-                    });
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-800/60 transition-colors flex items-center gap-1.5"
-                >
-                  <Thermometer className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Set Bottom Heat (82°F Optimal)</span>
-                </button>
+                {heatMats.length > 0 ? (
+                  <button
+                    type="button"
+                    disabled={matsAtTarget}
+                    onClick={() => {
+                      heatMats.forEach(mat => onUpdateItem({ ...mat, powerOn: true, targetTempF: SEED_ROOT_TEMP_F }, selectedParentTentId));
+                      onLogJournalEntry?.({
+                        title: `🌡️ Bottom Heat Set: ${plant.name}`,
+                        message: `Switched on ${heatMats.map(m => m.name).join(', ')} with the thermostat at ${SEED_ROOT_TEMP_F}°F to speed radicle emergence. Root zone is ${rootTempF.toFixed(1)}°F and will warm gradually.`,
+                        type: 'action',
+                        category: 'care'
+                      });
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-800/60 transition-colors flex items-center gap-1.5 disabled:opacity-60 disabled:hover:bg-amber-950/70"
+                  >
+                    <Thermometer className="w-3.5 h-3.5 text-amber-300" />
+                    <span>{matsAtTarget ? `Heat mat on at ${SEED_ROOT_TEMP_F}°F` : `Set Heat Mat to ${SEED_ROOT_TEMP_F}°F`} · root zone {rootTempF.toFixed(1)}°F</span>
+                  </button>
+                ) : (
+                  <span className="px-3 py-1.5 rounded-lg bg-zinc-900 text-zinc-400 border border-zinc-800 flex items-center gap-1.5" title="Root zone follows the air around it. A heat mat under the pot, tray or tent floor, or a heater warming the air, raises it.">
+                    <Thermometer className="w-3.5 h-3.5 text-zinc-500" />
+                    <span>Root zone {rootTempF.toFixed(1)}°F · no heat mat here ({SEED_ROOT_TEMP_F}°F is ideal for sprouting)</span>
+                  </span>
+                )}
 
                 <button
                   type="button"

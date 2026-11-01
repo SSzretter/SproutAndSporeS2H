@@ -8,6 +8,8 @@ import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomC
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
 import { getRootZoneWaterL, stepRoomNutrientReservoirs } from './nutrientReservoirs';
+import { getRackTrayMatRiseF, hasRackFloorHeatMat } from './equipmentLinks';
+import { getPhotoperiodHours } from './cropIssues';
 import { calculateTrayMicroclimate, isTrayWet } from './growRacks';
 
 export interface SimulationEvent {
@@ -1030,17 +1032,8 @@ export function simulateEnvironmentTick(
     tCo2 = Math.max(200, Math.min(5000, Math.round(tCo2)));
 
     // Calculate enclosure photoperiod hours
-    const activeGrowLight = arbitratedItems.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
-    let enclosurePhotoperiodHours = 18;
-    if (activeGrowLight?.schedule?.enabled) {
-      const on = activeGrowLight.schedule.onHour;
-      const off = activeGrowLight.schedule.offHour;
-      enclosurePhotoperiodHours = off > on ? (off - on) : (24 - on + off);
-    } else if (activeGrowLight && !activeGrowLight.powerOn) {
-      enclosurePhotoperiodHours = 0;
-    } else if (activeGrowLight && activeGrowLight.powerOn) {
-      enclosurePhotoperiodHours = activeGrowLight.schedule?.disabledState === 'on' ? 24 : 0;
-    }
+    // A tent's walls block daylight, so with no grow light inside it gets none
+    const enclosurePhotoperiodHours = getPhotoperiodHours(arbitratedItems, false);
 
     tTempF = Math.max(45, Math.min(115, parseFloat(tTempF.toFixed(1))));
     tRH = Math.max(15, Math.min(99, Math.round(tRH)));
@@ -1140,17 +1133,7 @@ export function simulateEnvironmentTick(
         vpdKpa: roomVPD,
         co2Ppm: roomCo2
       },
-      photoperiodHours: (() => {
-        const rLight = room.items.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
-        if (!rLight) return (isOutdoorGarden || isGreenhouse) ? 14 : 18;
-        if (rLight.schedule?.enabled) {
-          const on = rLight.schedule.onHour;
-          const off = rLight.schedule.offHour;
-          return off > on ? (off - on) : (24 - on + off);
-        }
-        if (!rLight.powerOn) return 0;
-        return rLight.schedule?.disabledState === 'on' ? 24 : 0;
-      })(),
+      photoperiodHours: getPhotoperiodHours(room.items, isOutdoorGarden || isGreenhouse),
       elapsedMinutes,
       currentSimTime,
       events,
@@ -1239,13 +1222,14 @@ function simulateCropItem(params: {
 
     // Check if plant is in a grow rack tray (with optional humidity dome, height elevation & heat conduction)
     const rackItem = plant.rackSlot ? enclosureItems.find(i => i.id === plant.rackSlot!.rackId) as EquipmentItem | undefined : undefined;
-    const hasFloorHeatMat = enclosureItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
+    const hasFloorHeatMat = hasRackFloorHeatMat(enclosureItems);
     const trayMicro = rackItem && plant.rackSlot ? calculateTrayMicroclimate({
       rack: rackItem,
       tierIndex: plant.rackSlot.tier,
       trayIndex: plant.rackSlot.tray,
       ambientClimate: enclosureClimate,
       floorHeatMatActive: hasFloorHeatMat,
+      trayMatRiseF: getRackTrayMatRiseF(rackItem.id, plant.rackSlot.tier, plant.rackSlot.tray, enclosureItems),
       overheadLightPpfd: enclosureClimate.lightPPFD,
       plantStage: plant.stage,
       hasWetMedia: isTrayWet(rackItem, enclosureItems, plant.rackSlot.tier, plant.rackSlot.tray),

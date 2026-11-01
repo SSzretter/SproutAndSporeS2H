@@ -30,12 +30,13 @@ const LIGHTS_ON_PPFD = 40;
 
 /**
  * Hours of light per day in a container, from its grow light the same way the simulation reads it:
- * the schedule if one is set, 24h if left on, 0 if switched off. Outdoors (or no light at all) the
- * plants get natural daylight.
+ * the schedule if one is set, 24h if left on, 0 if switched off. With no grow light, plants outdoors get
+ * natural daylight and plants indoors (or in a tent) get none. The simulation and inspector use this too.
  */
 export function getPhotoperiodHours(containerItems: Item[], outdoor: boolean): number {
   const light = containerItems.find(i => i.category === 'equipment' && i.type === 'grow_light');
-  if (!light || light.category !== 'equipment') return outdoor ? 14 : 18;
+  // Without a grow light only the sun lights a plant: none indoors or inside a tent
+  if (!light || light.category !== 'equipment') return outdoor ? 14 : 0;
   if (light.schedule?.enabled) {
     const { onHour, offHour } = light.schedule;
     return offHour > onHour ? offHour - onHour : 24 - onHour + offHour;
@@ -61,7 +62,9 @@ function plantIssues(plant: PlantItem, climate: Climate, photoperiodHours: numbe
   const judged = lightsOn ? climate : { ...climate, lightPPFD: req.ppfdOptimal };
   const report = evaluatePlantStageSuitability(plant, judged, plant.rootTempF ?? 68, photoperiodHours);
 
-  if (report.photoperiodStatus === 'flowering_interrupted') {
+  if (report.photoperiodStatus === 'no_light') {
+    issues.push({ severity: 'critical', label: 'No grow light (0h/day)' });
+  } else if (report.photoperiodStatus === 'flowering_interrupted') {
     issues.push({ severity: 'critical', label: `Wrong light cycle (${photoperiodHours}h/day, flowering needs 12h)` });
   } else if (report.photoperiodStatus === 'vegetative_trigger') {
     issues.push({ severity: 'warning', label: `Short light cycle (${photoperiodHours}h/day may trigger flowering)` });
@@ -83,7 +86,7 @@ function plantIssues(plant: PlantItem, climate: Climate, photoperiodHours: numbe
       label: `${dry ? 'Air too dry' : 'Too humid'} (${Math.round(climate.rh)}%, ${dry ? `min ${req.rhMin}` : `max ${req.rhMax}`})`
     });
   }
-  if (report.vpdStatus !== 'ideal') {
+  if (report.vpdStatus === 'too_low' || report.vpdStatus === 'too_high') {
     const low = report.vpdStatus === 'too_low';
     issues.push({ severity: 'warning', label: `VPD ${low ? 'low' : 'high'} (${climate.vpdKpa.toFixed(2)}, ${low ? `min ${req.vpdMin}` : `max ${req.vpdMax}`})` });
   }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Layers } from 'lucide-react';
+import { canDrenchCompostTea } from '../../utils/plantLifecycle';
 import type { ItemSectionProps, PlantLocals } from './types';
 
 export const PlantSoilCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant'>> = (props) => {
@@ -147,11 +148,12 @@ export const PlantSoilCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant
                 style={{ width: `${Math.min(100, plant.microbialHealth || 85)}%` }} 
               />
             </div>
+            {canDrenchCompostTea(plant) && (
             <button
               type="button"
               onClick={() => {
-                onUpdateItem({ 
-                  ...plant, 
+                onUpdateItem({
+                  ...plant,
                   microbialHealth: Math.min(100, (plant.microbialHealth || 80) + 20),
                   soilPh: Number(Math.max(6.2, Math.min(6.6, plant.soilPh || 6.4)).toFixed(2))
                 }, selectedParentTentId);
@@ -166,6 +168,7 @@ export const PlantSoilCard: React.FC<ItemSectionProps & Pick<PlantLocals, 'plant
             >
               + Drench Compost Tea
             </button>
+            )}
           </div>
 
           {/* Root Aeration & Dissolved Oxygen */}

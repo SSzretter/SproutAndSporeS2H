@@ -22,6 +22,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
   onUpdateItem,
   onDeleteTent,
   onDeleteItem,
+  onRemoveItems,
   onDeleteRoom,
   onOpenAddRoom,
   onOpenLocationModal,
@@ -152,7 +153,7 @@ export const ItemInspector: React.FC<ItemInspectorProps> = ({
 
   const ctx: InspectorContext = {
     room, rooms, outdoorCo2Ppm, selectedType, selectedId, selectedParentTentId, tempUnit, simTime, onLogJournalEntry,
-    onUpdateRoom, onUpdateTent, onUpdateItem, onDeleteTent, onDeleteItem, onDeleteRoom, onOpenAddRoom, onOpenLocationModal,
+    onUpdateRoom, onUpdateTent, onUpdateItem, onDeleteTent, onDeleteItem, onRemoveItems, onDeleteRoom, onOpenAddRoom, onOpenLocationModal,
     onSelectRoom, onSelectTent, onSelectItem, onOpenAddItem, onHarvestPlant, onHarvestMushroom, onAddHarvestsToFacility,
     isEditingName, setIsEditingName, editedName, setEditedName, filterTab, setFilterTab,
     showDeleteConfirm, setShowDeleteConfirm, showDeleteRoomConfirm, setShowDeleteRoomConfirm,

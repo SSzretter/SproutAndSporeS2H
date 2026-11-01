@@ -2,6 +2,8 @@ import React from 'react';
 import { PlantItem, EquipmentItem } from '../../types/sim';
 import { evaluatePlantStageSuitability, DEFAULT_STAGE_REQUIREMENTS, DEFAULT_STAGE_DURATIONS } from '../../utils/plantLifecycle';
 import { calculateTrayMicroclimate, isTrayWet } from '../../utils/growRacks';
+import { getRackTrayMatRiseF, hasRackFloorHeatMat } from '../../utils/equipmentLinks';
+import { getPhotoperiodHours } from '../../utils/cropIssues';
 import { PlantVigorCard } from './PlantVigorCard';
 import { PlantGeneticsCard } from './PlantGeneticsCard';
 import { PlantLifecycleCard } from './PlantLifecycleCard';
@@ -24,26 +26,18 @@ export const PlantCard: React.FC<ItemSectionProps> = (props) => {
         // Get photoperiod hours
         const hostItems = currentTent?.items || room.items;
         const growLight = hostItems.find(i => i.category === 'equipment' && i.type === 'grow_light') as EquipmentItem | undefined;
-        let photoperiodHours = 18;
-        if (growLight?.schedule?.enabled) {
-          const on = growLight.schedule.onHour;
-          const off = growLight.schedule.offHour;
-          photoperiodHours = off > on ? (off - on) : (24 - on + off);
-        } else if (growLight && !growLight.powerOn) {
-          photoperiodHours = 0;
-        } else if (growLight && growLight.powerOn) {
-          photoperiodHours = growLight.schedule?.disabledState === 'on' ? 24 : 0;
-        }
+        const isOutdoorRoom = room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
+        const photoperiodHours = getPhotoperiodHours(hostItems, !currentTent && isOutdoorRoom);
 
         // Check if plant is in a grow rack slot with tray microclimate / humidity dome
         const rack = plant.rackSlot ? hostItems.find(i => i.id === plant.rackSlot!.rackId) as EquipmentItem | undefined : undefined;
-        const hasFloorHeatMat = hostItems.some(i => i.category === 'equipment' && i.type === 'heat_mat' && i.powerOn);
         const trayMicro = rack && plant.rackSlot ? calculateTrayMicroclimate({
           rack,
           tierIndex: plant.rackSlot.tier,
           trayIndex: plant.rackSlot.tray,
           ambientClimate: enclosureClimate,
-          floorHeatMatActive: hasFloorHeatMat,
+          floorHeatMatActive: hasRackFloorHeatMat(hostItems),
+          trayMatRiseF: getRackTrayMatRiseF(rack.id, plant.rackSlot.tier, plant.rackSlot.tray, hostItems),
           overheadLightPpfd: enclosureClimate.lightPPFD,
           plantStage: plant.stage,
           hasWetMedia: isTrayWet(rack, hostItems, plant.rackSlot.tier, plant.rackSlot.tray),

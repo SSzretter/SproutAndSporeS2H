@@ -56,7 +56,7 @@ import { calculateVPD } from '../utils/physics';
 import { getCompatibleContainers, getCompatibleMedia } from '../utils/cultivationSystems';
 import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
 import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
-import { canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
+import { DEFAULT_MAT_THERMOSTAT_F, getHeatMatOptions, withHeatMatPlacement, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
 import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
 import { getPortableAcBtu, DEFAULT_REGISTER_CFM } from '../utils/roomThermal';
 import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
@@ -484,14 +484,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     ? room.tents.find(t => t.id === selectedDestinationTentId)
     : undefined;
   const destinationItems = destinationTent ? destinationTent.items : room.items;
-  const heatMatOptions = [
-    ...(destinationTent ? [{ id: destinationTent.id, label: describeHeatMatPlacement({ kind: 'tent_floor', tent: destinationTent }) }] : []),
-    ...destinationItems.filter(canHeatMatAttachTo).map(item => {
-      const probe = { id: 'probe', category: 'equipment', type: 'heat_mat', attachedToId: item.id } as EquipmentItem;
-      return { id: item.id, label: describeHeatMatPlacement(getHeatMatTarget(probe, destinationItems, destinationTent)) };
-    })
-  ];
-  const heatMatPlacement = heatMatOptions.some(o => o.id === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.id ?? '';
+  const heatMatOptions = getHeatMatOptions(destinationItems, destinationTent);
+  const heatMatPlacement = heatMatOptions.some(o => o.value === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.value ?? '';
 
   // What a new nutrient reservoir could feed anywhere in this room: racks (every shelf) and hydro plants
   // not on a rack. By default it takes the ones in its own destination that nothing feeds yet.
@@ -562,8 +556,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       newEq.dimensions = { ...spec.dimensions };
       newEq.exhaustTo = eqExhaustTo;
     }
-    if (eqType === 'heat_mat' && heatMatPlacement) {
-      newEq.attachedToId = heatMatPlacement;
+    if (eqType === 'heat_mat') {
+      newEq.targetTempF = DEFAULT_MAT_THERMOSTAT_F;
+      if (heatMatPlacement) Object.assign(newEq, withHeatMatPlacement(newEq, heatMatPlacement));
     }
     if (eqType === 'nutrient_reservoir') {
       newEq.setting = 100;
@@ -2532,14 +2527,14 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
                   >
                     {heatMatOptions.map(o => (
-                      <option key={o.id} value={o.id}>{o.label}</option>
+                      <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
                 ) : (
                   <span className="text-[11px] text-zinc-400 block">Nothing here to put it under yet — it will lie on the floor unattached.</span>
                 )}
                 <span className="text-[10px] text-zinc-500 block mt-1">
-                  Under a tent's floor tray it warms everything standing on it; under a pot or monotub it warms that root zone or substrate; wrapped around a humidifier it heats the water.
+                  Under a tent's floor tray it warms everything standing on it; under a rack tray it warms every cell in that tray; under a pot or monotub it warms that root zone or substrate; wrapped around a humidifier it heats the water. Comes with a thermostat controller set to {DEFAULT_MAT_THERMOSTAT_F}°F (adjust it in the inspector).
                 </span>
               </div>
             )}

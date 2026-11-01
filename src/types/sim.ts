@@ -336,6 +336,7 @@ export interface EquipmentItem {
   coolingCapacityBtu?: number; // Portable A/C rated cooling (BTU/h); defaults from the name ("8,000 BTU")
   registerMode?: 'cool' | 'heat' | 'auto' | 'off'; // HVAC register: what the house system supplies through it
   attachedToId?: string; // Heat mat: the tent id (under its floor tray) or the item it sits under / is wrapped around
+  attachedRackTray?: { tier: number; tray: number }; // Heat mat under one 1020 tray of the grow rack in attachedToId
   rackTiers?: RackTier[]; // Grow rack: shelves, bottom to top
   rackTierSpacingFt?: number; // Grow rack: shelf-to-shelf spacing (ft)
   rackBottomShelfFt?: number; // Grow rack: bottom level's height off the floor (ft); 0 = trays sit on the floor (a tent's built-in shelf). Default 4"

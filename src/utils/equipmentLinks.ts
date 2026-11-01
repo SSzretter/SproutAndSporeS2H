@@ -1,6 +1,7 @@
 import { EquipmentItem, Item, Position3D, Room, Tent } from '../types/sim';
 import { inferInlineFanDuctSize, INLINE_FAN_SPECS } from './equipmentCatalog';
 import { pruneFeedTargets } from './nutrientReservoirs';
+import { describeRackTray, getRackTiers, getRackTrayPosition, isGrowRack } from './growRacks';
 
 /**
  * Equipment connections — what is piped into, sitting under, or wrapped around what.
@@ -48,18 +49,30 @@ export function isHeatMat(item: Item): item is EquipmentItem {
   return item.category === 'equipment' && item.type === 'heat_mat';
 }
 
-/** Plant pots and mushroom containers can sit on a mat; humidifiers can have one wrapped around them. */
+/**
+ * Plant pots and mushroom containers can sit on a mat; humidifiers can have one wrapped around them.
+ * A plant in a rack cell can't: the mat goes under its whole 1020 tray instead (a rack_tray target).
+ */
 export function canHeatMatAttachTo(item: Item): boolean {
+  if (item.category === 'plant' && item.rackSlot) return false;
   return item.category === 'plant' || item.category === 'mushroom' || isHumidifier(item);
 }
 
-export type HeatMatTarget = { kind: 'tent_floor'; tent: Tent } | { kind: 'item'; item: Item; wrapped: boolean };
+export type HeatMatTarget =
+  | { kind: 'tent_floor'; tent: Tent }
+  | { kind: 'item'; item: Item; wrapped: boolean }
+  | { kind: 'rack_tray'; rack: EquipmentItem; tier: number; tray: number };
 
 /** What a mat is attached to, looked up among the items of its own container. */
 export function getHeatMatTarget(mat: Item, containerItems: Item[], tent?: Tent): HeatMatTarget | null {
   if (!isHeatMat(mat) || !mat.attachedToId) return null;
   if (tent && mat.attachedToId === tent.id) return { kind: 'tent_floor', tent };
   const item = containerItems.find(i => i.id === mat.attachedToId && i.id !== mat.id);
+  if (item && isGrowRack(item)) {
+    const slot = mat.attachedRackTray;
+    const tier = slot && getRackTiers(item)[slot.tier];
+    return slot && tier && slot.tray >= 0 && slot.tray < tier.trays ? { kind: 'rack_tray', rack: item, tier: slot.tier, tray: slot.tray } : null;
+  }
   if (!item || !canHeatMatAttachTo(item)) return null;
   return { kind: 'item', item, wrapped: isHumidifier(item) };
 }
@@ -68,6 +81,7 @@ export function getHeatMatTarget(mat: Item, containerItems: Item[], tent?: Tent)
 export function describeHeatMatPlacement(target: HeatMatTarget | null): string {
   if (!target) return 'Not attached to anything';
   if (target.kind === 'tent_floor') return `Under ${target.tent.name}'s floor tray`;
+  if (target.kind === 'rack_tray') return `Under ${target.rack.name} · ${describeRackTray(target.rack, target.tier, target.tray)}`;
   const { item } = target;
   if (target.wrapped) return `Wrapped around ${item.name}`;
   if (item.category === 'mushroom') return `Under ${item.name} (${item.containerType.replace('_', ' ')})`;
@@ -81,10 +95,14 @@ export function getAttachedPosition(mat: Item, containerItems: Item[], tent?: Te
   if (target.kind === 'tent_floor') {
     return { x: target.tent.dimensions.length / 2, y: target.tent.dimensions.width / 2, z: 0 };
   }
+  if (target.kind === 'rack_tray') return getRackTrayPosition(target.rack, target.tier, target.tray);
   const pos = target.item.position;
   if (!pos) return null;
   return { x: pos.x, y: pos.y, z: pos.z || 0 };
 }
+
+// New mats come with a thermostat controller set here, so they can't cook a root zone
+export const DEFAULT_MAT_THERMOSTAT_F = 78;
 
 // A 20–25W seedling mat lifts the pot or container sitting on it by roughly 8–10°F
 const MAT_RISE_F_PER_WATT = 0.4;
@@ -98,19 +116,93 @@ export interface RootZoneHeat {
   maxF?: number;
 }
 
-/** Heat from powered mats under this item directly, or under its tent's floor tray. */
+function isUnderRackTray(mat: EquipmentItem, rackId: string, tier: number, tray: number): boolean {
+  return mat.attachedToId === rackId && mat.attachedRackTray?.tier === tier && mat.attachedRackTray.tray === tray;
+}
+
+/** Heat from powered mats under this item directly (or its rack tray), or under its tent's floor tray. */
 export function getRootZoneHeat(target: Item, containerItems: Item[], tentId?: string): RootZoneHeat | null {
+  const slot = target.category === 'plant' ? target.rackSlot : undefined;
   let riseF = 0;
   let maxF: number | undefined;
   for (const mat of containerItems) {
     if (!isHeatMat(mat) || !mat.powerOn || !mat.attachedToId) continue;
-    const share = mat.attachedToId === target.id ? 1 : tentId && mat.attachedToId === tentId ? TRAY_SPREAD : 0;
+    // A rack shelf stands above the tent floor, so a floor-tray mat reaches it only through the rack (growRacks)
+    const share = mat.attachedToId === target.id || (slot && isUnderRackTray(mat, slot.rackId, slot.tier, slot.tray)) ? 1
+      : !slot && tentId && mat.attachedToId === tentId ? TRAY_SPREAD : 0;
     if (share === 0) continue;
     riseF += Math.min(MAT_MAX_RISE_F, (mat.powerWatts || 25) * MAT_RISE_F_PER_WATT) * share;
     if (mat.targetTempF !== undefined) maxF = Math.min(maxF ?? Infinity, mat.targetTempF);
   }
   if (riseF <= 0) return null;
   return { riseF: Math.min(MAT_MAX_RISE_F + 4, riseF), maxF };
+}
+
+/**
+ * A mat on the floor under a grow rack: lying loose, or under the tent's floor tray (any target that is
+ * not an item here). It warms the bottom shelf most and the shelves above a little (growRacks).
+ */
+export function isRackFloorHeatMat(mat: Item, containerItems: Item[]): mat is EquipmentItem {
+  return isHeatMat(mat) && (!mat.attachedToId || !containerItems.some(i => i.id === mat.attachedToId));
+}
+
+export function hasRackFloorHeatMat(containerItems: Item[]): boolean {
+  return containerItems.some(m => isRackFloorHeatMat(m, containerItems) && m.powerOn);
+}
+
+/** Warmth (°F) from powered mats placed directly under one tray of a rack. */
+export function getRackTrayMatRiseF(rackId: string, tier: number, tray: number, containerItems: Item[]): number {
+  const rise = containerItems.reduce((sum, mat) =>
+    isHeatMat(mat) && mat.powerOn && isUnderRackTray(mat, rackId, tier, tray)
+      ? sum + Math.min(MAT_MAX_RISE_F, (mat.powerWatts || 25) * MAT_RISE_F_PER_WATT)
+      : sum, 0);
+  return Math.min(MAT_MAX_RISE_F + 4, rise);
+}
+
+/**
+ * Heat mats (on or off) that can warm this crop's root zone: under it directly or under its tent's floor
+ * tray, or, for a plant in a rack cell, under its tray or on the floor under the rack.
+ */
+export function getHeatMatsFor(target: Item, containerItems: Item[], tentId?: string): EquipmentItem[] {
+  const slot = target.category === 'plant' ? target.rackSlot : undefined;
+  return containerItems.filter((mat): mat is EquipmentItem => isHeatMat(mat) && (slot
+    ? isUnderRackTray(mat, slot.rackId, slot.tier, slot.tray) || isRackFloorHeatMat(mat, containerItems)
+    : mat.attachedToId === target.id || (!!tentId && mat.attachedToId === tentId)));
+}
+
+// "Placed under" choices are encoded as one select value: an item / tent id, or "rackId#tier#tray"
+const RACK_TRAY_SEP = '#';
+
+export function getHeatMatPlacementValue(mat: EquipmentItem): string {
+  if (!mat.attachedToId) return '';
+  const t = mat.attachedRackTray;
+  return t ? [mat.attachedToId, t.tier, t.tray].join(RACK_TRAY_SEP) : mat.attachedToId;
+}
+
+/** The mat with its placement set from a select value ('' = unattached). */
+export function withHeatMatPlacement(mat: EquipmentItem, value: string): EquipmentItem {
+  const next: EquipmentItem = { ...mat };
+  delete next.attachedToId;
+  delete next.attachedRackTray;
+  if (!value) return next;
+  const [id, tier, tray] = value.split(RACK_TRAY_SEP);
+  next.attachedToId = id;
+  if (tier !== undefined && tray !== undefined) next.attachedRackTray = { tier: Number(tier), tray: Number(tray) };
+  return next;
+}
+
+/** Every place a mat can go in a container: the tent floor, each grow rack tray (bottom shelf first), pots and humidifiers. */
+export function getHeatMatOptions(containerItems: Item[], tent?: Tent, selfId?: string): { value: string; label: string }[] {
+  const probe = { id: selfId ?? 'probe', category: 'equipment', type: 'heat_mat' } as EquipmentItem;
+  const label = (value: string) => describeHeatMatPlacement(getHeatMatTarget(withHeatMatPlacement(probe, value), containerItems, tent));
+  const values = [
+    ...(tent ? [tent.id] : []),
+    ...containerItems.filter(isGrowRack).flatMap(rack => getRackTiers(rack).flatMap((tier, ti) =>
+      Array.from({ length: tier.trays }, (_, tr) => [rack.id, ti, tr].join(RACK_TRAY_SEP))
+    )),
+    ...containerItems.filter(i => i.id !== selfId && canHeatMatAttachTo(i)).map(i => i.id)
+  ];
+  return values.map(value => ({ value, label: label(value) }));
 }
 
 /** Applies mat heat to a temperature: adds the rise, but a thermostat never pushes past its set-point. */
@@ -385,12 +477,21 @@ export function migrateEquipmentLinks(room: Room): Room {
     }
 
     if (next.type === 'heat_mat') {
-      if (!getHeatMatTarget(next, items, tent)) {
+      // Mats used to sit under single rack cells: move them under that cell's whole tray
+      const under = items.find(i => i.id === next.attachedToId);
+      if (under?.category === 'plant' && under.rackSlot) {
+        next.attachedToId = under.rackSlot.rackId;
+        next.attachedRackTray = { tier: under.rackSlot.tier, tray: under.rackSlot.tray };
+      }
+      const target = getHeatMatTarget(next, items, tent);
+      if (target?.kind !== 'rack_tray') delete next.attachedRackTray;
+      if (!target) {
         if (tent) next.attachedToId = tent.id;
         else delete next.attachedToId;
       }
-    } else if (next.attachedToId) {
+    } else if (next.attachedToId || next.attachedRackTray) {
       delete next.attachedToId;
+      delete next.attachedRackTray;
     }
 
     if (next.type === 'dehumidifier') {

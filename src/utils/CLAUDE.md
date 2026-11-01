@@ -57,6 +57,7 @@ Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-m
 - **Heat mats** carry `attachedToId`, which is one of:
   - their tent's id: under the floor tray, warming every pot or container in the tent at reduced strength;
   - an item in the same container: under a plant pot or mushroom container, warming its root zone or substrate;
+  - a grow rack, with `attachedRackTray` naming the shelf and tray: under that 1020 tray, warming every cell in it at full strength. Plants in rack cells can't take a mat of their own. A loose or tent-floor mat counts as the rack's floor mat (bottom shelf most);
   - a humidifier it is wrapped around: heating its reservoir by water volume and mat wattage.
 
   Attached mats have no position of their own (`getAttachedPosition`).
