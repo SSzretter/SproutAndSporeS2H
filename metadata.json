@@ -1,0 +1,8 @@
+{
+  "name": "Remix Sprout \u0026 Spore - Indoor Grow Simulator",
+  "description": "Interactive indoor plant and mushroom grow simulator featuring environmental climate physics (Temp, RH, Light, VPD), multi-tent and room management, 24h game clock, equipment controls, and live growth tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

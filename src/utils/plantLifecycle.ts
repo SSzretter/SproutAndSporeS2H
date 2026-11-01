@@ -1,0 +1,1227 @@
+import { PlantItem, PlantStage, PlantSpecies, PropagationType, StageConditionRequirements, Climate } from '../types/sim';
+
+export interface StageSuitabilityReport {
+  overallScore: number; // 0 to 1.5 multiplier
+  status: 'optimal' | 'acceptable' | 'stressful' | 'critical';
+  limitingFactor?: string;
+  tempStatus: 'ideal' | 'too_cold' | 'too_hot';
+  rhStatus: 'ideal' | 'too_dry' | 'too_humid';
+  vpdStatus: 'ideal' | 'too_low' | 'too_high';
+  ppfdStatus: 'ideal' | 'insufficient' | 'excessive_burn';
+  rootTempStatus: 'ideal' | 'chilled' | 'hot';
+  moistureStatus: 'ideal' | 'underwatered' | 'waterlogged';
+  photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger';
+  details: string[];
+}
+
+export const DEFAULT_STAGE_REQUIREMENTS: Record<PlantStage, StageConditionRequirements> = {
+  germination: {
+    tempMinF: 72,
+    tempMaxF: 84,
+    tempOptimalF: 78,
+    rhMin: 70,
+    rhMax: 95,
+    rhOptimal: 80,
+    vpdMin: 0.3,
+    vpdMax: 0.8,
+    vpdOptimal: 0.5,
+    ppfdMin: 0,
+    ppfdOptimal: 50, // Seeds germinate best in dark or very gentle starter light
+    soilMoistureMin: 65,
+    soilMoistureOptimal: 80,
+    targetPhotoperiodHours: 18,
+    summary: 'High moisture, warm root zone (75-80°F), low/dim starter light.'
+  },
+  rooting: {
+    tempMinF: 72,
+    tempMaxF: 80,
+    tempOptimalF: 76,
+    rhMin: 75,
+    rhMax: 95,
+    rhOptimal: 85, // Clones lack roots; require high RH humidity dome
+    vpdMin: 0.25,
+    vpdMax: 0.7,
+    vpdOptimal: 0.45,
+    ppfdMin: 60,
+    ppfdOptimal: 120, // Gentle clone lighting
+    soilMoistureMin: 60,
+    soilMoistureOptimal: 78,
+    targetPhotoperiodHours: 18,
+    summary: 'Requires high ambient humidity (80-90% dome) and warm substrate to initiate adventitious root primordia.'
+  },
+  seedling: {
+    tempMinF: 70,
+    tempMaxF: 80,
+    tempOptimalF: 75,
+    rhMin: 62,
+    rhMax: 78,
+    rhOptimal: 70,
+    vpdMin: 0.5,
+    vpdMax: 0.9,
+    vpdOptimal: 0.7,
+    ppfdMin: 120,
+    ppfdOptimal: 220,
+    soilMoistureMin: 50,
+    soilMoistureOptimal: 70,
+    targetPhotoperiodHours: 18,
+    summary: 'Cotyledons and first true leaves. Gentle light (150-250 PPFD) and moderate VPD to prevent wilting.'
+  },
+  mature_seedling: {
+    tempMinF: 70,
+    tempMaxF: 82,
+    tempOptimalF: 76,
+    rhMin: 58,
+    rhMax: 72,
+    rhOptimal: 65,
+    vpdMin: 0.7,
+    vpdMax: 1.1,
+    vpdOptimal: 0.85,
+    ppfdMin: 200,
+    ppfdOptimal: 350,
+    soilMoistureMin: 45,
+    soilMoistureOptimal: 68,
+    targetPhotoperiodHours: 18,
+    summary: 'Multiple leaf sets with robust root network. Preparing for rapid vegetative branch expansion.'
+  },
+  vegetative: {
+    tempMinF: 72,
+    tempMaxF: 84,
+    tempOptimalF: 78,
+    rhMin: 50,
+    rhMax: 68,
+    rhOptimal: 60,
+    vpdMin: 0.8,
+    vpdMax: 1.3,
+    vpdOptimal: 1.05,
+    ppfdMin: 350,
+    ppfdOptimal: 600,
+    soilMoistureMin: 40,
+    soilMoistureOptimal: 65,
+    targetPhotoperiodHours: 18,
+    summary: 'Vigorous cellular and foliage expansion. High light intensity (400-700 PPFD) and 18h daylight photoperiod.'
+  },
+  flowering: {
+    tempMinF: 68,
+    tempMaxF: 80,
+    tempOptimalF: 75,
+    rhMin: 40,
+    rhMax: 55,
+    rhOptimal: 48,
+    vpdMin: 1.1,
+    vpdMax: 1.6,
+    vpdOptimal: 1.35,
+    ppfdMin: 550,
+    ppfdOptimal: 850,
+    soilMoistureMin: 40,
+    soilMoistureOptimal: 65,
+    targetPhotoperiodHours: 12,
+    summary: 'Bud formation, calyx swelling and heavy resin production. Lower RH (40-50%) prevents botrytis bud rot.'
+  },
+  ripening: {
+    tempMinF: 65,
+    tempMaxF: 76,
+    tempOptimalF: 72,
+    rhMin: 35,
+    rhMax: 50,
+    rhOptimal: 42,
+    vpdMin: 1.2,
+    vpdMax: 1.65,
+    vpdOptimal: 1.4,
+    ppfdMin: 500,
+    ppfdOptimal: 750,
+    soilMoistureMin: 30,
+    soilMoistureOptimal: 55,
+    targetPhotoperiodHours: 12,
+    summary: 'Trichome clouding/ambering and fruit maturation. Crisp, lower humidity protects dense colas from mold.'
+  },
+  ready: {
+    tempMinF: 64,
+    tempMaxF: 74,
+    tempOptimalF: 70,
+    rhMin: 35,
+    rhMax: 48,
+    rhOptimal: 40,
+    vpdMin: 1.2,
+    vpdMax: 1.6,
+    vpdOptimal: 1.35,
+    ppfdMin: 300,
+    ppfdOptimal: 500,
+    soilMoistureMin: 20,
+    soilMoistureOptimal: 45,
+    targetPhotoperiodHours: 12,
+    summary: 'Fully mature, peak potency and terpene profiles. Ready for harvest and slow dry/cure.'
+  }
+};
+
+export const DEFAULT_STAGE_DURATIONS: Record<PlantStage, number> = {
+  germination: 5,     // 3 to 7 days for seeds to sprout
+  rooting: 10,        // 7 to 14 days for cuttings to root
+  seedling: 8,        // 6 to 10 days
+  mature_seedling: 10, // 8 to 14 days
+  vegetative: 30,     // 21 to 45 days
+  flowering: 56,      // 50 to 70 days
+  ripening: 10,       // 7 to 14 days
+  ready: 5            // harvest window
+};
+
+export interface PlantSize {
+  heightInches: number; // Plant height above the soil surface
+  canopyWidthInches: number;
+}
+
+/**
+ * Typical plant size (in a 5-gallon container) reached at the END of each stage.
+ * 'ready' holds at the ripening size. Height for Hops is bine length up the trellis.
+ */
+export const STAGE_END_SIZES: Record<PlantSpecies, Record<PlantStage, PlantSize>> = {
+  Cannabis: {
+    germination: { heightInches: 1, canopyWidthInches: 1 },
+    rooting: { heightInches: 5, canopyWidthInches: 4 },
+    seedling: { heightInches: 4, canopyWidthInches: 4 },
+    mature_seedling: { heightInches: 9, canopyWidthInches: 9 },
+    vegetative: { heightInches: 26, canopyWidthInches: 24 },
+    flowering: { heightInches: 44, canopyWidthInches: 30 }, // Flower stretch roughly doubles height
+    ripening: { heightInches: 46, canopyWidthInches: 32 },
+    ready: { heightInches: 46, canopyWidthInches: 32 }
+  },
+  Tomato: {
+    germination: { heightInches: 1, canopyWidthInches: 1 },
+    rooting: { heightInches: 5, canopyWidthInches: 3 },
+    seedling: { heightInches: 4, canopyWidthInches: 3 },
+    mature_seedling: { heightInches: 8, canopyWidthInches: 6 },
+    vegetative: { heightInches: 30, canopyWidthInches: 18 },
+    flowering: { heightInches: 48, canopyWidthInches: 22 }, // Indeterminate vines keep climbing the cage
+    ripening: { heightInches: 56, canopyWidthInches: 24 },
+    ready: { heightInches: 56, canopyWidthInches: 24 }
+  },
+  'Chili Pepper': {
+    germination: { heightInches: 0.8, canopyWidthInches: 0.8 },
+    rooting: { heightInches: 4, canopyWidthInches: 3 },
+    seedling: { heightInches: 3, canopyWidthInches: 3 },
+    mature_seedling: { heightInches: 6, canopyWidthInches: 5 },
+    vegetative: { heightInches: 16, canopyWidthInches: 14 },
+    flowering: { heightInches: 24, canopyWidthInches: 18 },
+    ripening: { heightInches: 28, canopyWidthInches: 20 },
+    ready: { heightInches: 28, canopyWidthInches: 20 }
+  },
+  Basil: {
+    germination: { heightInches: 0.7, canopyWidthInches: 0.7 },
+    rooting: { heightInches: 4, canopyWidthInches: 3 },
+    seedling: { heightInches: 2.5, canopyWidthInches: 2.5 },
+    mature_seedling: { heightInches: 5, canopyWidthInches: 5 },
+    vegetative: { heightInches: 14, canopyWidthInches: 12 },
+    flowering: { heightInches: 20, canopyWidthInches: 14 },
+    ripening: { heightInches: 22, canopyWidthInches: 15 },
+    ready: { heightInches: 22, canopyWidthInches: 15 }
+  },
+  Hops: {
+    germination: { heightInches: 2, canopyWidthInches: 1 },
+    rooting: { heightInches: 6, canopyWidthInches: 2 },
+    seedling: { heightInches: 12, canopyWidthInches: 4 },
+    mature_seedling: { heightInches: 36, canopyWidthInches: 8 },
+    vegetative: { heightInches: 168, canopyWidthInches: 20 }, // ~14ft up the trellis
+    flowering: { heightInches: 192, canopyWidthInches: 26 },  // ~16ft, side arms loaded with cones
+    ripening: { heightInches: 198, canopyWidthInches: 28 },
+    ready: { heightInches: 198, canopyWidthInches: 28 }
+  }
+};
+
+// Size at the moment a plant enters each starting stage (a sown seed vs. a fresh cutting)
+const STAGE_ENTRY_SIZES: Partial<Record<PlantStage, PlantSize>> = {
+  germination: { heightInches: 0.2, canopyWidthInches: 0.3 },
+  rooting: { heightInches: 4, canopyWidthInches: 3 }
+};
+
+const STAGE_ORDER: PlantStage[] = ['seedling', 'mature_seedling', 'vegetative', 'flowering', 'ripening', 'ready'];
+
+/**
+ * Root-zone volume limits how big a plant gets: 5 gal = 1.0, 1 gal ≈ 0.75, 15+ gal / beds up to 1.25.
+ * Only applies from vegetative onward; seedlings aren't root-bound yet.
+ */
+export function getContainerSizeFactor(volumeGallons: number): number {
+  return Math.max(0.6, Math.min(1.25, 0.55 + 0.45 * Math.sqrt(Math.max(0.25, volumeGallons) / 5)));
+}
+
+function scaleSize(size: PlantSize, factor: number): PlantSize {
+  return { heightInches: size.heightInches * factor, canopyWidthInches: size.canopyWidthInches * factor };
+}
+
+function getStageEndSize(species: PlantSpecies, stage: PlantStage, containerFactor: number): PlantSize {
+  const table = STAGE_END_SIZES[species] || STAGE_END_SIZES.Cannabis;
+  const size = table[stage];
+  const isRootBound = stage === 'vegetative' || stage === 'flowering' || stage === 'ripening' || stage === 'ready';
+  return isRootBound ? scaleSize(size, containerFactor) : size;
+}
+
+/**
+ * Size a plant has when it ENTERS a stage (= end size of the stage before it).
+ * Seedlings started from cuttings enter at the rooted-cutting size.
+ */
+export function getPlantStageStartSize(
+  species: PlantSpecies,
+  stage: PlantStage,
+  propagation: PropagationType = 'seed',
+  containerFactor: number = 1
+): PlantSize {
+  const entry = STAGE_ENTRY_SIZES[stage];
+  if (entry) return entry;
+  if (stage === 'seedling') {
+    return getStageEndSize(species, propagation === 'cutting' ? 'rooting' : 'germination', containerFactor);
+  }
+  const prev = STAGE_ORDER[STAGE_ORDER.indexOf(stage) - 1];
+  return getStageEndSize(species, prev, containerFactor);
+}
+
+/**
+ * Target plant size for the current stage progress: interpolates from the stage's start
+ * size to its end size, scaled by the container's root-zone volume.
+ */
+export function getPlantTargetSize(plant: PlantItem, containerFactor: number): PlantSize {
+  const start = getPlantStageStartSize(plant.species, plant.stage, plant.propagationType, containerFactor);
+  const end = getStageEndSize(plant.species, plant.stage, containerFactor);
+  const t = Math.max(0, Math.min(100, plant.stageProgress || 0)) / 100;
+  return {
+    heightInches: start.heightInches + (end.heightInches - start.heightInches) * t,
+    canopyWidthInches: start.canopyWidthInches + (end.canopyWidthInches - start.canopyWidthInches) * t
+  };
+}
+
+export interface TrayDomeInfo {
+  domed: boolean;
+  vented: boolean;
+  trappedHeatF?: number;
+}
+
+/**
+ * Evaluates how close current environmental conditions are to the plant's stage requirements.
+ */
+export function evaluatePlantStageSuitability(
+  plant: PlantItem,
+  climate: Climate,
+  rootTempF: number,
+  actualPhotoperiodHours: number = 18,
+  domeInfo?: TrayDomeInfo
+): StageSuitabilityReport {
+  const req = plant.stageRequirements?.[plant.stage] || DEFAULT_STAGE_REQUIREMENTS[plant.stage];
+  const details: string[] = [];
+  let scoreMultiplier = 1.0;
+
+  // Temperature
+  let tempStatus: 'ideal' | 'too_cold' | 'too_hot' = 'ideal';
+  if (climate.tempF < req.tempMinF) {
+    tempStatus = 'too_cold';
+    const def = req.tempMinF - climate.tempF;
+    scoreMultiplier *= Math.max(0.2, 1 - def * 0.08);
+    details.push(`Low ambient temp (${climate.tempF.toFixed(1)}°F < min ${req.tempMinF}°F). Growth slowed.`);
+  } else if (climate.tempF > req.tempMaxF) {
+    tempStatus = 'too_hot';
+    const exc = climate.tempF - req.tempMaxF;
+    scoreMultiplier *= Math.max(0.3, 1 - exc * 0.08);
+    details.push(`High ambient temp (${climate.tempF.toFixed(1)}°F > max ${req.tempMaxF}°F). Heat stress.`);
+  } else {
+    details.push(`Temperature optimal (${climate.tempF.toFixed(1)}°F).`);
+  }
+
+  // Relative Humidity
+  let rhStatus: 'ideal' | 'too_dry' | 'too_humid' = 'ideal';
+  if (climate.rh < req.rhMin) {
+    rhStatus = 'too_dry';
+    const def = req.rhMin - climate.rh;
+    scoreMultiplier *= Math.max(0.3, 1 - def * 0.03);
+    details.push(`Air too dry (${climate.rh}% < target ${req.rhMin}%). High transpiration demand.`);
+  } else if (climate.rh > req.rhMax) {
+    rhStatus = 'too_humid';
+    const exc = climate.rh - req.rhMax;
+    scoreMultiplier *= Math.max(0.4, 1 - exc * 0.02);
+    details.push(`Air too humid (${climate.rh}% > max ${req.rhMax}%). Mold risk.`);
+  } else {
+    details.push(`Humidity aligned (${climate.rh}%).`);
+  }
+
+  // VPD (Vapor Pressure Deficit)
+  let vpdStatus: 'ideal' | 'too_low' | 'too_high' = 'ideal';
+  if (climate.vpdKpa < req.vpdMin) {
+    vpdStatus = 'too_low';
+    scoreMultiplier *= 0.85;
+    details.push(`VPD low (${climate.vpdKpa} kPa). Transpiration sluggish.`);
+  } else if (climate.vpdKpa > req.vpdMax) {
+    vpdStatus = 'too_high';
+    scoreMultiplier *= 0.75;
+    details.push(`VPD high (${climate.vpdKpa} kPa). Leaf stomata closing.`);
+  } else {
+    details.push(`VPD in the sweet spot (${climate.vpdKpa} kPa).`);
+  }
+
+  // Light PPFD
+  let ppfdStatus: 'ideal' | 'insufficient' | 'excessive_burn' = 'ideal';
+  if (plant.stage === 'germination') {
+    if (climate.lightPPFD > 150) {
+      ppfdStatus = 'excessive_burn';
+      scoreMultiplier *= 0.7;
+      details.push(`Light too intense for seed germination (${climate.lightPPFD} PPFD). Dim lights.`);
+    }
+  } else if (plant.stage === 'rooting') {
+    if (climate.lightPPFD > 250) {
+      ppfdStatus = 'excessive_burn';
+      scoreMultiplier *= 0.6;
+      details.push(`Light too intense for rootless clone (${climate.lightPPFD} PPFD). High transpiration.`);
+    } else if (climate.lightPPFD < req.ppfdMin) {
+      ppfdStatus = 'insufficient';
+      scoreMultiplier *= 0.8;
+      details.push(`Lighting dim for rooting cutting (${climate.lightPPFD} PPFD).`);
+    }
+  } else {
+    if (climate.lightPPFD < req.ppfdMin) {
+      ppfdStatus = 'insufficient';
+      scoreMultiplier *= Math.max(0.35, climate.lightPPFD / Math.max(1, req.ppfdMin));
+      details.push(`Insufficient PPFD (${climate.lightPPFD} < min ${req.ppfdMin}).`);
+    } else if (climate.lightPPFD > req.ppfdOptimal * 1.45) {
+      ppfdStatus = 'excessive_burn';
+      scoreMultiplier *= 0.85;
+      details.push(`High PPFD (${climate.lightPPFD}). Ensure CO₂ supplementation.`);
+    }
+  }
+
+  // Root Zone Temperature
+  let rootTempStatus: 'ideal' | 'chilled' | 'hot' = 'ideal';
+  
+  if (plant.species === 'Chili Pepper' && plant.stage === 'germination') {
+    // Hot peppers (Capsicum annuum, chinense, frutescens) require high bottom heat to break dormancy!
+    if (rootTempF < 64) {
+      rootTempStatus = 'chilled';
+      scoreMultiplier *= 0.15;
+      details.push(`Substrate critically cold (${rootTempF.toFixed(1)}°F < 75°F). Pepper seed germination stalled; high damping-off risk.`);
+    } else if (rootTempF < 72) {
+      rootTempStatus = 'chilled';
+      scoreMultiplier *= 0.45;
+      details.push(`Substrate cool (${rootTempF.toFixed(1)}°F). Pepper germination sluggish; heat mat recommended for 80-85°F.`);
+    } else if (rootTempF >= 78 && rootTempF <= 88) {
+      scoreMultiplier *= 1.45;
+      details.push(`Substrate heat optimal (${rootTempF.toFixed(1)}°F). Vigorous seed coat imbibition & rapid radicle emergence!`);
+    } else if (rootTempF > 92) {
+      rootTempStatus = 'hot';
+      scoreMultiplier *= 0.5;
+      details.push(`Substrate excessive heat (${rootTempF.toFixed(1)}°F > 92°F). Thermal seed dormancy triggered.`);
+    } else {
+      details.push(`Substrate temp acceptable (${rootTempF.toFixed(1)}°F).`);
+    }
+  } else if (rootTempF < 62) {
+    rootTempStatus = 'chilled';
+    scoreMultiplier *= 0.7;
+    details.push(`Root zone cold (${rootTempF.toFixed(1)}°F). Phosphorus & nutrient uptake stalled.`);
+  } else if (rootTempF > 78 && plant.species !== 'Chili Pepper') {
+    rootTempStatus = 'hot';
+    scoreMultiplier *= 0.8;
+    details.push(`Root zone warm (${rootTempF.toFixed(1)}°F). Watch for pythium/root rot.`);
+  } else {
+    if (plant.stage === 'germination' || plant.stage === 'rooting') {
+      if (rootTempF >= 72 && rootTempF <= 78) {
+        scoreMultiplier *= 1.25; // Heat mat accelerates germination & rooting!
+        details.push(`Substrate temperature warm (${rootTempF.toFixed(1)}°F). Accelerated rooting!`);
+      }
+    }
+  }
+
+  // Soil Moisture
+  let moistureStatus: 'ideal' | 'underwatered' | 'waterlogged' = 'ideal';
+  if (plant.soilMoisture < req.soilMoistureMin) {
+    moistureStatus = 'underwatered';
+    scoreMultiplier *= Math.max(0.1, plant.soilMoisture / req.soilMoistureMin);
+    details.push(`Soil drought (${plant.soilMoisture.toFixed(0)}% < min ${req.soilMoistureMin}%).`);
+  } else if (plant.soilMoisture > 92) {
+    moistureStatus = 'waterlogged';
+    scoreMultiplier *= 0.65;
+    details.push(`Medium oversaturated (${plant.soilMoisture.toFixed(0)}%). Root suffocation.`);
+  }
+
+  // Soil & Hydroponic Dynamics Assessment:
+  const isHydro = plant.systemType === 'dwc' || plant.systemType === 'ebb_and_flow' || plant.systemType === 'drip_hydro' || plant.systemType === 'aeroponics';
+  const currentPh = plant.soilPh ?? (isHydro ? 5.8 : 6.4);
+  const currentEc = plant.ecTdsPpm ?? 950;
+
+  // pH Lockout Check
+  if (isHydro) {
+    if (currentPh < 5.3) {
+      scoreMultiplier *= 0.7;
+      details.push(`Hydro solution acidic (pH ${currentPh.toFixed(1)} < 5.5). Calcium & magnesium locked out.`);
+    } else if (currentPh > 6.4) {
+      scoreMultiplier *= 0.7;
+      details.push(`Hydro solution alkaline (pH ${currentPh.toFixed(1)} > 6.2). Iron & micronutrients precipitating.`);
+    } else {
+      details.push(`Hydro reservoir pH optimal (${currentPh.toFixed(1)}).`);
+    }
+  } else {
+    // Soil / Raised Bed / In-ground
+    if (currentPh < 5.8) {
+      scoreMultiplier *= 0.75;
+      details.push(`Soil medium acidic (pH ${currentPh.toFixed(1)} < 6.0). Micronutrient toxicity & phosphorus lockout.`);
+    } else if (currentPh > 7.1) {
+      scoreMultiplier *= 0.75;
+      details.push(`Soil medium alkaline (pH ${currentPh.toFixed(1)} > 6.8). Iron & zinc locked out.`);
+    } else {
+      details.push(`Soil pH in optimal absorption zone (${currentPh.toFixed(1)}).`);
+    }
+  }
+
+  // EC / Nutrient Strength Check
+  if (plant.stage === 'germination' || plant.stage === 'seedling' || plant.stage === 'rooting') {
+    if (currentEc > 800) {
+      scoreMultiplier *= 0.7;
+      details.push(`Nutrient strength too hot for delicate roots (${currentEc} PPM > 800 PPM).`);
+    }
+  } else if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+    if (currentEc > 1850) {
+      scoreMultiplier *= 0.8;
+      details.push(`High EC (${currentEc} PPM). Leaf tip burn and salt accumulation.`);
+    } else if (currentEc < 550) {
+      scoreMultiplier *= 0.85;
+      details.push(`Low EC (${currentEc} PPM). Bloom underfed; cone/fruit swelling limited.`);
+    }
+  }
+
+  // Microbial Activity Bonus
+  if (plant.microbialHealth && plant.microbialHealth > 70) {
+    scoreMultiplier *= 1.1; // Living soil beneficial microbes accelerate nutrient assimilation!
+    details.push(`Active living soil biology (${plant.microbialHealth}% microbial health) boosting root assimilation!`);
+  }
+
+  // DWC Rapid Veg Bonus
+  if (plant.systemType === 'dwc' && plant.stage === 'vegetative') {
+    scoreMultiplier *= 1.18; // Explosive deep water culture growth
+    details.push(`DWC high dissolved oxygen aeration delivering explosive vegetative foliage growth!`);
+  }
+
+  // Hops High-Sunlight & Trellis Bonus
+  if (plant.species === 'Hops') {
+    if (climate.lightPPFD > 750) {
+      scoreMultiplier *= 1.15;
+      details.push(`High solar PPFD (${climate.lightPPFD} μmol) fueling rapid vertical hop bine climbing!`);
+    }
+  }
+
+  // Humidity Dome & Tray Microclimate Biology
+  if (domeInfo?.domed) {
+    if (plant.stage === 'germination') {
+      scoreMultiplier *= 1.45; // 45% acceleration: high ambient moisture softens seed coat, maintains radicle turgor
+      details.push(
+        domeInfo.vented
+          ? `Humidity dome (vented) maintaining high humidity (RH ~75-88%) and gentle air exchange. Optimal seed germination acceleration!`
+          : `Humidity dome (sealed) maintaining ultra-high humidity (RH ~88-96%). Accelerated seed coat imbibition & rapid radicle emergence!`
+      );
+    } else if (plant.stage === 'rooting') {
+      scoreMultiplier *= 1.35; // Preserves cutting hydration while adventitious roots develop
+      details.push(
+        domeInfo.vented
+          ? `Humidity dome (vented) preserving cutting turgor with fresh gas exchange. Ideal rooting!`
+          : `Humidity dome (sealed) preserving stem turgidity while adventitious root primordia form.`
+      );
+    } else if (plant.stage === 'seedling' || plant.stage === 'mature_seedling') {
+      if (!domeInfo.vented) {
+        // Damping-off risk! Stagnant humid air rots seedling collars
+        scoreMultiplier *= 0.65;
+        details.push(`High damping-off fungal rot risk! Emerged seedling kept under unvented dome. Open dome vents or remove dome.`);
+      } else {
+        scoreMultiplier *= 0.95;
+        details.push(`Transitional hardening under vented dome. Prepare to remove dome as true leaves develop.`);
+      }
+    }
+
+    if (climate.tempF > 88) {
+      scoreMultiplier *= 0.6;
+      details.push(`Greenhouse solar heat trap! Tray dome interior overheating (${climate.tempF.toFixed(1)}°F > 88°F). Dim lights or open dome vents.`);
+    }
+  } else {
+    // Uncovered tray or open container
+    if (plant.stage === 'germination') {
+      if (climate.rh < 55) {
+        scoreMultiplier *= 0.75;
+        details.push(`Uncovered tray in low humidity (${climate.rh}% RH). Topsoil crust drying risks stalling seed germination. Consider adding a humidity dome.`);
+      } else {
+        details.push(`Uncovered seed tray. Germination proceeding at baseline rate.`);
+      }
+    }
+  }
+
+  // Photoperiod Alignment
+  let photoperiodStatus: 'aligned' | 'flowering_interrupted' | 'vegetative_trigger' = 'aligned';
+  if (plant.stage === 'flowering' || plant.stage === 'ripening') {
+    if (actualPhotoperiodHours > 13) {
+      photoperiodStatus = 'flowering_interrupted';
+      scoreMultiplier *= 0.4;
+      details.push(`Photoperiod too long (${actualPhotoperiodHours}h > 12h)! Risks revegetation/hermaphroditism.`);
+    }
+  } else if (plant.stage === 'vegetative' || plant.stage === 'seedling' || plant.stage === 'mature_seedling') {
+    if (actualPhotoperiodHours <= 12) {
+      photoperiodStatus = 'vegetative_trigger';
+      details.push(`Short photoperiod (${actualPhotoperiodHours}h) may trigger premature flowering.`);
+    }
+  }
+
+  const clampedScore = Math.max(0.05, Math.min(1.5, parseFloat(scoreMultiplier.toFixed(2))));
+  const status: 'optimal' | 'acceptable' | 'stressful' | 'critical' = 
+    clampedScore >= 0.95 ? 'optimal' : clampedScore >= 0.7 ? 'acceptable' : clampedScore >= 0.4 ? 'stressful' : 'critical';
+
+  return {
+    overallScore: clampedScore,
+    status,
+    limitingFactor: details.find(d => !d.includes('optimal') && !d.includes('aligned') && !d.includes('boosting') && !d.includes('delivering') && !d.includes('fueling')),
+    tempStatus,
+    rhStatus,
+    vpdStatus,
+    ppfdStatus,
+    rootTempStatus,
+    moistureStatus,
+    photoperiodStatus,
+    details
+  };
+}
+
+export interface HopCultivarProfile {
+  name: string;
+  variety: string;
+  alphaAcids: string;
+  aromaProfile: string;
+  origin: string;
+  growthVigor: 'moderate' | 'vigorous' | 'extreme';
+  expectedYieldGrams: number;
+  floweringDays: number;
+  description: string;
+}
+
+export const HOP_CULTIVARS: HopCultivarProfile[] = [
+  {
+    name: 'Cascade Hops',
+    variety: 'Cascade (USDA 56013)',
+    alphaAcids: '5.5 - 7.5%',
+    aromaProfile: 'Iconic American Pale Ale: Bright ruby grapefruit, floral citrus blossom, and fresh evergreen pine.',
+    origin: 'Oregon / USDA Breeding Program',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 360,
+    floweringDays: 45,
+    description: 'The legendary hop that birthed the modern craft beer revolution. Vigorous climbing bines covered in tight pale-green strobiles with aromatic lupulin.'
+  },
+  {
+    name: 'Centennial Hops',
+    variety: 'Centennial ("Super Cascade")',
+    alphaAcids: '9.5 - 11.5%',
+    aromaProfile: 'Pungent lemon oil, clean floral notes, and resinous forest pine.',
+    origin: 'Washington State',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 400,
+    floweringDays: 48,
+    description: 'Revered as "Super Cascade" for its higher alpha acid bittering punch and lush lemon-citrus aromatics. Prolific grower on 16-foot trellises.'
+  },
+  {
+    name: 'Citra Hops',
+    variety: 'Citra (HBC 394)',
+    alphaAcids: '11.0 - 13.5%',
+    aromaProfile: 'Tropical juice explosion: Sweet ripe mango, passionfruit, pink guava, lychee, and fresh lime zest.',
+    origin: 'Yakima Valley, WA',
+    growthVigor: 'extreme',
+    expectedYieldGrams: 440,
+    floweringDays: 52,
+    description: 'The undisputed king of hazy New England IPAs. Loaded with massive golden lupulin glands and tropical essential oils.'
+  },
+  {
+    name: 'Chinook Hops',
+    variety: 'Chinook (USDA 21227)',
+    alphaAcids: '12.0 - 14.0%',
+    aromaProfile: 'Bold pine forest, resinous woodspice, earthy herbal character, and bitter red grapefruit.',
+    origin: 'Yakima Valley, WA',
+    growthVigor: 'extreme',
+    expectedYieldGrams: 460,
+    floweringDays: 50,
+    description: 'An aggressive, hardy bine capable of growing up to a foot a day in peak summer. Heavy cone yields packed with resinous bittering oils.'
+  },
+  {
+    name: 'Saaz Hops',
+    variety: 'Czech Saaz (Žatec Noble)',
+    alphaAcids: '3.0 - 4.5%',
+    aromaProfile: 'Delicate noble bouquet: Warm pleasant spice, herbal meadow wildflowers, and soft earthy undertones.',
+    origin: 'Bohemia, Czech Republic',
+    growthVigor: 'moderate',
+    expectedYieldGrams: 280,
+    floweringDays: 42,
+    description: 'The definitive noble hop behind authentic Bohemian Pilsners. Subtle, delicate papery cones with low bittering and world-class aroma.'
+  },
+  {
+    name: 'Amarillo Hops',
+    variety: 'Amarillo (VGXP01)',
+    alphaAcids: '8.0 - 11.0%',
+    aromaProfile: 'Valencia orange zest, sweet apricot marmalade, floral blossoms, and ripe summer peach.',
+    origin: 'Virgil Gamache Farms, WA',
+    growthVigor: 'vigorous',
+    expectedYieldGrams: 370,
+    floweringDays: 46,
+    description: 'Prized for its distinct high-myrcene sweet orange oil signature that gives craft ales a sunny, citrusy character.'
+  }
+];
+
+export interface PepperSeedPackDetails {
+  approxSeeds: number;
+  germinationRatePct: number;
+  harvestDaysRange: string;
+  approxYieldLb: number;
+  hardinessZones: string;
+  packName?: string;
+  isHeirloom?: boolean;
+}
+
+export interface PepperCultivarProfile {
+  name: string;
+  variety: string;
+  scientificName: string;
+  scovilleHeatUnits: number;
+  scovilleRating: string;
+  heatLevel: 'sweet' | 'mild' | 'medium' | 'hot' | 'superhot';
+  heatBadgeColor: string;
+  germinationDaysExpected: number;
+  seedlingDaysExpected: number;
+  matureSeedlingDaysExpected: number;
+  vegetativeDaysExpected: number;
+  floweringDaysExpected: number;
+  ripeningDaysExpected: number;
+  optimalGerminationTempF: number;
+  minGerminationTempF: number;
+  description: string;
+  origin: string;
+  expectedYieldGrams: number;
+  seedPackDetails?: PepperSeedPackDetails;
+}
+
+export const PEPPER_CULTIVARS: PepperCultivarProfile[] = [
+  // --- 14 Sweet & Hot Peppers Heirloom Variety Pack (Organo Republic) ---
+  {
+    name: 'Anaheim Pepper',
+    variety: 'Anaheim Chili (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 1500,
+    scovilleRating: '500 - 2,500 SHU',
+    heatLevel: 'mild',
+    heatBadgeColor: 'bg-teal-950 text-teal-300 border-teal-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 36,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Mild, elongated 6-8 inch green heirloom chili famous for roasting, canning, and stuffing (chiles rellenos).',
+    origin: 'New Mexico / Anaheim, CA',
+    expectedYieldGrams: 480,
+    seedPackDetails: {
+      approxSeeds: 65,
+      germinationRatePct: 88,
+      harvestDaysRange: '70-85 days',
+      approxYieldLb: 114,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Big Jim Pepper',
+    variety: 'NuMex Big Jim (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 2000,
+    scovilleRating: '1,000 - 3,000 SHU',
+    heatLevel: 'mild',
+    heatBadgeColor: 'bg-teal-950 text-teal-300 border-teal-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 26,
+    floweringDaysExpected: 38,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Guinness record holder for largest chili pods (up to 12-14" long). Meaty, mild flesh perfect for roasting and green chile stew.',
+    origin: 'New Mexico State University, USA',
+    expectedYieldGrams: 550,
+    seedPackDetails: {
+      approxSeeds: 60,
+      germinationRatePct: 88,
+      harvestDaysRange: '75-90 days',
+      approxYieldLb: 132,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'California Wonder Bell',
+    variety: 'California Wonder (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 0,
+    scovilleRating: '0 SHU (Sweet)',
+    heatLevel: 'sweet',
+    heatBadgeColor: 'bg-blue-950 text-blue-300 border-blue-700',
+    germinationDaysExpected: 7,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 36,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 78,
+    minGerminationTempF: 68,
+    description: 'Classic blocky 4-lobed sweet bell pepper with thick, juicy walls ripening from glossy emerald to ruby red.',
+    origin: 'California, USA',
+    expectedYieldGrams: 600,
+    seedPackDetails: {
+      approxSeeds: 75,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-85 days',
+      approxYieldLb: 106,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Cayenne Pepper',
+    variety: 'Long Slim Red Cayenne (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 40000,
+    scovilleRating: '30,000 - 50,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-amber-950 text-amber-300 border-amber-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 38,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Slender, twisting 6-inch red chilis with vibrant pungent heat. Fast germinator, heavy yields, perfect for drying and chili flakes.',
+    origin: 'French Guiana / Cayenne',
+    expectedYieldGrams: 380,
+    seedPackDetails: {
+      approxSeeds: 100,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-85 days',
+      approxYieldLb: 38,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Cubanelle Pepper',
+    variety: 'Cubanelle Sweet Italian (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 500,
+    scovilleRating: '100 - 1,000 SHU',
+    heatLevel: 'sweet',
+    heatBadgeColor: 'bg-blue-950 text-blue-300 border-blue-700',
+    germinationDaysExpected: 7,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 9,
+    vegetativeDaysExpected: 22,
+    floweringDaysExpected: 34,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 78,
+    minGerminationTempF: 68,
+    description: 'Prized sweet Italian frying pepper with pale yellow-green wrinkled skin, sweet delicate flesh, and quick harvest cycles.',
+    origin: 'Italy / Caribbean',
+    expectedYieldGrams: 520,
+    seedPackDetails: {
+      approxSeeds: 80,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-75 days',
+      approxYieldLb: 141,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Golden Cal Wonder Bell',
+    variety: 'Golden California Wonder (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 0,
+    scovilleRating: '0 SHU (Sweet)',
+    heatLevel: 'sweet',
+    heatBadgeColor: 'bg-yellow-950 text-yellow-300 border-yellow-700',
+    germinationDaysExpected: 7,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 25,
+    floweringDaysExpected: 38,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Luminous sun-gold sweet bell pepper with thick, sweet juicy walls and high 90% seed germination vigor.',
+    origin: 'California, USA',
+    expectedYieldGrams: 580,
+    seedPackDetails: {
+      approxSeeds: 55,
+      germinationRatePct: 90,
+      harvestDaysRange: '70-85 days',
+      approxYieldLb: 99,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Habanero Pepper',
+    variety: 'Orange Habanero (Capsicum chinense)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 250000,
+    scovilleRating: '150,000 - 325,000 SHU',
+    heatLevel: 'hot',
+    heatBadgeColor: 'bg-orange-950 text-orange-300 border-orange-700',
+    germinationDaysExpected: 14,
+    seedlingDaysExpected: 10,
+    matureSeedlingDaysExpected: 12,
+    vegetativeDaysExpected: 30,
+    floweringDaysExpected: 48,
+    ripeningDaysExpected: 16,
+    optimalGerminationTempF: 84,
+    minGerminationTempF: 74,
+    description: 'Lantern-shaped orange pods bursting with tropical floral apricot fragrance and intense, searing capsaicin heat.',
+    origin: 'Amazon Basin / Yucatán, Mexico',
+    expectedYieldGrams: 340,
+    seedPackDetails: {
+      approxSeeds: 50,
+      germinationRatePct: 80,
+      harvestDaysRange: '90-110 days',
+      approxYieldLb: 40,
+      hardinessZones: '9-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Hot Red Cherry Pepper',
+    variety: 'Large Red Cherry (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 3500,
+    scovilleRating: '2,500 - 5,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-emerald-950 text-emerald-300 border-emerald-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 38,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Round golf-ball sized crimson peppers with thick crunchy walls and moderate kick. Superb for whole pickling, canning, and cheese stuffing.',
+    origin: 'Central America',
+    expectedYieldGrams: 460,
+    seedPackDetails: {
+      approxSeeds: 100,
+      germinationRatePct: 88,
+      harvestDaysRange: '70-85 days',
+      approxYieldLb: 132,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Hungarian Hot Wax Pepper',
+    variety: 'Hungarian Hot Wax (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 7500,
+    scovilleRating: '5,000 - 10,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-amber-950 text-amber-300 border-amber-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 36,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Smooth canary-yellow waxy taper ripening to fiery orange-red. Early bearer with lively, spicy tang loved for pickling.',
+    origin: 'Hungary',
+    expectedYieldGrams: 510,
+    seedPackDetails: {
+      approxSeeds: 75,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-80 days',
+      approxYieldLb: 165,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Hungarian Sweet Banana',
+    variety: 'Sweet Banana Heirloom (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 200,
+    scovilleRating: '0 - 500 SHU (Sweet)',
+    heatLevel: 'sweet',
+    heatBadgeColor: 'bg-blue-950 text-blue-300 border-blue-700',
+    germinationDaysExpected: 7,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 9,
+    vegetativeDaysExpected: 22,
+    floweringDaysExpected: 34,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 78,
+    minGerminationTempF: 68,
+    description: 'Fast-maturing heirloom banana pepper with 6-inch sweet creamy-yellow pods that turn sweet red on salads and subs.',
+    origin: 'Hungary',
+    expectedYieldGrams: 540,
+    seedPackDetails: {
+      approxSeeds: 75,
+      germinationRatePct: 88,
+      harvestDaysRange: '60-75 days',
+      approxYieldLb: 165,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Jalapeño Pepper',
+    variety: 'Early Jalapeño (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 5000,
+    scovilleRating: '2,500 - 8,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-emerald-950 text-emerald-300 border-emerald-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 26,
+    floweringDaysExpected: 40,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Thick-walled, crisp green chili with classic zesty vegetable warmth. Essential for fresh salsa, nachos, and poppers.',
+    origin: 'Xalapa, Veracruz, Mexico',
+    expectedYieldGrams: 420,
+    seedPackDetails: {
+      approxSeeds: 100,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-85 days',
+      approxYieldLb: 70,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Pepperoncini Pepper',
+    variety: 'Golden Greek Pepperoncini (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 300,
+    scovilleRating: '100 - 500 SHU (Mild)',
+    heatLevel: 'mild',
+    heatBadgeColor: 'bg-teal-950 text-teal-300 border-teal-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 24,
+    floweringDaysExpected: 36,
+    ripeningDaysExpected: 12,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Thin-skinned wrinkled yellowish-green salad pepper. Crunchy, sweet, and tangy, famous in pizzeria jars and Greek salads.',
+    origin: 'Greece / Southern Italy',
+    expectedYieldGrams: 460,
+    seedPackDetails: {
+      approxSeeds: 50,
+      germinationRatePct: 88,
+      harvestDaysRange: '65-80 days',
+      approxYieldLb: 88,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Poblano / Ancho Pepper',
+    variety: 'Poblano Heirloom (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 1500,
+    scovilleRating: '1,000 - 2,000 SHU',
+    heatLevel: 'mild',
+    heatBadgeColor: 'bg-teal-950 text-teal-300 border-teal-700',
+    germinationDaysExpected: 9,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 28,
+    floweringDaysExpected: 42,
+    ripeningDaysExpected: 15,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Large heart-shaped glossy dark green pod with rich, mild earthy heat. The staple for chiles rellenos; called Ancho when dried.',
+    origin: 'Puebla, Mexico',
+    expectedYieldGrams: 520,
+    seedPackDetails: {
+      approxSeeds: 50,
+      germinationRatePct: 82,
+      harvestDaysRange: '70-90 days',
+      approxYieldLb: 185,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+  {
+    name: 'Serrano Pepper',
+    variety: 'Serrano del Sol (Capsicum annuum)',
+    scientificName: 'Capsicum annuum',
+    scovilleHeatUnits: 18000,
+    scovilleRating: '10,000 - 23,000 SHU',
+    heatLevel: 'medium',
+    heatBadgeColor: 'bg-amber-950 text-amber-300 border-amber-700',
+    germinationDaysExpected: 8,
+    seedlingDaysExpected: 8,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 26,
+    floweringDaysExpected: 42,
+    ripeningDaysExpected: 14,
+    optimalGerminationTempF: 80,
+    minGerminationTempF: 70,
+    description: 'Crisp cylindrical chili with bright, punchy heat and 90% germination rate. Heavy producer for pico de gallo and salsa verde.',
+    origin: 'Puebla & Hidalgo, Mexico',
+    expectedYieldGrams: 420,
+    seedPackDetails: {
+      approxSeeds: 100,
+      germinationRatePct: 90,
+      harvestDaysRange: '75-90 days',
+      approxYieldLb: 135,
+      hardinessZones: '5-11',
+      packName: '14 Sweet & Hot Peppers Variety Pack',
+      isHeirloom: true
+    }
+  },
+
+  // --- Specialty Hot & Superhot Cultivars ---
+  {
+    name: 'Thai Bird\'s Eye Chili',
+    variety: 'Thai Dragon (Capsicum frutescens)',
+    scientificName: 'Capsicum frutescens',
+    scovilleHeatUnits: 75000,
+    scovilleRating: '50,000 - 100,000 SHU',
+    heatLevel: 'hot',
+    heatBadgeColor: 'bg-red-950 text-red-300 border-red-700',
+    germinationDaysExpected: 12,
+    seedlingDaysExpected: 9,
+    matureSeedlingDaysExpected: 10,
+    vegetativeDaysExpected: 28,
+    floweringDaysExpected: 48,
+    ripeningDaysExpected: 15,
+    optimalGerminationTempF: 82,
+    minGerminationTempF: 72,
+    description: 'Prolific bushy plant loaded with clusters of tiny upright-pointing chilis packing immediate, sharp fire. Fundamental to Southeast Asian cuisine.',
+    origin: 'Thailand & Southeast Asia',
+    expectedYieldGrams: 310
+  },
+  {
+    name: 'Ghost Pepper (Bhut Jolokia)',
+    variety: 'Bhut Jolokia (Capsicum chinense)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 1000000,
+    scovilleRating: '855,000 - 1,041,427 SHU',
+    heatLevel: 'superhot',
+    heatBadgeColor: 'bg-rose-950 text-rose-300 border-rose-700',
+    germinationDaysExpected: 22,
+    seedlingDaysExpected: 12,
+    matureSeedlingDaysExpected: 14,
+    vegetativeDaysExpected: 35,
+    floweringDaysExpected: 60,
+    ripeningDaysExpected: 20,
+    optimalGerminationTempF: 85,
+    minGerminationTempF: 76,
+    description: 'Legendary Indian superhot with rough, dented scarlet skin. Demands consistent 82-86°F heat mat warmth.',
+    origin: 'Assam, Northeast India',
+    expectedYieldGrams: 300
+  },
+  {
+    name: 'Carolina Reaper',
+    variety: 'Carolina Reaper (HP22B)',
+    scientificName: 'Capsicum chinense',
+    scovilleHeatUnits: 1641000,
+    scovilleRating: '1,500,000 - 2,200,000 SHU',
+    heatLevel: 'superhot',
+    heatBadgeColor: 'bg-red-950 text-red-300 border-red-700',
+    germinationDaysExpected: 26,
+    seedlingDaysExpected: 14,
+    matureSeedlingDaysExpected: 14,
+    vegetativeDaysExpected: 38,
+    floweringDaysExpected: 65,
+    ripeningDaysExpected: 22,
+    optimalGerminationTempF: 86,
+    minGerminationTempF: 78,
+    description: 'Guinness World Record fiery superhot featuring bumpy crimson skin and scorpion tail. Requires dedicated bottom heat.',
+    origin: 'Fort Mill, South Carolina',
+    expectedYieldGrams: 280
+  }
+];
+
+export function getPepperCultivar(nameOrVariety?: string): PepperCultivarProfile | undefined {
+  if (!nameOrVariety) return undefined;
+  const lower = nameOrVariety.toLowerCase();
+  return PEPPER_CULTIVARS.find(p => 
+    lower.includes(p.name.toLowerCase()) || 
+    p.name.toLowerCase().includes(lower) || 
+    lower.includes(p.variety.toLowerCase()) ||
+    p.variety.toLowerCase().includes(lower)
+  );
+}
+
+/**
+ * Returns the next lifecycle stage when transitioning
+ */
+export function getNextPlantStage(current: PlantStage, origin: PropagationType): PlantStage {
+  switch (current) {
+    case 'germination':
+      return 'seedling';
+    case 'rooting':
+      return 'seedling';
+    case 'seedling':
+      return 'mature_seedling';
+    case 'mature_seedling':
+      return 'vegetative';
+    case 'vegetative':
+      return 'flowering';
+    case 'flowering':
+      return 'ripening';
+    case 'ripening':
+      return 'ready';
+    case 'ready':
+      return 'ready';
+    default:
+      return 'vegetative';
+  }
+}
+
+/**
+ * Formats a timestamp into human-readable date and time
+ */
+export function formatSimDateTime(timestamp?: number): string {
+  if (!timestamp) return '—';
+  const d = new Date(timestamp);
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+/**
+ * Formats a timestamp into short date (e.g. "Aug 20, 2026")
+ */
+export function formatSimDateShort(timestamp?: number): string {
+  if (!timestamp) return '—';
+  const d = new Date(timestamp);
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+}

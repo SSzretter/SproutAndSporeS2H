@@ -1,0 +1,2805 @@
+import React, { useState } from 'react';
+import { 
+  X, 
+  Box, 
+  Sprout, 
+  Flower2, 
+  Zap, 
+  Wind, 
+  Droplets, 
+  Thermometer, 
+  Sun, 
+  Check, 
+  Plus, 
+  Shield, 
+  Layers, 
+  Sparkles,
+  User,
+  Dog,
+  Cat,
+  Activity,
+  Heart,
+  Clock,
+  SlidersHorizontal,
+  Dna,
+  Dice5,
+  RefreshCw,
+  Search,
+  Flame
+} from 'lucide-react';
+import { 
+  Room, 
+  Tent, 
+  Item, 
+  PlantItem, 
+  MushroomItem, 
+  EquipmentItem, 
+  PersonItem,
+  PersonActivity,
+  PersonRole,
+  PetItem,
+  PetType,
+  PlantSpecies, 
+  MushroomSpecies, 
+  EquipmentType,
+  InlineFanDuctSize,
+  TentBrand,
+  Dimensions,
+  CultivationSystemType,
+  ContainerType,
+  GrowingMedium,
+  NutrientProgram,
+  TrayInsertType
+} from '../types/sim';
+import { ROLE_METADATA, getDefaultNpcInventory, getDefaultWorkerSettings } from '../utils/npcWorker';
+import { calculateVPD } from '../utils/physics';
+import { getCompatibleContainers, getCompatibleMedia } from '../utils/cultivationSystems';
+import { TENT_CATALOG, CatalogTentModel } from '../utils/tentCatalog';
+import { PropagationType, PlantStage, PlantKeyDates } from '../types/sim';
+import { canHeatMatAttachTo, describeHeatMatPlacement, getHeatMatTarget, getDefaultReservoirLiters, getDefaultBucketCapacityL } from '../utils/equipmentLinks';
+import { INLINE_FAN_SPECS, INLINE_FAN_DUCT_SIZES } from '../utils/equipmentCatalog';
+import { getPortableAcBtu, DEFAULT_REGISTER_CFM } from '../utils/roomThermal';
+import { DEFAULT_STAGE_DURATIONS, DEFAULT_STAGE_REQUIREMENTS, formatSimDateTime, HOP_CULTIVARS, PEPPER_CULTIVARS, getPlantTargetSize, getContainerSizeFactor } from '../utils/plantLifecycle';
+import { getDefaultItemDimensions, getDefaultSpatialPosition } from '../utils/spatial';
+import { generateSeedTraits, generateSporeTraits, getGeneticTier, SeedGeneticTraits, SporeGeneticTraits } from '../utils/genetics';
+import {
+  createRackTiers, getFreeRackSlots, getInsertCellCount, getInsertCellDimensions, getInsertCellVolumeGallons, getRackCapacity,
+  getRackDimensions, getRackSlotCode, getRackTiers, GROW_RACK_PRESETS, describeTrayLayout, DEFAULT_BOTTOM_SHELF_FT, isGrowRack, isEbbAndFlowRack, getRack1020TrayCount, TRAY_INSERTS, TRAY_INSERT_TYPES, describeTierLevel
+} from '../utils/growRacks';
+import { CommitNumberInput } from './CommitNumberInput';
+import {
+  DEFAULT_NUTRIENT_EC_PPM, DEFAULT_NUTRIENT_PH, getReservoirDimensions, NUTRIENT_RESERVOIR_PRESETS, RESERVOIR_FED_SYSTEMS
+} from '../utils/nutrientReservoirs';
+
+interface AddItemModalProps {
+  room: Room;
+  targetTentId?: string | null;
+  targetRackId?: string | null; // Open on the Plant tab, sowing into this grow rack
+  isOpen: boolean;
+  simTime?: number;
+  onClose: () => void;
+  onAddTent: (tent: Tent) => void;
+  onAddItem: (item: Item, tentId?: string | null) => void;
+  onAddItems?: (items: Item[], tentId?: string | null) => void;
+}
+
+export const AddItemModal: React.FC<AddItemModalProps> = ({
+  room,
+  targetTentId,
+  targetRackId,
+  isOpen,
+  simTime,
+  onClose,
+  onAddTent,
+  onAddItem,
+  onAddItems,
+}) => {
+  const [activeTab, setActiveTab] = useState<'tent' | 'plant' | 'mushroom' | 'equipment' | 'person' | 'pet'>(
+    targetTentId ? 'plant' : 'tent'
+  );
+  const [selectedDestinationTentId, setSelectedDestinationTentId] = useState<string>(
+    targetTentId || 'room'
+  );
+
+  // Point the destination at the requested tent when the modal opens. This must not depend on
+  // `room`, which changes every sim tick and would keep undoing the user's destination choice.
+  React.useEffect(() => {
+    if (isOpen && targetTentId) {
+      setSelectedDestinationTentId(targetTentId);
+      setActiveTab(prev => prev === 'tent' ? 'plant' : prev);
+    }
+  }, [targetTentId, isOpen]);
+
+  // Sowing into a grow rack: which rack, shelf ('all' = every shelf), tray ('all' = every tray), how many
+  const [plantRackId, setPlantRackId] = useState('');
+  const [plantRackTier, setPlantRackTier] = useState<number | 'all'>('all');
+  const [plantRackTray, setPlantRackTray] = useState<number | 'all'>('all');
+  const [plantSowCount, setPlantSowCount] = useState<number | null>(null); // null = fill every free cell
+
+  // Opened from a rack's "Sow Seeds": go straight to planting into it
+  React.useEffect(() => {
+    if (!isOpen || !targetRackId) return;
+    setActiveTab('plant');
+    setPlantRackId(targetRackId);
+    setPlantRackTier('all');
+    setPlantRackTray('all');
+    setPlantSowCount(null);
+  }, [isOpen, targetRackId]);
+
+  // Fall back if the chosen tent no longer exists
+  React.useEffect(() => {
+    if (!isOpen || selectedDestinationTentId === 'room') return;
+    if (!room.tents.some(t => t.id === selectedDestinationTentId)) {
+      setSelectedDestinationTentId(room.tents.length > 0 ? room.tents[0].id : 'room');
+    }
+  }, [isOpen, room.tents, selectedDestinationTentId]);
+
+  // Tent Catalog & Form State
+  const [tentBrandFilter, setTentBrandFilter] = useState<'all' | 'AC Infinity' | 'Spider Farmer' | 'Custom'>('AC Infinity');
+  const [selectedCatalogTent, setSelectedCatalogTent] = useState<CatalogTentModel>(TENT_CATALOG[7]); // CLOUDLAB 844 default
+  const [tentFriendlyName, setTentFriendlyName] = useState('Grow Tent #1');
+  const [customTentName, setCustomTentName] = useState('Custom Grow Tent');
+  const [customLength, setCustomLength] = useState(4);
+  const [customWidth, setCustomWidth] = useState(4);
+  const [customHeight, setCustomHeight] = useState(6.5);
+
+  // Plant Form State
+  const [plantSpecies, setPlantSpecies] = useState<PlantSpecies>('Cannabis');
+  const [plantName, setPlantName] = useState('Gorilla Glue #4');
+  const [plantStrain, setPlantStrain] = useState('Sour Dubb x Chem Sister');
+  const [selectedHopIdx, setSelectedHopIdx] = useState(0);
+  const [selectedPepperIdx, setSelectedPepperIdx] = useState(0);
+  const [pepperFilterCategory, setPepperFilterCategory] = useState<'heirloom_pack' | 'all' | 'sweet_mild' | 'hot' | 'superhot'>('heirloom_pack');
+  const [pepperSearch, setPepperSearch] = useState('');
+  const [propagationType, setPropagationType] = useState<PropagationType>('seed');
+  const [plantStage, setPlantStage] = useState<PlantStage>('germination');
+  const [germinationDays, setGerminationDays] = useState(4);
+  const [rootingDays, setRootingDays] = useState(10);
+  const [seedlingDays, setSeedlingDays] = useState(8);
+  const [matureSeedlingDays, setMatureSeedlingDays] = useState(10);
+  const [vegDays, setVegDays] = useState(28);
+  const [flowerDays, setFlowerDays] = useState(60);
+  const [ripenDays, setRipenDays] = useState(10);
+  const [showAdvancedDurations, setShowAdvancedDurations] = useState(false);
+
+  // Seed & Spore Genetics State
+  const [seedGrade, setSeedGrade] = useState<'Certified High-Viability' | 'Standard Breeder Pack' | 'Exotic Wildcraft'>('Certified High-Viability');
+  const [seedTraits, setSeedTraits] = useState<SeedGeneticTraits>(() =>
+    generateSeedTraits('Cannabis', 'Gorilla Glue #4', 'seed', 'Certified High-Viability')
+  );
+
+  const [sporeGrade, setSporeGrade] = useState<'Isolated Commercial LC' | 'Multi-Spore Syringe' | 'Wild Spore Print'>('Isolated Commercial LC');
+  const [sporeTraits, setSporeTraits] = useState<SporeGeneticTraits>(() =>
+    generateSporeTraits('Lion\'s Mane', 'Lion\'s Mane', 'Isolated Commercial LC')
+  );
+
+  // Soil & Hydroponic Customization State
+  const [systemType, setSystemType] = useState<CultivationSystemType>('soil_container');
+  const [containerType, setContainerType] = useState<ContainerType>('fabric_pot');
+  const [containerVolume, setContainerVolume] = useState<number>(5);
+  const [growingMedium, setGrowingMedium] = useState<GrowingMedium>('living_organic_soil');
+  const [nutrientProgram, setNutrientProgram] = useState<NutrientProgram>('organic_living_soil');
+  const [showSoilCustomizer, setShowSoilCustomizer] = useState(true);
+
+  // Mushroom Form State
+  const [mushroomSpecies, setMushroomSpecies] = useState<MushroomSpecies>('Lion\'s Mane');
+  const [mushroomName, setMushroomName] = useState('Lion\'s Mane Fruiting Block');
+  const [mushroomContainer, setMushroomContainer] = useState<'monotub' | 'grow_bag' | 'fruiting_block'>('fruiting_block');
+
+  // Equipment Form State
+  const [eqType, setEqType] = useState<EquipmentType>('grow_light');
+  const [eqName, setEqName] = useState('Pro-Quantum 240W LED');
+  const [eqWatts, setEqWatts] = useState(240);
+  const [eqHoseTentId, setEqHoseTentId] = useState(''); // Room-level humidifier / CO2 controller ducted into a tent by hose
+  const [eqDuctSize, setEqDuctSize] = useState<InlineFanDuctSize>(6); // Inline fan duct / port diameter
+  const [eqExhaustTo, setEqExhaustTo] = useState<'room' | 'outdoors'>('room'); // Where an exhaust fan's duct discharges
+  const [eqMatTargetId, setEqMatTargetId] = useState(''); // Heat mat: tent floor tray or the item it sits under / wraps
+  const [rackTierCount, setRackTierCount] = useState(GROW_RACK_PRESETS[0].tiers); // Grow rack shelves
+  const [rackTraysPerTier, setRackTraysPerTier] = useState(GROW_RACK_PRESETS[0].traysPerTier);
+  const [rackSpacingFt, setRackSpacingFt] = useState(GROW_RACK_PRESETS[0].tierSpacingFt);
+  const [rackBottomShelfFt, setRackBottomShelfFt] = useState(GROW_RACK_PRESETS[0].bottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT);
+  const [rackInsert, setRackInsert] = useState<TrayInsertType>(GROW_RACK_PRESETS[0].insert);
+  const [rackType, setRackType] = useState<'standard' | 'ebb_and_flow'>(GROW_RACK_PRESETS[0].rackType || 'standard');
+  const [rackTrayLayout, setRackTrayLayout] = useState<'side_by_side' | 'end_to_end'>(GROW_RACK_PRESETS[0].trayLayout || 'side_by_side');
+  const [rackIntegratedResL, setRackIntegratedResL] = useState(GROW_RACK_PRESETS[0].integratedReservoirL || 60);
+  const [rackFloodsPerDay, setRackFloodsPerDay] = useState(GROW_RACK_PRESETS[0].floodsPerDay || 6);
+  const [resLiters, setResLiters] = useState(NUTRIENT_RESERVOIR_PRESETS[1].liters); // Nutrient reservoir tank size
+  const [resPumpMode, setResPumpMode] = useState<'flood' | 'continuous'>('flood');
+  const [resFeedIds, setResFeedIds] = useState<string[] | null>(null); // null = every rack and unfed hydro plant here
+
+  // Person Form State
+  const [personName, setPersonName] = useState('Grower Alex');
+  const [personRole, setPersonRole] = useState<PersonRole>('grower');
+  const [personActivity, setPersonActivity] = useState<PersonActivity>('normal');
+
+  // Pet Form State
+  const [petName, setPetName] = useState('Golden Retriever');
+  const [petType, setPetType] = useState<PetType>('dog_large');
+  const [petBreed, setPetBreed] = useState('Golden Retriever');
+
+  if (!isOpen) return null;
+
+  const handleCreateTent = () => {
+    const newTentId = `tent-${Date.now()}`;
+    const isCustom = tentBrandFilter === 'Custom';
+
+    const tentName = tentFriendlyName.trim() || (isCustom 
+      ? customTentName 
+      : `${selectedCatalogTent.brand} ${selectedCatalogTent.modelName}`);
+
+    const dimensions: Dimensions = isCustom
+      ? { length: Number(customLength) || 4, width: Number(customWidth) || 4, height: Number(customHeight) || 6.5, unit: 'ft' }
+      : selectedCatalogTent.dimensions;
+
+    const newTent: Tent = {
+      id: newTentId,
+      name: tentName,
+      brand: isCustom ? 'Custom' : selectedCatalogTent.brand,
+      modelName: isCustom ? undefined : selectedCatalogTent.modelName,
+      mylarRating: isCustom ? '600D Mylar' : selectedCatalogTent.mylarRating,
+      poleDiameter: isCustom ? '16mm Steel' : selectedCatalogTent.poleDiameter,
+      ventPorts: isCustom ? 'Dual Cinch Ports' : selectedCatalogTent.ventPorts,
+      dimensions,
+      position: getDefaultSpatialPosition('tent', room.dimensions, room.tents.length),
+      climate: {
+        tempF: room.climate.tempF,
+        tempC: room.climate.tempC,
+        rh: room.climate.rh,
+        lightPPFD: 0,
+        vpdKpa: calculateVPD(room.climate.tempF, room.climate.rh, 0),
+        co2Ppm: room.climate.co2Ppm || 420
+      },
+      exhaustFanSpeed: 0, // Defaults to 0! No running fan in an empty tent
+      items: []
+    };
+
+    onAddTent(newTent);
+    onClose();
+  };
+
+  const handleCreatePlant = () => {
+    const now = simTime || Date.now();
+    const keyDates: PlantKeyDates = {
+      plantedDate: now
+    };
+
+    let calculatedAgeDays = 0;
+
+    if (propagationType === 'seed') {
+      if (plantStage === 'germination') {
+        calculatedAgeDays = 0;
+      } else if (plantStage === 'seedling') {
+        calculatedAgeDays = germinationDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now;
+        keyDates.seedlingDate = now;
+      } else if (plantStage === 'mature_seedling') {
+        calculatedAgeDays = germinationDays + seedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - seedlingDays * 86400000;
+        keyDates.seedlingDate = now - seedlingDays * 86400000;
+        keyDates.matureSeedlingDate = now;
+      } else if (plantStage === 'vegetative') {
+        calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
+        keyDates.vegetativeDate = now;
+      } else if (plantStage === 'flowering') {
+        calculatedAgeDays = germinationDays + seedlingDays + matureSeedlingDays + vegDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.sproutedDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
+        keyDates.vegetativeDate = now - vegDays * 86400000;
+        keyDates.floweringDate = now;
+      }
+    } else {
+      // Cutting / Clone
+      if (plantStage === 'rooting') {
+        calculatedAgeDays = 0;
+      } else if (plantStage === 'seedling') {
+        calculatedAgeDays = rootingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now;
+        keyDates.seedlingDate = now;
+      } else if (plantStage === 'mature_seedling') {
+        calculatedAgeDays = rootingDays + seedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - seedlingDays * 86400000;
+        keyDates.seedlingDate = now - seedlingDays * 86400000;
+        keyDates.matureSeedlingDate = now;
+      } else if (plantStage === 'vegetative') {
+        calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays) * 86400000;
+        keyDates.matureSeedlingDate = now - matureSeedlingDays * 86400000;
+        keyDates.vegetativeDate = now;
+      } else if (plantStage === 'flowering') {
+        calculatedAgeDays = rootingDays + seedlingDays + matureSeedlingDays + vegDays;
+        keyDates.plantedDate = now - calculatedAgeDays * 86400000;
+        keyDates.rootedDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.seedlingDate = now - (seedlingDays + matureSeedlingDays + vegDays) * 86400000;
+        keyDates.matureSeedlingDate = now - (matureSeedlingDays + vegDays) * 86400000;
+        keyDates.vegetativeDate = now - vegDays * 86400000;
+        keyDates.floweringDate = now;
+      }
+    }
+
+    const isHop = plantSpecies === 'Hops';
+    const hopData = isHop ? HOP_CULTIVARS[selectedHopIdx] : null;
+    const isPepper = plantSpecies === 'Chili Pepper';
+    const pepperData = isPepper ? PEPPER_CULTIVARS[selectedPepperIdx] : null;
+
+    const initialPh = (growingMedium === 'hydroton_clay_pebbles' || growingMedium === 'rockwool_cubes' || growingMedium === 'rockwool_cubes_1in' || growingMedium === 'aeroponic_mist' || systemType === 'dwc' || systemType === 'ebb_and_flow' || systemType === 'aeroponics') ? 5.8 : 6.4;
+    const initialEc = nutrientProgram === 'water_only_flush' ? 300 : nutrientProgram === 'salt_mineral_ab' ? 1100 : 850;
+
+    // Start at the species' typical size for this stage & initial progress, scaled by pot volume
+    const initialProgress = plantStage === 'germination' || plantStage === 'rooting' ? 0 : 15;
+    const initialSize = getPlantTargetSize(
+      { species: plantSpecies, stage: plantStage, propagationType, stageProgress: initialProgress } as PlantItem,
+      getContainerSizeFactor(containerVolume)
+    );
+
+    const newPlant: PlantItem = {
+      id: `plant-${Date.now()}`,
+      name: plantName || (isHop && hopData ? `${hopData.name} Bine` : isPepper && pepperData ? (pepperData.name.toLowerCase().includes('pepper') || pepperData.name.toLowerCase().includes('bell') ? pepperData.name : `${pepperData.name} Pepper`) : `${plantSpecies} Pot`),
+      category: 'plant',
+      species: plantSpecies,
+      strainName: isHop && hopData 
+        ? `${hopData.variety} (${hopData.aromaProfile})` 
+        : isPepper && pepperData
+          ? `${pepperData.variety} (${pepperData.scovilleRating})`
+          : (plantStrain || plantSpecies),
+      propagationType,
+      stage: plantStage,
+      stageProgress: initialProgress,
+      ageDays: calculatedAgeDays,
+      currentStageDays: 0,
+      keyDates,
+      germinationDaysExpected: germinationDays,
+      rootingDaysExpected: rootingDays,
+      seedlingDaysExpected: seedlingDays,
+      matureSeedlingDaysExpected: matureSeedlingDays,
+      vegetativeDaysExpected: vegDays,
+      floweringDaysExpected: flowerDays,
+      ripeningDaysExpected: ripenDays,
+      stageRequirements: DEFAULT_STAGE_REQUIREMENTS,
+      health: 98,
+      soilMoisture: plantStage === 'germination' || plantStage === 'rooting' ? 82 : 72,
+      rootTempF: plantStage === 'germination' || plantStage === 'rooting' ? (isPepper ? 82.0 : 74.0) : 68.0,
+      nutrientLevel: 'balanced',
+      heightInches: parseFloat(initialSize.heightInches.toFixed(1)),
+      canopyWidthInches: parseFloat(initialSize.canopyWidthInches.toFixed(1)),
+      yieldPotentialGrams: isHop ? (hopData?.expectedYieldGrams || 400) : isPepper ? (pepperData?.expectedYieldGrams || 350) : plantSpecies === 'Cannabis' ? 130 : plantSpecies === 'Tomato' ? 220 : 85,
+      isHarvested: false,
+      dimensions: getDefaultItemDimensions({
+        category: 'plant',
+        species: plantSpecies,
+        stage: plantStage
+      }),
+      position: (() => {
+        const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+          ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+          : room.dimensions;
+        const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+          ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+          : room.items.length;
+        return getDefaultSpatialPosition('plant', targetDims, count);
+      })(),
+      notes: `${propagationType === 'seed' ? 'Planted from seed for germination' : isHop ? 'Planted from dormant rhizome cutting' : 'Started from fresh vegetative cutting/clone'}.`,
+      systemType,
+      containerType,
+      containerVolumeGallons: containerVolume,
+      growingMedium,
+      nutrientProgram,
+      soilPh: initialPh,
+      ecTdsPpm: initialEc,
+      microbialHealth: (growingMedium === 'living_organic_soil' || growingMedium === 'native_garden_loam') ? 95 : 40,
+      aerationOxygenPct: (systemType === 'dwc' || systemType === 'aeroponics' || containerType === 'fabric_pot') ? 92 : 76,
+      reservoirTempF: (systemType === 'dwc' || systemType === 'ebb_and_flow') ? 68.0 : undefined,
+      alphaAcidsPct: isHop && hopData ? parseFloat(hopData.alphaAcids) || 7.5 : undefined,
+      scovilleHeatUnits: isPepper && pepperData ? pepperData.scovilleHeatUnits : undefined,
+      traits: { ...seedTraits, germinationOutcome: plantStage === 'germination' || plantStage === 'rooting' ? 'in_progress' : 'germinated' },
+    };
+
+    // Sown into a rack: one plant per free cell, each its own seed with its own genetics
+    if (sowRack && sowSlots.length > 0) {
+      const germinationOutcome = plantStage === 'germination' || plantStage === 'rooting' ? 'in_progress' : 'germinated';
+      const stamp = Date.now();
+      const sown: PlantItem[] = sowSlots.map((slot, i) => {
+        const insert = getRackTiers(sowRack)[slot.tier].insert;
+        const cellGallons = getInsertCellVolumeGallons(insert);
+        const size = getPlantTargetSize(
+          { species: plantSpecies, stage: plantStage, propagationType, stageProgress: initialProgress } as PlantItem,
+          getContainerSizeFactor(cellGallons)
+        );
+        const isEbbRack = sowRack.rackType === 'ebb_and_flow';
+        return {
+          ...newPlant,
+          id: `plant-${stamp}-${i}`,
+          name: `${newPlant.name} (${getRackSlotCode(sowRack, slot)})`,
+          rackSlot: slot,
+          systemType: isEbbRack ? 'ebb_and_flow' : newPlant.systemType,
+          growingMedium: isEbbRack && newPlant.growingMedium === 'living_organic_soil' ? 'hydroton_clay_pebbles' : newPlant.growingMedium,
+          soilPh: isEbbRack ? 5.8 : newPlant.soilPh,
+          reservoirTempF: isEbbRack ? 68.0 : newPlant.reservoirTempF,
+          containerType: TRAY_INSERTS[insert].kind === 'pot' ? 'tray_pot' : 'tray_cell',
+          containerVolumeGallons: cellGallons,
+          containerDimensions: getInsertCellDimensions(insert),
+          heightInches: parseFloat(size.heightInches.toFixed(1)),
+          canopyWidthInches: parseFloat(size.canopyWidthInches.toFixed(1)),
+          keyDates: { ...keyDates },
+          traits: { ...(i === 0 ? seedTraits : generateSeedTraits(plantSpecies, plantStrain, propagationType, seedGrade)), germinationOutcome }
+        };
+      });
+      const tentId = selectedDestinationTentId === 'room' ? null : selectedDestinationTentId;
+      if (onAddItems) onAddItems(sown, tentId);
+      else sown.forEach(p => onAddItem(p, tentId));
+      onClose();
+      return;
+    }
+
+    onAddItem(newPlant, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
+    onClose();
+  };
+
+  const handleCreateMushroom = () => {
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
+    const newMushroom: MushroomItem = {
+      id: `shroom-${Date.now()}`,
+      name: mushroomName || `${mushroomSpecies} Culture`,
+      category: 'mushroom',
+      species: mushroomSpecies,
+      strainName: `${mushroomSpecies} Premium Spores`,
+      stage: 'pinning',
+      stageProgress: 15,
+      ageDays: 14,
+      health: 96,
+      substrateMoisture: 88,
+      myceliumColonization: 95,
+      flushCount: 0,
+      yieldPotentialGrams: 280,
+      isHarvested: false,
+      containerType: mushroomContainer,
+      dimensions: getDefaultItemDimensions({ category: 'mushroom', containerType: mushroomContainer }),
+      position: getDefaultSpatialPosition('mushroom', targetDims, count),
+      traits: sporeTraits
+    };
+    onAddItem(newMushroom, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
+    onClose();
+  };
+
+  // Where a new heat mat can go in the chosen destination: under a tent's floor tray, under a pot or
+  // mushroom container, or wrapped around a humidifier
+  const destinationTent = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+    ? room.tents.find(t => t.id === selectedDestinationTentId)
+    : undefined;
+  const destinationItems = destinationTent ? destinationTent.items : room.items;
+  const heatMatOptions = [
+    ...(destinationTent ? [{ id: destinationTent.id, label: describeHeatMatPlacement({ kind: 'tent_floor', tent: destinationTent }) }] : []),
+    ...destinationItems.filter(canHeatMatAttachTo).map(item => {
+      const probe = { id: 'probe', category: 'equipment', type: 'heat_mat', attachedToId: item.id } as EquipmentItem;
+      return { id: item.id, label: describeHeatMatPlacement(getHeatMatTarget(probe, destinationItems, destinationTent)) };
+    })
+  ];
+  const heatMatPlacement = heatMatOptions.some(o => o.id === eqMatTargetId) ? eqMatTargetId : heatMatOptions[0]?.id ?? '';
+
+  // What a new nutrient reservoir could feed anywhere in this room: racks (every shelf) and hydro plants
+  // not on a rack. By default it takes the ones in its own destination that nothing feeds yet.
+  const roomLocations = [{ id: 'room', name: `${room.name} floor`, items: room.items }, ...room.tents.map(t => ({ id: t.id, name: t.name, items: t.items }))];
+  const roomWideItems = roomLocations.flatMap(l => l.items);
+  const alreadyFed = (id: string) => roomWideItems.some(i => i.category === 'equipment' && i.type === 'nutrient_reservoir' && (i.feedTargets ?? []).some(t => t.id === id));
+  const reservoirFeedOptions = roomLocations.flatMap(l => [
+    ...l.items.filter(isGrowRack).map(r => ({ id: r.id, local: l.id === selectedDestinationTentId, label: `${r.name} (every shelf) · ${l.name}` })),
+    ...l.items
+      .filter((i): i is PlantItem => i.category === 'plant' && !i.rackSlot && !!i.systemType && RESERVOIR_FED_SYSTEMS.includes(i.systemType))
+      .map(p => ({ id: p.id, local: l.id === selectedDestinationTentId, label: `${p.name} (${(p.systemType || '').replace(/_/g, ' ')}) · ${l.name}` }))
+  ]);
+  const reservoirFeedIds = resFeedIds ?? reservoirFeedOptions.filter(o => o.local && !alreadyFed(o.id)).map(o => o.id);
+
+  // Grow racks in the chosen destination, and the free cells the plant form would sow into
+  const destinationRacks = destinationItems.filter(isGrowRack);
+  const sowRack = destinationRacks.find(r => r.id === plantRackId);
+  const sowTiers = sowRack ? getRackTiers(sowRack) : [];
+  const sowTier = plantRackTier !== 'all' && plantRackTier < sowTiers.length ? plantRackTier : undefined;
+  const sowTray = sowTier !== undefined && plantRackTray !== 'all' && plantRackTray < sowTiers[sowTier].trays ? plantRackTray : undefined;
+  const freeSowSlots = sowRack ? getFreeRackSlots(sowRack, destinationItems, sowTier, sowTray) : [];
+  const sowSlots = freeSowSlots.slice(0, plantSowCount === null ? freeSowSlots.length : Math.max(0, Math.min(freeSowSlots.length, plantSowCount)));
+
+  // Portable A/Cs and supply registers condition the room itself, not a tent
+  const roomOnlyEquipment = eqType === 'portable_ac' || eqType === 'hvac_register';
+
+  const handleCreateEquipment = () => {
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
+    const newEq: EquipmentItem = {
+      id: `eq-${Date.now()}`,
+      name: eqName || `${eqType.replace('_', ' ')}`,
+      category: 'equipment',
+      type: eqType,
+      powerOn: true,
+      powerWatts: Number(eqWatts) || (eqType === 'co2_bag' ? 0 : 25),
+      setting: 75,
+      targetRh: eqType === 'humidifier' ? 65 : eqType === 'dehumidifier' ? 50 : undefined,
+      targetCo2Ppm: eqType === 'co2_regulator' ? 1200 : undefined,
+      schedule: eqType === 'grow_light' ? { enabled: true, onHour: 6, offHour: 0 } : undefined,
+      dimensions: getDefaultItemDimensions({ category: 'equipment', type: eqType }),
+      position: getDefaultSpatialPosition('equipment', targetDims, count, eqType)
+    };
+    if ((eqType === 'humidifier' || eqType === 'co2_regulator') && selectedDestinationTentId === 'room' && room.tents.some(t => t.id === eqHoseTentId)) {
+      newEq.ductedToTentId = eqHoseTentId;
+    }
+    // Thermostat equipment for the room itself
+    if (eqType === 'heater') newEq.targetTempF = 74;
+    if (eqType === 'portable_ac') {
+      newEq.targetTempF = 72;
+      newEq.coolingCapacityBtu = getPortableAcBtu(newEq);
+    }
+    if (eqType === 'hvac_register') {
+      newEq.registerMode = 'cool';
+      newEq.targetTempF = 72;
+      newEq.flowRateCfm = DEFAULT_REGISTER_CFM;
+      newEq.setting = 100;
+    }
+    if (eqType === 'exhaust_fan') {
+      const spec = INLINE_FAN_SPECS[eqDuctSize];
+      newEq.ductSizeIn = eqDuctSize;
+      newEq.flowRateCfm = spec.cfm;
+      newEq.dimensions = { ...spec.dimensions };
+      newEq.exhaustTo = eqExhaustTo;
+    }
+    if (eqType === 'heat_mat' && heatMatPlacement) {
+      newEq.attachedToId = heatMatPlacement;
+    }
+    if (eqType === 'nutrient_reservoir') {
+      newEq.setting = 100;
+      newEq.nutrientCapacityL = resLiters;
+      newEq.nutrientLevelL = resLiters;
+      newEq.nutrientEcPpm = DEFAULT_NUTRIENT_EC_PPM;
+      newEq.nutrientPh = DEFAULT_NUTRIENT_PH;
+      newEq.nutrientTargetEcPpm = DEFAULT_NUTRIENT_EC_PPM;
+      newEq.nutrientTargetPh = DEFAULT_NUTRIENT_PH;
+      newEq.pumpMode = resPumpMode;
+      newEq.floodsPerDay = 6;
+      newEq.floodMinutes = 15;
+      newEq.floodStartHour = 6;
+      newEq.feedTargets = reservoirFeedIds.filter(id => reservoirFeedOptions.some(o => o.id === id)).map(id => ({ id }));
+      newEq.lastSolutionChangeTime = simTime;
+      newEq.airStone = true;
+      newEq.dimensions = getReservoirDimensions(resLiters);
+    }
+    if (eqType === 'grow_rack') {
+      newEq.rackType = rackType;
+      newEq.trayLayout = rackTrayLayout;
+      newEq.powerWatts = rackType === 'ebb_and_flow' ? 25 : 0;
+      newEq.setting = rackType === 'ebb_and_flow' ? 100 : 0;
+      newEq.rackTiers = createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert });
+      newEq.rackTierSpacingFt = rackSpacingFt;
+      newEq.rackBottomShelfFt = rackBottomShelfFt;
+      if (rackType === 'ebb_and_flow') {
+        newEq.integratedReservoirL = rackIntegratedResL;
+        newEq.ebbFlowIntegratedPump = true;
+        newEq.ebbFlowFloodsPerDay = rackFloodsPerDay;
+        newEq.ebbFlowFloodDurationMin = 15;
+      }
+      newEq.dimensions = getRackDimensions(newEq);
+    }
+    // Tank / bucket capacity is an explicit property, sized to fit the unit's body
+    if (eqType === 'humidifier') {
+      newEq.reservoirCapacityL = getDefaultReservoirLiters(newEq);
+      newEq.reservoirLevelL = newEq.reservoirCapacityL;
+    }
+    if (eqType === 'dehumidifier') {
+      newEq.bucketCapacityL = getDefaultBucketCapacityL(newEq);
+      newEq.bucketLevelL = 0;
+    }
+    onAddItem(newEq, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
+    onClose();
+  };
+
+  const handleCreatePerson = () => {
+    const activitySpecs: Record<PersonActivity, { co2: number; watts: number; moisture: number; label: string }> = {
+      resting: { co2: 15, watts: 75, moisture: 0.8, label: 'Resting / Seated' },
+      normal: { co2: 22, watts: 100, moisture: 1.2, label: 'Normal Care & Inspection' },
+      active: { co2: 32, watts: 140, moisture: 1.8, label: 'Active Trellising & Pruning' },
+      exercising: { co2: 50, watts: 210, moisture: 2.5, label: 'Heavy Exertion & Moving Pots' }
+    };
+    const spec = activitySpecs[personActivity];
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
+    const meta = ROLE_METADATA[personRole] || ROLE_METADATA.resident;
+    const now = simTime || Date.now();
+
+    const newPerson: PersonItem = {
+      id: `person-${Date.now()}`,
+      name: personName.trim() || meta.badge.split(' ').slice(1).join(' '),
+      category: 'person',
+      role: personRole,
+      customTitle: meta.title,
+      activity: personActivity,
+      co2RateLitersPerHour: spec.co2,
+      heatOutputWatts: spec.watts,
+      moistureLitersPerDay: spec.moisture,
+      dimensions: getDefaultItemDimensions({ category: 'person' }),
+      position: getDefaultSpatialPosition('person', targetDims, count),
+      currentAction: personRole === 'resident' ? 'Resting in facility space' : 'On standby for duties',
+      shirtColor: meta.shirtColor,
+      hatColor: meta.hatColor,
+      workerSettings: getDefaultWorkerSettings(personRole),
+      inventory: getDefaultNpcInventory(personRole),
+      actionLog: [
+        {
+          id: `act-init-${Date.now()}`,
+          timestamp: now,
+          actionType: 'patrol',
+          title: `Assigned as ${meta.badge}`,
+          details: `Joined facility roster as ${meta.title}. Ready for duties and ambient CO₂ enrichment.`,
+          result: 'info'
+        }
+      ],
+      notes: `${meta.title} (${spec.label}) exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W metabolic heat.`
+    };
+    onAddItem(newPerson, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
+    onClose();
+  };
+
+  const handleCreatePet = () => {
+    const petSpecs: Record<PetType, { co2: number; watts: number; moisture: number; label: string }> = {
+      dog_large: { co2: 10, watts: 45, moisture: 0.6, label: 'Large Dog (50-85 lbs)' },
+      dog_medium: { co2: 6, watts: 28, moisture: 0.4, label: 'Medium Dog (25-50 lbs)' },
+      dog_small: { co2: 3.5, watts: 18, moisture: 0.25, label: 'Small Dog / Puppy (<25 lbs)' },
+      cat: { co2: 2.2, watts: 12, moisture: 0.18, label: 'Domestic Cat (8-15 lbs)' }
+    };
+    const spec = petSpecs[petType];
+    const targetDims = selectedDestinationTentId && selectedDestinationTentId !== 'room' 
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.dimensions || room.dimensions)
+      : room.dimensions;
+    const count = selectedDestinationTentId && selectedDestinationTentId !== 'room'
+      ? (room.tents.find(t => t.id === selectedDestinationTentId)?.items.length || 0)
+      : room.items.length;
+
+    const newPet: PetItem = {
+      id: `pet-${Date.now()}`,
+      name: petName.trim() || spec.label,
+      category: 'pet',
+      petType,
+      breed: petBreed.trim() || undefined,
+      co2RateLitersPerHour: spec.co2,
+      heatOutputWatts: spec.watts,
+      moistureLitersPerDay: spec.moisture,
+      dimensions: getDefaultItemDimensions({ category: 'pet', petType }),
+      position: getDefaultSpatialPosition('pet', targetDims, count),
+      notes: `Pet occupant exhaling ~${spec.co2} L/hr CO₂ with ${spec.watts}W body warmth.`
+    };
+    onAddItem(newPet, selectedDestinationTentId === 'room' ? null : selectedDestinationTentId);
+    onClose();
+  };
+
+  const filteredCatalog = TENT_CATALOG.filter(t => {
+    if (tentBrandFilter === 'all') return true;
+    return t.brand === tentBrandFilter;
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl text-zinc-100 max-h-[92vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+          <div className="flex items-center gap-2">
+            <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+              <Plus className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-zinc-100">Add to Grow Operation</h3>
+              <p className="text-xs text-zinc-400">Choose standard brand tents, crops, or climate gear</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Tab Selection */}
+        <div className={`grid gap-2 my-4 ${targetTentId ? 'grid-cols-2 sm:grid-cols-5' : 'grid-cols-3 sm:grid-cols-6'}`}>
+          {!targetTentId && (
+            <button
+              onClick={() => setActiveTab('tent')}
+              className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                activeTab === 'tent'
+                  ? 'bg-sky-600 border-sky-500 text-white shadow-sm'
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>Tent</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => setActiveTab('plant')}
+            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+              activeTab === 'plant'
+                ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Flower2 className="w-3.5 h-3.5" />
+            <span>Plant</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('mushroom')}
+            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+              activeTab === 'mushroom'
+                ? 'bg-amber-600 border-amber-500 text-white shadow-sm'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Sprout className="w-3.5 h-3.5" />
+            <span>Fungi</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('equipment')}
+            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+              activeTab === 'equipment'
+                ? 'bg-teal-600 border-teal-500 text-white shadow-sm'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>Gear</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('person')}
+            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+              activeTab === 'person'
+                ? 'bg-violet-600 border-violet-500 text-white shadow-sm'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <User className="w-3.5 h-3.5" />
+            <span>Person</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('pet')}
+            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+              activeTab === 'pet'
+                ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Dog className="w-3.5 h-3.5" />
+            <span>Pet</span>
+          </button>
+        </div>
+
+        {/* Destination Target (for non-tent items) */}
+        {activeTab !== 'tent' && (
+          <div className="mb-4 bg-zinc-950/70 border border-zinc-800 rounded-xl p-3">
+            <label className="text-xs font-semibold text-zinc-300 block mb-1">
+              Select Placement Destination:
+            </label>
+            <select
+              value={selectedDestinationTentId}
+              onChange={e => setSelectedDestinationTentId(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-750 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"
+            >
+              <option value="room">{room.name} (Freestanding Room Floor)</option>
+              {room.tents.map(t => (
+                <option key={t.id} value={t.id}>{t.name} ({t.dimensions.length}x{t.dimensions.width}ft)</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* 1. STANDARD TENT CATALOG TAB */}
+        {activeTab === 'tent' && (
+          <div className="space-y-4">
+            {/* Brand Filter Pills */}
+            <div className="flex items-center gap-2 border-b border-zinc-800 pb-2">
+              {(['AC Infinity', 'Spider Farmer', 'all', 'Custom'] as const).map(b => (
+                <button
+                  key={b}
+                  type="button"
+                  onClick={() => setTentBrandFilter(b as any)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    tentBrandFilter === b
+                      ? b === 'AC Infinity'
+                        ? 'bg-sky-600 text-white'
+                        : b === 'Spider Farmer'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-zinc-750 text-white'
+                      : 'bg-zinc-950 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                >
+                  {b === 'all' ? 'All Models' : b}
+                </button>
+              ))}
+            </div>
+
+            {tentBrandFilter !== 'Custom' ? (
+              <div className="space-y-3">
+                <span className="text-xs text-zinc-400 block">
+                  Select official factory tent enclosure from inventory:
+                </span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[380px] overflow-y-auto pr-1">
+                  {filteredCatalog.map(item => {
+                    const isSelected = selectedCatalogTent.id === item.id;
+                    const vol = Math.round(item.dimensions.length * item.dimensions.width * item.dimensions.height);
+                    const isACI = item.brand === 'AC Infinity';
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => setSelectedCatalogTent(item)}
+                        className={`p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between ${
+                          isSelected
+                            ? isACI 
+                              ? 'bg-sky-950/70 border-sky-500 shadow-md ring-1 ring-sky-500/30' 
+                              : 'bg-amber-950/70 border-amber-500 shadow-md ring-1 ring-amber-500/30'
+                            : 'bg-zinc-950/80 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/60'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`text-[10px] font-mono uppercase tracking-wider font-bold px-1.5 py-0.2 rounded ${
+                              isACI ? 'bg-sky-950 border border-sky-800 text-sky-300' : 'bg-amber-950 border border-amber-800 text-amber-300'
+                            }`}>
+                              {item.brand}
+                            </span>
+                            <span className="text-[11px] font-mono font-bold text-zinc-200">
+                              {item.dimensionsInches}
+                            </span>
+                          </div>
+
+                          <h4 className="text-xs font-bold text-zinc-100 flex items-center justify-between">
+                            <span>{item.modelName}</span>
+                            <span className="text-[10px] font-mono text-zinc-400">{vol} cu ft</span>
+                          </h4>
+
+                          <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2 leading-tight">
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="mt-2.5 pt-2 border-t border-zinc-850 flex items-center justify-between text-[10px] text-zinc-400 font-mono">
+                          <span>{item.mylarRating.split(' ')[0]} Mylar · {item.poleDiameter.split(' ')[0]}</span>
+                          <span className={isSelected ? 'text-sky-400 font-bold flex items-center gap-0.5' : 'text-zinc-500'}>
+                            {isSelected ? '✓ Selected' : 'Click to Pick'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Custom Name for the Tent */}
+                <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3 space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-200 block">
+                    Tent Custom Name / Label (Displayed in Simulation &amp; 3D Game):
+                  </label>
+                  <input
+                    type="text"
+                    value={tentFriendlyName}
+                    onChange={e => setTentFriendlyName(e.target.value)}
+                    placeholder="e.g. Veg Tent #1, Propagation Nursery, Flower Tent 4x4"
+                    className="w-full bg-zinc-900 border border-zinc-750 focus:border-sky-500 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-zinc-400">
+                    Selected Model: <span className="font-mono text-zinc-300 font-semibold">{selectedCatalogTent.brand} {selectedCatalogTent.modelName} ({selectedCatalogTent.dimensionsInches})</span>
+                  </p>
+                </div>
+
+                {/* Selected Tent Highlight Bar */}
+                <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-[10px] font-mono uppercase text-sky-400 block">Hardware Spec</span>
+                    <strong className="text-zinc-200 font-bold">{selectedCatalogTent.brand} {selectedCatalogTent.modelName}</strong>
+                    <span className="text-zinc-400 block text-[11px]">{selectedCatalogTent.recommendedUse}</span>
+                  </div>
+                  <button
+                    onClick={handleCreateTent}
+                    className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white shadow-md shadow-sky-950/50"
+                  >
+                    Deploy Tent
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Custom Dimensions Form */
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300 block mb-1">Custom Tent Name</label>
+                  <input
+                    type="text"
+                    value={customTentName}
+                    onChange={e => setCustomTentName(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 focus:border-teal-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">Length (ft)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="2"
+                      max="20"
+                      value={customLength}
+                      onChange={e => setCustomLength(parseFloat(e.target.value))}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">Width (ft)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="2"
+                      max="20"
+                      value={customWidth}
+                      onChange={e => setCustomWidth(parseFloat(e.target.value))}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">Height (ft)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="3"
+                      max="12"
+                      value={customHeight}
+                      onChange={e => setCustomHeight(parseFloat(e.target.value))}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex justify-end gap-2">
+                  <button
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateTent}
+                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white shadow-md"
+                  >
+                    Build Custom Tent
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 2. PLANT FORM */}
+        {activeTab === 'plant' && (
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Botanical Species</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {(['Cannabis', 'Hops', 'Tomato', 'Chili Pepper', 'Basil'] as PlantSpecies[]).map(s => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setPlantSpecies(s);
+                      if (s === 'Hops') {
+                        const h = HOP_CULTIVARS[selectedHopIdx];
+                        setPlantName(`${h.name} Bine`);
+                        setPlantStrain(h.variety);
+                        setContainerType('raised_bed_cedar');
+                        setSystemType('raised_bed');
+                        setContainerVolume(30);
+                        setGrowingMedium('living_organic_soil');
+                        setNutrientProgram('organic_living_soil');
+                        setVegDays(45);
+                        setFlowerDays(h.floweringDays);
+                      } else if (s === 'Cannabis') {
+                        setPlantName('Gorilla Glue #4');
+                        setPlantStrain('Sour Dubb x Chem Sister');
+                      } else if (s === 'Tomato') {
+                        setPlantName('Cherokee Purple');
+                        setPlantStrain('Heirloom Beefsteak');
+                        setGerminationDays(6);
+                        setVegDays(28);
+                        setFlowerDays(45);
+                      } else if (s === 'Chili Pepper') {
+                        const p = PEPPER_CULTIVARS[selectedPepperIdx] || PEPPER_CULTIVARS[0];
+                        setPlantName(p.name.toLowerCase().includes('pepper') || p.name.toLowerCase().includes('bell') ? p.name : `${p.name} Pepper`);
+                        setPlantStrain(p.variety);
+                        setGerminationDays(p.germinationDaysExpected);
+                        setSeedlingDays(p.seedlingDaysExpected);
+                        setMatureSeedlingDays(p.matureSeedlingDaysExpected);
+                        setVegDays(p.vegetativeDaysExpected);
+                        setFlowerDays(p.floweringDaysExpected);
+                        setRipenDays(p.ripeningDaysExpected);
+                      } else {
+                        setPlantName('Sweet Genovese Basil');
+                        setPlantStrain('Ocimum basilicum');
+                        setGerminationDays(5);
+                        setVegDays(21);
+                        setFlowerDays(30);
+                      }
+                    }}
+                    className={`py-2 px-3 rounded-xl text-xs font-medium border text-left flex items-center justify-between ${
+                      plantSpecies === s
+                        ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <span>{s === 'Hops' ? '🍺 Hops' : s === 'Chili Pepper' ? '🌶️ Chili Pepper' : s}</span>
+                    {plantSpecies === s && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {plantSpecies === 'Hops' && (
+              <div className="p-3 bg-amber-950/20 border border-amber-800/60 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                    <span>🍺 Craft Hop Cultivars (Humulus lupulus)</span>
+                  </label>
+                  <span className="text-[10px] text-amber-400/80 font-mono">Trellis Bine Climber</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {HOP_CULTIVARS.map((hop, idx) => (
+                    <button
+                      key={hop.name}
+                      type="button"
+                      onClick={() => {
+                        setSelectedHopIdx(idx);
+                        setPlantName(`${hop.name} Bine`);
+                        setPlantStrain(hop.variety);
+                        setFlowerDays(hop.floweringDays);
+                      }}
+                      className={`p-2.5 rounded-lg border text-left text-xs transition-all ${
+                        selectedHopIdx === idx
+                          ? 'bg-amber-900/40 border-amber-500 text-amber-200 ring-1 ring-amber-500/50'
+                          : 'bg-zinc-950/80 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold text-zinc-100">
+                        <span>{hop.name.replace(' Hops', '')}</span>
+                        <span className="text-[10px] text-amber-400 font-mono">{hop.alphaAcids}</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{hop.aromaProfile}</div>
+                      <div className="text-[9px] text-zinc-500 mt-0.5 capitalize">{hop.growthVigor} vigor · {hop.floweringDays}d bloom</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {plantSpecies === 'Chili Pepper' && (() => {
+              const filteredPeppers = PEPPER_CULTIVARS.filter((p) => {
+                if (pepperFilterCategory === 'heirloom_pack' && !p.seedPackDetails) return false;
+                if (pepperFilterCategory === 'sweet_mild' && p.heatLevel !== 'sweet' && p.heatLevel !== 'mild') return false;
+                if (pepperFilterCategory === 'hot' && p.heatLevel !== 'medium' && p.heatLevel !== 'hot') return false;
+                if (pepperFilterCategory === 'superhot' && p.heatLevel !== 'superhot') return false;
+
+                if (pepperSearch.trim()) {
+                  const q = pepperSearch.toLowerCase();
+                  return (
+                    p.name.toLowerCase().includes(q) ||
+                    p.variety.toLowerCase().includes(q) ||
+                    p.description.toLowerCase().includes(q) ||
+                    p.scovilleRating.toLowerCase().includes(q)
+                  );
+                }
+                return true;
+              });
+
+              const heirloomCount = PEPPER_CULTIVARS.filter(p => !!p.seedPackDetails).length;
+              const sweetMildCount = PEPPER_CULTIVARS.filter(p => p.heatLevel === 'sweet' || p.heatLevel === 'mild').length;
+              const hotCount = PEPPER_CULTIVARS.filter(p => p.heatLevel === 'medium' || p.heatLevel === 'hot').length;
+              const superhotCount = PEPPER_CULTIVARS.filter(p => p.heatLevel === 'superhot').length;
+
+              return (
+                <div className="p-3 bg-red-950/20 border border-red-800/60 rounded-xl space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-red-900/30 pb-2">
+                    <div>
+                      <label className="text-xs font-bold text-red-200 flex items-center gap-1.5">
+                        <Flame className="w-3.5 h-3.5 text-red-400" />
+                        <span>Chili &amp; Sweet Pepper Cultivars (Capsicum)</span>
+                      </label>
+                      <p className="text-[10px] text-zinc-400 mt-0.5">
+                        Featuring the 14 Sweet &amp; Hot Heirloom Seeds Pack (Anaheim, Big Jim, California Wonder, Cubanelle, Habanero, Serrano...)
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-amber-300/90 font-mono bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/60 self-start sm:self-auto">
+                      ⚡ Bottom Heat 80-86°F Recommended
+                    </span>
+                  </div>
+
+                  {/* Filter tabs & Search Bar */}
+                  <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between">
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 scrollbar-none text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setPepperFilterCategory('heirloom_pack')}
+                        className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap transition-all flex items-center gap-1 ${
+                          pepperFilterCategory === 'heirloom_pack'
+                            ? 'bg-red-800/90 text-red-100 shadow-sm border border-red-600'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        <Sprout className="w-3 h-3 text-emerald-400" />
+                        <span>14 Heirloom Pack</span>
+                        <span className="text-[9px] opacity-80 font-mono">({heirloomCount})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPepperFilterCategory('all')}
+                        className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap transition-all ${
+                          pepperFilterCategory === 'all'
+                            ? 'bg-zinc-800 text-zinc-100 shadow-sm border border-zinc-600'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        <span>All ({PEPPER_CULTIVARS.length})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPepperFilterCategory('sweet_mild')}
+                        className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap transition-all ${
+                          pepperFilterCategory === 'sweet_mild'
+                            ? 'bg-blue-900/80 text-blue-200 shadow-sm border border-blue-700'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        <span>Sweet &amp; Mild ({sweetMildCount})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPepperFilterCategory('hot')}
+                        className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap transition-all ${
+                          pepperFilterCategory === 'hot'
+                            ? 'bg-amber-900/80 text-amber-200 shadow-sm border border-amber-700'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        <span>Medium &amp; Hot ({hotCount})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPepperFilterCategory('superhot')}
+                        className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap transition-all ${
+                          pepperFilterCategory === 'superhot'
+                            ? 'bg-rose-900/80 text-rose-200 shadow-sm border border-rose-700'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        <span>Superhot ({superhotCount})</span>
+                      </button>
+                    </div>
+
+                    <div className="relative sm:w-44 shrink-0">
+                      <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-2 pointer-events-none" />
+                      <input
+                        type="text"
+                        placeholder="Search peppers..."
+                        value={pepperSearch}
+                        onChange={(e) => setPepperSearch(e.target.value)}
+                        className="w-full bg-zinc-950/90 border border-zinc-800 rounded-md pl-8 pr-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-red-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Cultivar Cards Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-[340px] overflow-y-auto pr-1">
+                    {filteredPeppers.map((pepper) => {
+                      const realIdx = PEPPER_CULTIVARS.findIndex((p) => p.name === pepper.name);
+                      const isSelected = selectedPepperIdx === realIdx;
+
+                      return (
+                        <button
+                          key={pepper.name}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPepperIdx(realIdx);
+                            const cleanName = pepper.name.toLowerCase().includes('pepper') || pepper.name.toLowerCase().includes('bell')
+                              ? pepper.name
+                              : `${pepper.name} Pepper`;
+                            setPlantName(cleanName);
+                            setPlantStrain(pepper.variety);
+                            setGerminationDays(pepper.germinationDaysExpected);
+                            setSeedlingDays(pepper.seedlingDaysExpected);
+                            setMatureSeedlingDays(pepper.matureSeedlingDaysExpected);
+                            setVegDays(pepper.vegetativeDaysExpected);
+                            setFlowerDays(pepper.floweringDaysExpected);
+                            setRipenDays(pepper.ripeningDaysExpected);
+                          }}
+                          className={`p-2.5 rounded-lg border text-left text-xs transition-all flex flex-col justify-between ${
+                            isSelected
+                              ? 'bg-red-950/70 border-red-500 text-red-100 ring-1 ring-red-500/60 shadow-md'
+                              : 'bg-zinc-950/80 border-zinc-800/90 text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900/60'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-1.5 font-bold text-zinc-100">
+                              <span className="truncate">{pepper.name}</span>
+                              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${pepper.heatBadgeColor}`}>
+                                {pepper.scovilleRating.split(' ')[0]} SHU
+                              </span>
+                            </div>
+
+                            {/* Heirloom seed pack badge if applicable */}
+                            {pepper.seedPackDetails && (
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 text-[9px] px-1.5 py-0.2 rounded font-medium">
+                                  🌱 Heirloom Pack
+                                </span>
+                                <span className="text-[9px] text-zinc-400 font-mono">
+                                  ~{pepper.seedPackDetails.approxSeeds} seeds · {pepper.seedPackDetails.germinationRatePct}% germ
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="text-[10px] text-zinc-400 mt-1 line-clamp-2 leading-relaxed">
+                              {pepper.description}
+                            </div>
+                          </div>
+
+                          <div className="mt-2 pt-1.5 border-t border-zinc-800/60 flex items-center justify-between text-[9px] text-zinc-500 font-mono">
+                            <span>
+                              {pepper.seedPackDetails ? pepper.seedPackDetails.harvestDaysRange : `${pepper.germinationDaysExpected + pepper.vegetativeDaysExpected + pepper.floweringDaysExpected}d cycle`}
+                            </span>
+                            <span>
+                              {pepper.seedPackDetails ? `Zone ${pepper.seedPackDetails.hardinessZones}` : `${pepper.optimalGerminationTempF}°F germ`}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Plant Name</label>
+                <input
+                  type="text"
+                  value={plantName}
+                  onChange={e => setPlantName(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Strain / Lineage</label>
+                <input
+                  type="text"
+                  value={plantStrain}
+                  onChange={e => setPlantStrain(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+            </div>
+
+            {/* Propagation Method Selection */}
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Propagation Origin</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPropagationType('seed');
+                    if (plantStage === 'rooting') setPlantStage('germination');
+                  }}
+                  className={`p-2.5 rounded-xl text-xs font-medium border text-left transition-all ${
+                    propagationType === 'seed'
+                      ? 'bg-emerald-950 border-emerald-500 text-emerald-200 ring-1 ring-emerald-500/50'
+                      : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                    <span>🌱 From Seed</span>
+                    {propagationType === 'seed' && <Check className="w-3.5 h-3.5 text-emerald-400 ml-auto" />}
+                  </div>
+                  <span className="text-[10px] text-zinc-400 block">Sown for germination; tracks sprouted milestone date.</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPropagationType('cutting');
+                    if (plantStage === 'germination') setPlantStage('rooting');
+                  }}
+                  className={`p-2.5 rounded-xl text-xs font-medium border text-left transition-all ${
+                    propagationType === 'cutting'
+                      ? 'bg-teal-950 border-teal-500 text-teal-200 ring-1 ring-teal-500/50'
+                      : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                    <span>✂️ From Cutting / Clone</span>
+                    {propagationType === 'cutting' && <Check className="w-3.5 h-3.5 text-teal-400 ml-auto" />}
+                  </div>
+                  <span className="text-[10px] text-zinc-400 block">Taken from mother plant; tracks rooted milestone date.</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Seed Genetics & Trait Variability Panel */}
+            {propagationType === 'seed' ? (
+              (() => {
+                const tierInfo = getGeneticTier(seedTraits.germinationVigor, seedTraits.viabilityPct, seedTraits.yieldMultiplier);
+                return (
+                  <div className="border border-emerald-900/60 bg-emerald-950/20 rounded-xl p-3 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                          <Dna className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                            Seed Genetics &amp; Phenotypic Variability
+                            <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${tierInfo.badgeColor}`}>
+                              Tier {tierInfo.tier} · {tierInfo.label}
+                            </span>
+                          </h4>
+                          <p className="text-[10px] text-zinc-400">Real seeds exhibit natural viability rates, growth vigor, and unique expression.</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSeedTraits(generateSeedTraits(plantSpecies, plantStrain, 'seed', seedGrade))}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[11px] font-medium transition-colors"
+                        title="Roll another seed from this lineage"
+                      >
+                        <RefreshCw className="w-3 h-3 text-emerald-400" />
+                        <span>Roll Pheno</span>
+                      </button>
+                    </div>
+
+                    {/* Seed Grade Selection */}
+                    <div>
+                      <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Breeder Grade / Seed Source</label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(['Certified High-Viability', 'Standard Breeder Pack', 'Exotic Wildcraft'] as const).map(grade => (
+                          <button
+                            key={grade}
+                            type="button"
+                            onClick={() => {
+                              setSeedGrade(grade);
+                              setSeedTraits(generateSeedTraits(plantSpecies, plantStrain, 'seed', grade));
+                            }}
+                            className={`p-1.5 rounded-lg text-left border transition-all ${
+                              seedGrade === grade
+                                ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200'
+                                : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            <div className="font-semibold text-[10px] truncate">{grade}</div>
+                            <div className="text-[9px] text-zinc-500">
+                              {grade === 'Certified High-Viability' ? '96%+ Viable' : grade === 'Standard Breeder Pack' ? '85-92% Viable' : '70-85% Viable'}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Live Trait Radar Card */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-zinc-950/60 border border-zinc-800/80 rounded-lg p-2 text-[11px]">
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Viability</span>
+                        <span className="font-mono font-bold text-emerald-400">{seedTraits.viabilityPct}%</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Germ Vigor</span>
+                        <span className="font-mono font-bold text-teal-400">{seedTraits.germinationVigor.toFixed(2)}x</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Growth Rate</span>
+                        <span className="font-mono font-bold text-sky-400">{seedTraits.growthRateMultiplier.toFixed(2)}x</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500 block text-[9px] uppercase font-mono">Yield Potential</span>
+                        <span className="font-mono font-bold text-amber-400">{seedTraits.yieldMultiplier.toFixed(2)}x</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 bg-zinc-900/40 rounded px-2 py-1">
+                      <span className="text-emerald-400 font-semibold">Phenotype:</span>
+                      <span className="truncate italic">"{seedTraits.phenotypeName}"</span>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="border border-teal-900/40 bg-teal-950/20 rounded-xl p-2.5 flex items-center gap-2 text-xs text-teal-300">
+                <span className="text-base">✂️</span>
+                <span><strong>Asexual Clone:</strong> Genetically uniform duplicate of donor mother plant (1.00x fixed baseline vigor).</span>
+              </div>
+            )}
+
+            {/* Starting Lifecycle Stage */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-zinc-300">Starting Lifecycle Stage</label>
+                <span className="text-[10px] font-mono text-emerald-400">
+                  {plantStage.replace('_', ' ').toUpperCase()}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                {(propagationType === 'seed' 
+                  ? [
+                      { id: 'germination', label: 'Germination', desc: 'Day 0 Seed' },
+                      { id: 'seedling', label: 'Seedling', desc: 'Early Sprout' },
+                      { id: 'mature_seedling', label: 'Mature Seedling', desc: 'True Leaves' },
+                      { id: 'vegetative', label: 'Vegetative', desc: 'Foliage Veg' },
+                      { id: 'flowering', label: 'Flowering', desc: 'Bloom Cycle' }
+                    ]
+                  : [
+                      { id: 'rooting', label: 'Rooting', desc: 'Fresh Clone' },
+                      { id: 'seedling', label: 'Rooted Clone', desc: 'Roots Struck' },
+                      { id: 'mature_seedling', label: 'Mature Clone', desc: 'Established' },
+                      { id: 'vegetative', label: 'Vegetative', desc: 'Active Veg' },
+                      { id: 'flowering', label: 'Flowering', desc: 'Bloom Cycle' }
+                    ]
+                ).map(st => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setPlantStage(st.id as PlantStage)}
+                    className={`py-2 px-1.5 rounded-lg text-xs font-medium border text-center transition-all ${
+                      plantStage === st.id
+                        ? 'bg-emerald-950 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span className="font-semibold block truncate text-[11px]">{st.label}</span>
+                    <span className="text-[9px] text-zinc-500 block truncate">{st.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Key Date Log Preview Banner */}
+            <div className="p-3 bg-zinc-950/70 border border-zinc-800 rounded-xl space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-zinc-400 flex items-center gap-1.5 font-medium">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  Initial Milestone Date:
+                </span>
+                <span className="font-mono text-zinc-200 font-bold">
+                  {formatSimDateTime(simTime || Date.now())}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                {propagationType === 'seed' 
+                  ? `Sowing date logged as ${formatSimDateTime(simTime || Date.now())}. The simulation will automatically calculate when the seed sprouts, enters early seedling, mature seedling, and vegetative phase based on your tent's root warmth, moisture, and VPD.`
+                  : `Cutting date logged as ${formatSimDateTime(simTime || Date.now())}. The simulation tracks rooting success based on humidity dome moisture, gentle lighting, and root substrate warmth.`}
+              </p>
+            </div>
+
+            {/* Cultivar Stage Durations (Expandable) */}
+            <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedDurations(!showAdvancedDurations)}
+                className="w-full px-3 py-2 flex items-center justify-between text-xs text-zinc-300 hover:bg-zinc-900/50 transition-colors"
+              >
+                <span className="font-semibold flex items-center gap-1.5">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" />
+                  Cultivar Stage Durations &amp; Phenotype Timings
+                </span>
+                <span className="text-[11px] text-emerald-400 font-mono">
+                  {showAdvancedDurations ? '▲ Hide' : '▼ Customize Days'}
+                </span>
+              </button>
+
+              {showAdvancedDurations && (
+                <div className="p-3 pt-1 border-t border-zinc-850 space-y-2.5 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {propagationType === 'seed' ? (
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">Germination (Days)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          value={germinationDays}
+                          onChange={e => setGerminationDays(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-[10px] text-zinc-400 block mb-0.5">Rooting (Days)</label>
+                        <input
+                          type="number"
+                          min="3"
+                          max="30"
+                          value={rootingDays}
+                          onChange={e => setRootingDays(Math.max(3, parseInt(e.target.value) || 3))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Seedling Phase (Days)</label>
+                      <input
+                        type="number"
+                        min="3"
+                        max="25"
+                        value={seedlingDays}
+                        onChange={e => setSeedlingDays(Math.max(3, parseInt(e.target.value) || 3))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Mature Seedling (Days)</label>
+                      <input
+                        type="number"
+                        min="4"
+                        max="30"
+                        value={matureSeedlingDays}
+                        onChange={e => setMatureSeedlingDays(Math.max(4, parseInt(e.target.value) || 4))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Vegetative (Days)</label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="90"
+                        value={vegDays}
+                        onChange={e => setVegDays(Math.max(10, parseInt(e.target.value) || 10))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Flowering Bloom (Days)</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="120"
+                        value={flowerDays}
+                        onChange={e => setFlowerDays(Math.max(30, parseInt(e.target.value) || 30))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-zinc-400 block mb-0.5">Ripening Window (Days)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="30"
+                        value={ripenDays}
+                        onChange={e => setRipenDays(Math.max(5, parseInt(e.target.value) || 5))}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono text-zinc-200"
+                      />
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block">
+                    * Ideal duration under standard conditions. Suboptimal VPD, cold roots, or low PPFD will proportionally slow down progress in the physics loop.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Grow rack sowing: without a rack here, point to where 1020 trays come from */}
+            {destinationRacks.length === 0 && (() => {
+              const racksElsewhere = [
+                ...(selectedDestinationTentId !== 'room' ? room.items.filter(isGrowRack).map(r => ({ rack: r, where: 'room', label: `${room.name} floor` })) : []),
+                ...room.tents.filter(t => t.id !== selectedDestinationTentId).flatMap(t => t.items.filter(isGrowRack).map(r => ({ rack: r, where: t.id, label: t.name })))
+              ];
+              return (
+                <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 p-3 space-y-2 text-xs">
+                  <label className="text-[11px] font-semibold text-zinc-400 block">Plant Into</label>
+                  <p className="text-[11px] text-zinc-400">
+                    Its own container (pot, bed, bucket...). To sow 1020 trays of cells or small pots, for ebb &amp; flow or seed starting, the destination needs a <span className="text-zinc-200 font-semibold">Grow Rack</span>.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {racksElsewhere.map(({ rack, where, label }) => (
+                      <button
+                        key={rack.id}
+                        type="button"
+                        onClick={() => { setSelectedDestinationTentId(where); setPlantRackId(rack.id); setPlantRackTier('all'); setPlantRackTray('all'); setPlantSowCount(null); }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-900/60 border border-emerald-700 text-emerald-200 hover:bg-emerald-800 text-[11px]"
+                      >
+                        Use {rack.name} in {label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => { setActiveTab('equipment'); setEqType('grow_rack'); setEqName(GROW_RACK_PRESETS[0].name); setEqWatts(0); }}
+                      className="px-2.5 py-1 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700 text-[11px]"
+                    >
+                      + Add a Grow Rack here
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+            {destinationRacks.length > 0 && (
+              <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 p-3 space-y-2 text-xs">
+                <label className="text-[11px] font-semibold text-zinc-400 block">Plant Into</label>
+                <select
+                  value={plantRackId}
+                  onChange={e => { setPlantRackId(e.target.value); setPlantRackTier('all'); setPlantRackTray('all'); setPlantSowCount(null); }}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="">Its own container (pot, bed, bucket...)</option>
+                  {destinationRacks.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}: {getFreeRackSlots(r, destinationItems).length} of {getRackCapacity(r)} cells free
+                    </option>
+                  ))}
+                </select>
+                {sowRack && (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Shelf</label>
+                        <select
+                          value={String(sowTier ?? 'all')}
+                          onChange={e => { setPlantRackTier(e.target.value === 'all' ? 'all' : Number(e.target.value)); setPlantRackTray('all'); }}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200"
+                        >
+                          <option value="all">Every shelf</option>
+                          {sowTiers.map((t, i) => (
+                            <option key={i} value={i}>Shelf {i + 1} ({describeTierLevel(i, sowTiers.length)}): {TRAY_INSERTS[t.insert].label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tray</label>
+                        <select
+                          value={String(sowTray ?? 'all')}
+                          disabled={sowTier === undefined || sowTiers[sowTier].trays < 2}
+                          onChange={e => setPlantRackTray(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
+                        >
+                          <option value="all">Every tray</option>
+                          {sowTier !== undefined && Array.from({ length: sowTiers[sowTier].trays }, (_, i) => (
+                            <option key={i} value={i}>Tray {i + 1}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-zinc-400 block mb-1">How Many</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max={freeSowSlots.length}
+                          value={sowSlots.length}
+                          onChange={e => setPlantSowCount(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-200"
+                        />
+                      </div>
+                    </div>
+                    {RESERVOIR_FED_SYSTEMS.includes(systemType) && !alreadyFed(sowRack.id) && (
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded-lg px-2 py-1.5">
+                        <span>No nutrient reservoir feeds this rack yet, so its trays won't flood.</span>
+                        <button
+                          type="button"
+                          onClick={() => { const preset = NUTRIENT_RESERVOIR_PRESETS[1]; setActiveTab('equipment'); setEqType('nutrient_reservoir'); setEqName(preset.name); setEqWatts(preset.pumpWatts); setResLiters(preset.liters); setResFeedIds(null); }}
+                          className="shrink-0 px-2 py-0.5 rounded bg-amber-800/70 hover:bg-amber-700 text-amber-50"
+                        >
+                          + Add Reservoir
+                        </button>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                      <span>
+                        {freeSowSlots.length === 0
+                          ? 'No free cells there.'
+                          : `Fills ${sowSlots.length} of ${freeSowSlots.length} free cells in order. Each seed gets its own genetics and plant record.`}
+                      </span>
+                      {plantSowCount !== null && freeSowSlots.length > 0 && (
+                        <button type="button" onClick={() => setPlantSowCount(null)} className="text-emerald-400 hover:text-emerald-300 shrink-0 ml-2">
+                          Fill all ({freeSowSlots.length})
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Cultivation System & Soil Dynamics Customizer */}
+            <div className="border border-zinc-800 rounded-xl bg-zinc-950/50 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowSoilCustomizer(!showSoilCustomizer)}
+                className="w-full px-3 py-2 flex items-center justify-between text-xs text-zinc-300 hover:bg-zinc-900/50 transition-colors"
+              >
+                <span className="font-semibold flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                  Cultivation System, Container &amp; Soil Dynamics
+                </span>
+                <span className="text-[11px] text-emerald-400 font-mono">
+                  {showSoilCustomizer ? '▲ Collapse' : '▼ Customize Soil / Hydro'}
+                </span>
+              </button>
+
+              {showSoilCustomizer && (
+                <div className="p-3 pt-1 border-t border-zinc-800/80 space-y-3 text-xs">
+                  {/* System Type */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Cultivation System</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      {[
+                        { id: 'soil_container', label: 'Soil Container', desc: 'Fabric / Plastic Pot' },
+                        { id: 'raised_bed', label: 'Cedar Raised Bed', desc: 'Outdoor / Living Soil' },
+                        { id: 'in_ground', label: 'In-Ground Soil', desc: 'Direct Garden Earth' },
+                        { id: 'dwc', label: 'DWC Hydroponics', desc: 'Aerated Res Bucket' },
+                        { id: 'ebb_and_flow', label: 'Ebb & Flow', desc: 'Flood & Drain Table' },
+                        { id: 'drip_hydro', label: 'Drip Hydro', desc: 'Automated Drippers' },
+                        { id: 'aeroponics', label: 'Aeroponics', desc: 'Misted Root Chamber' },
+                        { id: 'wick_system', label: 'Wick System', desc: 'Passive Sub-Irrigated' },
+                      ].map(sys => (
+                        <button
+                          key={sys.id}
+                          type="button"
+                          onClick={() => {
+                            const system = sys.id as CultivationSystemType;
+                            setSystemType(system);
+                            // Keep the vessel and substrate only if they work with the new system
+                            const containers = getCompatibleContainers(system);
+                            const media = getCompatibleMedia(system);
+                            if (!containers.includes(containerType)) setContainerType(containers[0]);
+                            if (!media.includes(growingMedium)) setGrowingMedium(media[0]);
+                            if (sys.id === 'dwc') {
+                              setContainerType('dwc_reservoir_bucket');
+                              setGrowingMedium('hydroton_clay_pebbles');
+                              setNutrientProgram('salt_mineral_ab');
+                              setContainerVolume(5);
+                            } else if (sys.id === 'raised_bed') {
+                              setContainerType('raised_bed_cedar');
+                              setGrowingMedium('living_organic_soil');
+                              setNutrientProgram('organic_living_soil');
+                              setContainerVolume(50);
+                            } else if (sys.id === 'in_ground') {
+                              setContainerType('in_ground_earth');
+                              setGrowingMedium('native_garden_loam');
+                              setNutrientProgram('organic_living_soil');
+                              setContainerVolume(100);
+                            }
+                          }}
+                          className={`p-1.5 rounded-lg border text-left transition-all ${
+                            systemType === sys.id
+                              ? 'bg-emerald-950 border-emerald-500 text-emerald-200'
+                              : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div className="font-semibold text-[11px] truncate">{sys.label}</div>
+                          <div className="text-[9px] text-zinc-500 truncate">{sys.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Container & Volume */}
+                  {sowRack ? (
+                    <div className="p-2 bg-zinc-900/60 rounded-lg border border-zinc-800 text-[10px] text-zinc-400">
+                      Container comes from the rack: each plant goes in a cell or pot of its shelf's tray insert.
+                    </div>
+                  ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Container Vessel</label>
+                      <select
+                        value={containerType}
+                        onChange={e => setContainerType(e.target.value as ContainerType)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        {([
+                          ['fabric_pot', 'Fabric Smart Pot (High Aeration)'],
+                          ['plastic_nursery_pot', 'Plastic Nursery Pot'],
+                          ['terracotta_pot', 'Clay Terracotta Pot (Breathable)'],
+                          ['raised_bed_cedar', 'Cedar Raised Garden Bed'],
+                          ['in_ground_earth', 'In-Ground Garden Trench'],
+                          ['dwc_reservoir_bucket', '5-Gal DWC Aerated Reservoir'],
+                          ['flood_drain_tray', 'Hydroponic Flood Tray'],
+                          ['aeroponic_chamber', 'Aeroponic Mist Chamber'],
+                        ] as [ContainerType, string][])
+                          .filter(([v]) => getCompatibleContainers(systemType).includes(v))
+                          .map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">
+                        Volume Capacity ({containerVolume} Gallons)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="1"
+                          max="100"
+                          step="1"
+                          value={containerVolume}
+                          onChange={e => setContainerVolume(Number(e.target.value))}
+                          className="flex-1 accent-emerald-500"
+                        />
+                        <span className="font-mono text-xs font-bold text-emerald-400 w-12 text-right">
+                          {containerVolume} gal
+                        </span>
+                      </div>
+                      <div className="flex gap-1.5 mt-1">
+                        {[3, 5, 10, 25, 50, 100].map(vol => (
+                          <button
+                            key={vol}
+                            type="button"
+                            onClick={() => setContainerVolume(vol)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                              containerVolume === vol
+                                ? 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                            }`}
+                          >
+                            {vol}g
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  )}
+
+                  {/* Medium & Nutrient Program */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Substrate / Growing Medium</label>
+                      <select
+                        value={growingMedium}
+                        onChange={e => setGrowingMedium(e.target.value as GrowingMedium)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        {([
+                          ['living_organic_soil', 'Living Organic Soil (High Microbes & Buffering)'],
+                          ['coco_perlite', '70/30 Coco Coir & Perlite (Fast Growth, Fast Drain)'],
+                          ['coco_coir', 'Coco Coir (Straight, Buffered)'],
+                          ['peat_potting_mix', 'Peat Moss / Pro-Mix Blend'],
+                          ['native_garden_loam', 'Native Garden Loam (Outdoor Garden Bed)'],
+                          ['hydroton_clay_pebbles', 'Expanded Clay Hydroton Pebbles (DWC/Hydro)'],
+                          ['rockwool_cubes', 'Rockwool Horticultural Matrix'],
+                          ['rockwool_cubes_1in', 'Rockwool Cubes (1 inch Starter Plugs)'],
+                          ['aeroponic_mist', 'Aeroponic Oxygenated Mist'],
+                        ] as [GrowingMedium, string][])
+                          .filter(([v]) => getCompatibleMedia(systemType).includes(v))
+                          .map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Nutrient &amp; Biology Program</label>
+                      <select
+                        value={nutrientProgram}
+                        onChange={e => setNutrientProgram(e.target.value as NutrientProgram)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200"
+                      >
+                        <option value="organic_living_soil">Organic Living Soil (Mycorrhizae &amp; Bio-Buffering)</option>
+                        <option value="salt_mineral_ab">Mineral Salts A+B (Chelated Hydroponic Formulation)</option>
+                        <option value="bloom_booster_pk">Phosphorus-Potassium PK Bloom Booster</option>
+                        <option value="compost_tea_inoculant">Active Aerated Compost Tea (AACT)</option>
+                        <option value="water_only_flush">Plain Dechlorinated RO Water</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="p-2 bg-zinc-900/60 rounded-lg border border-zinc-800 text-[10px] text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {growingMedium.includes('soil') || growingMedium.includes('loam') 
+                        ? '🌱 Soil Buffer active: Ideal pH 6.2 - 6.8 · Higher microbial resistance & drought resilience.' 
+                        : '💧 Hydroponic dynamic: Ideal pH 5.6 - 6.2 · Direct root uptake, rapid growth, requires EC monitoring.'}
+                    </span>
+                    <span className="font-mono text-emerald-400 shrink-0 ml-2">
+                      {sowRack ? 'Vol: rack cell' : `Vol: ${containerVolume} gal`}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreatePlant}
+                disabled={!!sowRack && sowSlots.length === 0}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white shadow-md shadow-emerald-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {sowRack
+                  ? `Sow ${sowSlots.length} ${propagationType === 'seed' ? 'Seed' : 'Cutting'}${sowSlots.length === 1 ? '' : 's'} into ${sowRack.name}`
+                  : `Add ${propagationType === 'seed' ? 'Seed' : 'Cutting'} to ${selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 3. MUSHROOM FORM */}
+        {activeTab === 'mushroom' && (
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Mycology Strain</label>
+              <div className="grid grid-cols-2 gap-2">
+                {(['Lion\'s Mane', 'Golden Oyster', 'Shiitake', 'Reishi', 'Medicinal'] as MushroomSpecies[]).map(s => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setMushroomSpecies(s);
+                      setMushroomName(`${s} Fruiting Culture`);
+                    }}
+                    className={`py-2 px-3 rounded-xl text-xs font-medium border text-left flex items-center justify-between ${
+                      mushroomSpecies === s
+                        ? 'bg-amber-950/80 border-amber-500 text-amber-300'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <span>{s}</span>
+                    {mushroomSpecies === s && <Check className="w-3.5 h-3.5 text-amber-400" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Culture Name</label>
+                <input
+                  type="text"
+                  value={mushroomName}
+                  onChange={e => setMushroomName(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-amber-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Container Format</label>
+                <select
+                  value={mushroomContainer}
+                  onChange={e => setMushroomContainer(e.target.value as any)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-amber-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="monotub">Bulk Monotub (High yield)</option>
+                  <option value="fruiting_block">Sawdust Fruiting Block</option>
+                  <option value="grow_bag">Filtered Unicorn Grow Bag</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Spore Genetics & Inoculant Culture Variability */}
+            <div className="border border-amber-900/60 bg-amber-950/20 rounded-xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                    <Dna className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                      Spore Inoculant Genetics &amp; Culture Vigor
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">MSS spores vary naturally in colonization speed, contam defense, and pinning flush capacity.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSporeTraits(generateSporeTraits(mushroomSpecies, mushroomName, sporeGrade))}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[11px] font-medium transition-colors"
+                  title="Roll another isolate culture"
+                >
+                  <RefreshCw className="w-3 h-3 text-amber-400" />
+                  <span>Roll Isolate</span>
+                </button>
+              </div>
+
+              {/* Inoculant Grade Selection */}
+              <div>
+                <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Inoculant Source / Isolate Grade</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(['Isolated Commercial LC', 'Multi-Spore Syringe', 'Wild Spore Print'] as const).map(grade => (
+                    <button
+                      key={grade}
+                      type="button"
+                      onClick={() => {
+                        setSporeGrade(grade);
+                        setSporeTraits(generateSporeTraits(mushroomSpecies, mushroomName, grade));
+                      }}
+                      className={`p-1.5 rounded-lg text-left border transition-all ${
+                        sporeGrade === grade
+                          ? 'bg-amber-950/80 border-amber-500 text-amber-200'
+                          : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <div className="font-semibold text-[10px] truncate">{grade}</div>
+                      <div className="text-[9px] text-zinc-500">
+                        {grade === 'Isolated Commercial LC' ? '98% Viable / Pure' : grade === 'Multi-Spore Syringe' ? '86% Viable / Varied' : '78% Viable / Wild'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Live Trait Radar Card */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-zinc-950/60 border border-zinc-800/80 rounded-lg p-2 text-[11px]">
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Spore Viability</span>
+                  <span className="font-mono font-bold text-amber-400">{sporeTraits.viabilityPct}%</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Colonization</span>
+                  <span className="font-mono font-bold text-yellow-400">{sporeTraits.colonizationVigor.toFixed(2)}x</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Flush Capacity</span>
+                  <span className="font-mono font-bold text-orange-400">{sporeTraits.flushYieldMultiplier.toFixed(2)}x</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px] uppercase font-mono">Contam Defense</span>
+                  <span className="font-mono font-bold text-emerald-400 capitalize">{sporeTraits.contaminationResistance}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 bg-zinc-900/40 rounded px-2 py-1">
+                <span className="text-amber-400 font-semibold">Culture Strain:</span>
+                <span className="truncate italic">"{sporeTraits.phenotypeName}"</span>
+              </div>
+            </div>
+
+            <div className="pt-3 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateMushroom}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white shadow-md shadow-amber-950/40"
+              >
+                Inoculate Substrate
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 4. EQUIPMENT FORM */}
+        {activeTab === 'equipment' && (
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Equipment Category</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { type: 'grow_light', label: 'Grow Light' },
+                  { type: 'exhaust_fan', label: 'Inline Fan' },
+                  { type: 'co2_regulator', label: 'CO₂ Regulator' },
+                  { type: 'humidifier', label: 'Humidifier' },
+                  { type: 'dehumidifier', label: 'Dehumidifier' },
+                  { type: 'heat_mat', label: 'Root Heat Mat' },
+                  { type: 'heater', label: 'Heater' },
+                  { type: 'co2_bag', label: 'CO₂ ExHale Bag' },
+                  { type: 'oscillating_fan', label: 'Air Circulator' },
+                  { type: 'portable_ac', label: 'Portable A/C' },
+                  { type: 'hvac_register', label: 'HVAC Register' },
+                  { type: 'grow_rack', label: 'Grow Rack (1020s)' },
+                  { type: 'nutrient_reservoir', label: 'Nutrient Reservoir' }
+                ].map(opt => (
+                  <button
+                    key={opt.type}
+                    type="button"
+                    onClick={() => {
+                      setEqType(opt.type as any);
+                      if (opt.type === 'grow_light') {
+                        setEqName('Full-Spectrum 300W LED');
+                        setEqWatts(300);
+                      } else if (opt.type === 'exhaust_fan') {
+                        setEqName(INLINE_FAN_SPECS[eqDuctSize].name);
+                        setEqWatts(INLINE_FAN_SPECS[eqDuctSize].watts);
+                      } else if (opt.type === 'co2_regulator') {
+                        setEqName('Digital CO₂ Solenoid Regulator');
+                        setEqWatts(15);
+                      } else if (opt.type === 'co2_bag') {
+                        setEqName('ExHale Mycelium CO₂ Bag');
+                        setEqWatts(0);
+                      } else if (opt.type === 'heat_mat') {
+                        setEqName('Waterproof Seedling Heat Mat');
+                        setEqWatts(25);
+                      } else if (opt.type === 'humidifier') {
+                        setEqName('Sonic Fogger');
+                        setEqWatts(50);
+                      } else if (opt.type === 'dehumidifier') {
+                        setEqName('50-Pint Dehumidifier');
+                        setEqWatts(350);
+                      } else if (opt.type === 'oscillating_fan') {
+                        setEqName('8" Clip-On Air Circulator');
+                        setEqWatts(15);
+                      } else if (opt.type === 'portable_ac') {
+                        setEqName('8,000 BTU Portable Air Conditioner');
+                        setEqWatts(900);
+                      } else if (opt.type === 'hvac_register') {
+                        setEqName('Ceiling Supply Register (Central HVAC)');
+                        setEqWatts(0);
+                      } else if (opt.type === 'grow_rack') {
+                        setEqName(GROW_RACK_PRESETS[0].name);
+                        setEqWatts(0);
+                      } else if (opt.type === 'nutrient_reservoir') {
+                        const preset = NUTRIENT_RESERVOIR_PRESETS[1];
+                        setEqName(preset.name);
+                        setEqWatts(preset.pumpWatts);
+                        setResLiters(preset.liters);
+                        setResFeedIds(null);
+                      } else {
+                        setEqName('Ceramic Heater');
+                        setEqWatts(500);
+                      }
+                    }}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-medium border text-center ${
+                      eqType === opt.type
+                        ? 'bg-blue-950 border-blue-500 text-blue-300'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Device Name</label>
+                <input
+                  type="text"
+                  value={eqName}
+                  onChange={e => setEqName(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+              {eqType !== 'grow_rack' && <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">{eqType === 'nutrient_reservoir' ? 'Pump Power (Watts)' : 'Rated Power (Watts)'}</label>
+                <input
+                  type="number"
+                  min="5"
+                  max="3000"
+                  value={eqWatts}
+                  onChange={e => setEqWatts(parseInt(e.target.value))}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>}
+            </div>
+
+            {eqType === 'nutrient_reservoir' && (
+              <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300 block mb-1">Reservoir Presets</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                    {NUTRIENT_RESERVOIR_PRESETS.map(p => (
+                      <button
+                        key={p.name}
+                        type="button"
+                        onClick={() => { setEqName(p.name); setEqWatts(p.pumpWatts); setResLiters(p.liters); }}
+                        className={`p-1.5 rounded-lg border text-left ${eqName === p.name ? 'bg-blue-950 border-blue-500 text-blue-200' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                      >
+                        <div className="font-semibold text-[11px] truncate">{p.name}</div>
+                        <div className="text-[9px] text-zinc-500">{p.liters} L · {p.pumpWatts} W pump</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Tank Size (L)</label>
+                    <input type="number" min="5" max="1000" value={resLiters}
+                      onChange={e => setResLiters(Math.max(5, Math.min(1000, parseInt(e.target.value) || 5)))}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200" />
+                    <span className="text-[10px] text-zinc-500">≈ {(resLiters / 3.785).toFixed(1)} gal</span>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Pump</label>
+                    <select value={resPumpMode} onChange={e => setResPumpMode(e.target.value as 'flood' | 'continuous')}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200">
+                      <option value="flood">Flood timer (ebb &amp; flow, drip): 6 × 15 min/day</option>
+                      <option value="continuous">Continuous (recirculating DWC, aeroponics)</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Feed Lines To</label>
+                  {reservoirFeedOptions.length === 0 ? (
+                    <span className="text-[11px] text-zinc-400 block">No grow racks or hydro plants in this room yet. Connect feed lines later from the reservoir's inspector.</span>
+                  ) : (
+                    <div className="space-y-1">
+                      {reservoirFeedOptions.map(o => (
+                        <label key={o.id} className="flex items-center gap-2 text-[11px] text-zinc-300">
+                          <input
+                            type="checkbox"
+                            checked={reservoirFeedIds.includes(o.id)}
+                            onChange={e => setResFeedIds(e.target.checked ? [...reservoirFeedIds, o.id] : reservoirFeedIds.filter(id => id !== o.id))}
+                            className="accent-blue-500"
+                          />
+                          {o.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] text-zinc-500 block">
+                  Starts full of fresh solution at {DEFAULT_NUTRIENT_EC_PPM} ppm, pH {DEFAULT_NUTRIENT_PH}. Each flood soaks the fed root zones and sets their EC, pH and water temperature; the tank drains as plants drink.
+                </span>
+              </div>
+            )}
+
+            {eqType === 'grow_rack' && (() => {
+              const preview = {
+                rackTiers: createRackTiers({ tiers: rackTierCount, traysPerTier: rackTraysPerTier, insert: rackInsert }),
+                rackTierSpacingFt: rackSpacingFt,
+                rackBottomShelfFt: rackBottomShelfFt,
+                trayLayout: rackTrayLayout
+              } as EquipmentItem;
+              const dims = getRackDimensions(preview);
+              const targetDims = (destinationTent || room).dimensions;
+              return (
+                <div className="space-y-3 bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
+                  <div>
+                    <label className="text-xs font-semibold text-zinc-300 block mb-1">Rack Presets</label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                      {GROW_RACK_PRESETS.map(p => (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => {
+                            setEqName(p.name);
+                            setRackTierCount(p.tiers);
+                            setRackTraysPerTier(p.traysPerTier);
+                            setRackSpacingFt(p.tierSpacingFt);
+                            setRackBottomShelfFt(p.bottomShelfFt ?? DEFAULT_BOTTOM_SHELF_FT);
+                            setRackInsert(p.insert);
+                            setRackTrayLayout(p.trayLayout || 'end_to_end');
+                            if (p.rackType) setRackType(p.rackType);
+                            if (p.integratedReservoirL) setRackIntegratedResL(p.integratedReservoirL);
+                            if (p.floodsPerDay) setRackFloodsPerDay(p.floodsPerDay);
+                          }}
+                          className={`p-2 rounded-lg border text-left transition-all ${eqName === p.name ? 'bg-blue-950/80 border-blue-500 text-blue-200 ring-1 ring-blue-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                        >
+                          <div className="font-semibold text-[11px] truncate">{p.name}</div>
+                          <div className="text-[10px] text-zinc-400 flex items-center justify-between mt-0.5">
+                            <span>{p.tiers} levels · {p.tiers * p.traysPerTier} × 1020 trays</span>
+                            {p.rackType === 'ebb_and_flow' && <span className="text-cyan-400 font-medium">🌊 Flood & Drain</span>}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 1020 Tray Orientation */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-300 block mb-1.5">1020 Tray Orientation on Shelves</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRackTrayLayout('side_by_side')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'side_by_side' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">Side-by-Side</div>
+                        <div className="text-[10px] text-zinc-500">{describeTrayLayout('side_by_side', rackTraysPerTier)}</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRackTrayLayout('end_to_end')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackTrayLayout === 'end_to_end' ? 'bg-zinc-800 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">End-to-End</div>
+                        <div className="text-[10px] text-zinc-500">{describeTrayLayout('end_to_end', rackTraysPerTier)}</div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Rack Operation Mode: Standard vs Ebb & Flow */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-300 block mb-1.5">Irrigation & Rack Architecture</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRackType('standard')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackType === 'standard' ? 'bg-zinc-800 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold">Standard Wire Rack</div>
+                        <div className="text-[10px] text-zinc-500">Hand-watered 1020 flats / seed trays</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRackType('ebb_and_flow')}
+                        className={`p-2 rounded-lg border text-left text-xs ${rackType === 'ebb_and_flow' ? 'bg-cyan-950/80 border-cyan-500 text-cyan-200 ring-1 ring-cyan-500' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                      >
+                        <div className="font-semibold flex items-center gap-1">🌊 Ebb &amp; Flow Flood Unit</div>
+                        <div className="text-[10px] text-zinc-400">Vertical flood manifold + bottom tank</div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Ebb & Flow specific configuration */}
+                  {rackType === 'ebb_and_flow' && (
+                    <div className="p-2.5 rounded-lg bg-cyan-950/30 border border-cyan-800/60 space-y-2">
+                      <div className="flex items-center justify-between text-xs text-cyan-300 font-medium">
+                        <span>🌊 Flood &amp; Drain Specifications</span>
+                        <span className="font-mono text-[11px]">{rackTierCount * rackTraysPerTier} × 1020 Flood Trays</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Bottom Reservoir Tank (Liters)</label>
+                          <input
+                            type="number"
+                            min="20"
+                            max="300"
+                            value={rackIntegratedResL}
+                            onChange={e => setRackIntegratedResL(Math.max(10, parseInt(e.target.value) || 60))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200 font-mono"
+                          />
+                          <span className="text-[9px] text-zinc-500 font-mono">≈ {Math.round(rackIntegratedResL * 0.264)} gallons solution</span>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold text-zinc-400 block mb-1">Automated Floods / Day</label>
+                          <select
+                            value={rackFloodsPerDay}
+                            onChange={e => setRackFloodsPerDay(parseInt(e.target.value) || 6)}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200"
+                          >
+                            <option value="2">2 × per day (every 12 hrs)</option>
+                            <option value="4">4 × per day (every 6 hrs)</option>
+                            <option value="6">6 × per day (every 4 hrs)</option>
+                            <option value="8">8 × per day (every 3 hrs)</option>
+                          </select>
+                          <span className="text-[9px] text-zinc-500 font-mono">15 min flood duration</span>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-cyan-400/90 leading-relaxed">
+                        Nutrient pump feeds all {rackTierCount} levels simultaneously. Plants in these 1020 trays get flood-and-drain watering with hydro nutrients (pH 5.8 baseline).
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">Levels / Shelves</label>
+                      <CommitNumberInput integer min={1} max={8} value={rackTierCount} onCommit={setRackTierCount}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Trays / Level</label>
+                      <CommitNumberInput integer min={1} max={4} value={rackTraysPerTier} onCommit={setRackTraysPerTier}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1" title="Height of each level, shelf to shelf. Rack height = 4″ bottom shelf + levels × this.">Level Height (ft)</label>
+                      <CommitNumberInput min={0.5} max={3} step={0.05} value={rackSpacingFt} onCommit={setRackSpacingFt}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-zinc-400 block mb-1" title="How high the bottom level sits. 0 = the bottom trays sit on the floor, like the built-in shelf of a propagation tent.">Bottom Level (in)</label>
+                      <CommitNumberInput min={0} max={24} step={0.5} value={Math.round(rackBottomShelfFt * 120) / 10} onCommit={v => setRackBottomShelfFt(v / 12)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono" />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-400 bg-zinc-900 p-2.5 rounded-lg border border-zinc-800">
+                    <div>
+                      <span>Physical Dimensions: <strong className="text-zinc-100">{dims.length}′ L × {dims.width}′ W × {dims.height}′ H</strong></span>
+                      <div className="text-[10px] text-zinc-500">({Math.round(dims.length * 12)}″ wide × {Math.round(dims.width * 12)}″ deep × {Math.round(dims.height * 12)}″ high)</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={dims.length <= (targetDims.length + 0.1) && dims.width <= (targetDims.width + 0.1) && dims.height <= (targetDims.height + 0.1) ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                        {dims.length <= (targetDims.length + 0.1) && dims.width <= (targetDims.width + 0.1) && dims.height <= (targetDims.height + 0.1)
+                          ? `✓ Fits Destination (${targetDims.length}′ × ${targetDims.width}′ × ${targetDims.height}′)`
+                          : `⚠️ Exceeds Limits (${targetDims.length}′ × ${targetDims.width}′ × ${targetDims.height}′)`}
+                      </span>
+                      {targetDims.length <= 3.2 && targetDims.width <= 2.2 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEqName('AC Infinity 2-Tier Propagation Shelf (36" × 24")');
+                            setRackTierCount(2);
+                            setRackTraysPerTier(3);
+                            setRackSpacingFt(1.0);
+                            setRackBottomShelfFt(0);
+                            setRackTrayLayout('side_by_side');
+                          }}
+                          className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-sans font-bold"
+                        >
+                          Auto-Fit 3x2x2
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-zinc-400 block mb-1">1020 Tray Insert (customizable per shelf in inspector)</label>
+                    <select value={rackInsert} onChange={e => setRackInsert(e.target.value as TrayInsertType)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200">
+                      {TRAY_INSERT_TYPES.map(t => (
+                        <option key={t} value={t}>{TRAY_INSERTS[t].label} ({getInsertCellCount(t)} per tray)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="text-[10px] text-zinc-400 font-mono flex flex-wrap justify-between gap-2 border-t border-zinc-800 pt-2">
+                    <span className="text-emerald-400 font-semibold">{rackTierCount * rackTraysPerTier} × 1020 trays · {getRackCapacity(preview)} total plant/seed sites</span>
+                    <span>{dims.length}′ L × {dims.width}′ W × {dims.height}′ H</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {eqType === 'exhaust_fan' && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Exhaust Ducted To</label>
+                <select
+                  value={eqExhaustTo}
+                  onChange={e => setEqExhaustTo(e.target.value as 'room' | 'outdoors')}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="room">The room (adds the tent's heat, humidity and CO₂ to it)</option>
+                  <option value="outdoors">Outdoors through a window / wall vent (room draws in outdoor air)</option>
+                </select>
+              </div>
+            )}
+
+            {eqType === 'exhaust_fan' && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Duct / Port Size</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {INLINE_FAN_DUCT_SIZES.map(size => (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => {
+                        setEqDuctSize(size);
+                        setEqName(INLINE_FAN_SPECS[size].name);
+                        setEqWatts(INLINE_FAN_SPECS[size].watts);
+                      }}
+                      className={`py-1.5 px-2.5 rounded-lg text-xs font-medium border ${
+                        eqDuctSize === size ? 'bg-blue-950 border-blue-500 text-blue-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                      }`}
+                    >
+                      {size}" duct · {INLINE_FAN_SPECS[size].cfm} CFM
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(eqType === 'humidifier' || eqType === 'co2_regulator') && selectedDestinationTentId === 'room' && room.tents.length > 0 && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                  {eqType === 'humidifier' ? 'Mist Hose' : 'CO₂ Injection Tubing'}
+                </label>
+                <select
+                  value={eqHoseTentId}
+                  onChange={e => setEqHoseTentId(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="">{eqType === 'humidifier' ? 'No hose — mists into the room' : 'No tubing — injects into the room'}</option>
+                  {room.tents.map(t => (
+                    <option key={t.id} value={t.id}>{eqType === 'humidifier' ? 'Duct by hose into' : 'Run tubing into'} {t.name}</option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-zinc-500 block mt-1">
+                  {eqType === 'humidifier'
+                    ? 'Keep the unit outside the tent to save space; its reservoir water follows room temperature.'
+                    : 'Keep the tank and solenoid outside the tent; CO₂ is injected into the tent and follows that tent\'s controller.'}
+                </span>
+              </div>
+            )}
+
+            {eqType === 'heat_mat' && (
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Placed Under / Wrapped Around</label>
+                {heatMatOptions.length > 0 ? (
+                  <select
+                    value={heatMatPlacement}
+                    onChange={e => setEqMatTargetId(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                  >
+                    {heatMatOptions.map(o => (
+                      <option key={o.id} value={o.id}>{o.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] text-zinc-400 block">Nothing here to put it under yet — it will lie on the floor unattached.</span>
+                )}
+                <span className="text-[10px] text-zinc-500 block mt-1">
+                  Under a tent's floor tray it warms everything standing on it; under a pot or monotub it warms that root zone or substrate; wrapped around a humidifier it heats the water.
+                </span>
+              </div>
+            )}
+
+            <div className="pt-3 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+              >
+                Cancel
+              </button>
+              {roomOnlyEquipment && selectedDestinationTentId !== 'room' && (
+                <span className="self-center text-[11px] text-amber-300 mr-auto">
+                  {eqType === 'portable_ac' ? 'A portable A/C' : 'An HVAC register'} conditions the whole room: choose the room floor as the destination.
+                </span>
+              )}
+              <button
+                onClick={handleCreateEquipment}
+                disabled={roomOnlyEquipment && selectedDestinationTentId !== 'room'}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white shadow-md shadow-teal-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Install Device
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 5. PERSON (HUMAN OCCUPANT & NPC WORKER) FORM */}
+        {activeTab === 'person' && (
+          <div className="space-y-4">
+            <div className="p-3 bg-violet-950/40 border border-violet-800/60 rounded-xl flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-violet-500/20 text-violet-300 shrink-0">
+                <User className="w-5 h-5" />
+              </div>
+              <div className="text-xs">
+                <h4 className="font-bold text-zinc-100">3D Facility Resident &amp; Autonomous Worker</h4>
+                <p className="text-zinc-300 mt-0.5">
+                  Occupants appear as animated 3D characters in the game view. Residents relax and live on-site, while workers autonomously tend crops, replenish humidifiers, empty dehumidifiers, and harvest ripe yields into their inventory.
+                </p>
+              </div>
+            </div>
+
+            {/* Role Picker Cards */}
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1.5">Select Role &amp; Duties</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {(Object.keys(ROLE_METADATA) as PersonRole[]).map(r => {
+                  const meta = ROLE_METADATA[r];
+                  const isSelected = personRole === r;
+                  return (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => {
+                        setPersonRole(r);
+                        if (personName === 'Grower Alex' || personName === 'Cultivator' || personName === 'Grower / Cultivator') {
+                          setPersonName(r === 'resident' ? 'Resident Sam' : r === 'grower' ? 'Grower Marcus' : r === 'technician' ? 'Tech Elena' : r === 'harvester' ? 'Harvester Kai' : 'Caretaker Morgan');
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        isSelected
+                          ? 'bg-zinc-900 border-violet-500 ring-1 ring-violet-500 shadow-md'
+                          : 'bg-zinc-950/90 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                          <span>{meta.badge.split(' ')[0]}</span>
+                          <span>{meta.badge.split(' ').slice(1).join(' ')}</span>
+                        </span>
+                        {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                      </div>
+                      <p className="text-[10px] text-zinc-400 leading-tight">
+                        {meta.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Person Name</label>
+                <input
+                  type="text"
+                  value={personName}
+                  onChange={e => setPersonName(e.target.value)}
+                  placeholder="e.g. Grower Marcus, Tech Elena"
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-violet-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Activity / Exertion Level</label>
+                <select
+                  value={personActivity}
+                  onChange={e => setPersonActivity(e.target.value as PersonActivity)}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-violet-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="resting">Resting / Seated (15 L/h CO₂, 75W Heat)</option>
+                  <option value="normal">Normal Inspection &amp; Care (22 L/h CO₂, 100W Heat)</option>
+                  <option value="active">Active Trellising &amp; Pruning (32 L/h CO₂, 140W Heat)</option>
+                  <option value="exercising">Heavy Exertion &amp; Soil Mixing (50 L/h CO₂, 210W Heat)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Respiration & Heat Specs Preview */}
+            <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-violet-400 font-bold block">
+                Live Environmental Dynamics &amp; 3D Avatar
+              </span>
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">CO₂ Exhalation</span>
+                  <span className="font-mono font-bold text-violet-300">
+                    {personActivity === 'resting' ? '15' : personActivity === 'normal' ? '22' : personActivity === 'active' ? '32' : '50'} L / hour
+                  </span>
+                </div>
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">Metabolic Heat</span>
+                  <span className="font-mono font-bold text-amber-300">
+                    {personActivity === 'resting' ? '75W' : personActivity === 'normal' ? '100W' : personActivity === 'active' ? '140W' : '210W'}
+                  </span>
+                </div>
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">Respiration Moisture</span>
+                  <span className="font-mono font-bold text-cyan-300">
+                    {personActivity === 'resting' ? '0.8L' : personActivity === 'normal' ? '1.2L' : personActivity === 'active' ? '1.8L' : '2.5L'} / day
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                In a typical 16×14ft room ({Math.round(room.dimensions.length * room.dimensions.width * room.dimensions.height)} cu ft), one person raises CO₂ by ~200–450 PPM above ambient outside air.
+              </p>
+            </div>
+
+            <div className="pt-3 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreatePerson}
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-xs font-bold text-white shadow-md shadow-violet-950/40"
+              >
+                Add Person to {selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 6. PET FORM */}
+        {activeTab === 'pet' && (
+          <div className="space-y-4">
+            <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-xl flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-rose-500/20 text-rose-300 shrink-0">
+                <Dog className="w-5 h-5" />
+              </div>
+              <div className="text-xs">
+                <h4 className="font-bold text-zinc-100">Biological Pet Respiration</h4>
+                <p className="text-zinc-300 mt-0.5">
+                  Dogs and cats naturally exhale CO₂ and radiate body heat proportional to their body mass.
+                  Pets inside the lung room or facility gently elevate baseline CO₂ levels.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Pet Name</label>
+                <input
+                  type="text"
+                  value={petName}
+                  onChange={e => setPetName(e.target.value)}
+                  placeholder="e.g. Barnaby, Luna, Cooper"
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-rose-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Pet Type / Size</label>
+                <select
+                  value={petType}
+                  onChange={e => {
+                    const newType = e.target.value as PetType;
+                    setPetType(newType);
+                    if (newType === 'dog_large') setPetBreed('Golden Retriever');
+                    else if (newType === 'dog_medium') setPetBreed('Border Collie');
+                    else if (newType === 'dog_small') setPetBreed('French Bulldog');
+                    else if (newType === 'cat') setPetBreed('Domestic Shorthair');
+                  }}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-rose-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+                >
+                  <option value="dog_large">Large Dog (50–85 lbs)</option>
+                  <option value="dog_medium">Medium Dog (25–50 lbs)</option>
+                  <option value="dog_small">Small Dog / Puppy (&lt;25 lbs)</option>
+                  <option value="cat">Domestic Cat (8–15 lbs)</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">Breed / Description (Optional)</label>
+              <input
+                type="text"
+                value={petBreed}
+                onChange={e => setPetBreed(e.target.value)}
+                placeholder="e.g. Golden Retriever, Tabby Cat, Husky"
+                className="w-full bg-zinc-950 border border-zinc-800 focus:border-rose-500 rounded-lg px-3 py-1.5 text-xs text-zinc-200"
+              />
+            </div>
+
+            {/* Pet Environmental Impact Preview */}
+            <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 space-y-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-rose-400 font-bold block">
+                Pet Atmospheric Telemetry
+              </span>
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">CO₂ Exhalation</span>
+                  <span className="font-mono font-bold text-rose-300">
+                    {petType === 'dog_large' ? '10' : petType === 'dog_medium' ? '6' : petType === 'dog_small' ? '3.5' : '2.2'} L / hour
+                  </span>
+                </div>
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">Body Warmth</span>
+                  <span className="font-mono font-bold text-amber-300">
+                    {petType === 'dog_large' ? '45W' : petType === 'dog_medium' ? '28W' : petType === 'dog_small' ? '18W' : '12W'}
+                  </span>
+                </div>
+                <div className="bg-zinc-900/80 p-2 rounded-lg border border-zinc-800">
+                  <span className="text-[10px] text-zinc-400 block">Respiration Vapor</span>
+                  <span className="font-mono font-bold text-cyan-300">
+                    {petType === 'dog_large' ? '0.6L' : petType === 'dog_medium' ? '0.4L' : petType === 'dog_small' ? '0.25L' : '0.18L'} / day
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreatePet}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white shadow-md shadow-rose-950/40"
+              >
+                Add Pet to {selectedDestinationTentId === 'room' ? 'Room' : 'Tent'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
