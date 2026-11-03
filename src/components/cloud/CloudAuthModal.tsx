@@ -26,9 +26,11 @@ import {
   signInWithOtp, 
   verifyEmailOtp, 
   signInWithGoogle,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  setSessionFromUrlOrHash,
+  formatAuthError
 } from '../../services/cloudSimService';
-import { isSupabaseConfigured } from '../../lib/supabase';
+import { isSupabaseConfigured, getSupabaseDiagnostics } from '../../lib/supabase';
 
 interface CloudAuthModalProps {
   isOpen: boolean;
@@ -57,6 +59,8 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otpToken, setOtpToken] = useState('');
+  const [pastedUrl, setPastedUrl] = useState('');
+  const [otpInputMethod, setOtpInputMethod] = useState<'link' | 'code'>('link');
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [showConfigHelp, setShowConfigHelp] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -106,13 +110,13 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
       try {
         const { error } = await sendPasswordResetEmail(email.trim());
         if (error) {
-          setErrorMsg(error.message);
+          setErrorMsg(formatAuthError(error));
         } else {
           setInfoMsg(`Password reset email sent to ${email.trim()}! Please check your email for the reset link.`);
           setPasswordMode('signin');
         }
       } catch (err: any) {
-        setErrorMsg(err.message || 'Failed to dispatch password reset email.');
+        setErrorMsg(formatAuthError(err) || 'Failed to dispatch password reset email.');
       } finally {
         setIsLoading(false);
       }
@@ -131,11 +135,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
       if (passwordMode === 'signin') {
         const { error } = await signInWithPassword(email.trim(), password);
         if (error) {
-          if (error.message.toLowerCase().includes('invalid login credentials')) {
-            setErrorMsg('Account not found or password incorrect. If you signed up via Google or haven\'t set a password yet, click "Forgot / Set Password" or "Register account here".');
-          } else {
-            setErrorMsg(error.message);
-          }
+          setErrorMsg(formatAuthError(error));
         } else {
           onSuccess();
           onClose();
@@ -143,11 +143,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
       } else {
         const { error, needsEmailConfirm } = await signUpWithPassword(email.trim(), password);
         if (error) {
-          if (error.message.toLowerCase().includes('already registered')) {
-            setErrorMsg('This email is already registered. If you haven\'t set a password, click "Forgot / Set Password" below to set one.');
-          } else {
-            setErrorMsg(error.message);
-          }
+          setErrorMsg(formatAuthError(error));
         } else if (needsEmailConfirm) {
           setInfoMsg('Account created! Please check your email to confirm registration, or log in with your credentials.');
           setPasswordMode('signin');
@@ -157,7 +153,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
         }
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'An unexpected error occurred.');
+      setErrorMsg(formatAuthError(err) || 'An unexpected error occurred.');
     } finally {
       setIsLoading(false);
     }
@@ -176,13 +172,13 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
     try {
       const { error } = await signInWithOtp(email.trim());
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error));
       } else {
         setIsOtpSent(true);
         setInfoMsg(`Sent to ${email.trim()}! Check your inbox for the login link or verification code.`);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to dispatch email OTP.');
+      setErrorMsg(formatAuthError(err) || 'Failed to dispatch email OTP.');
     } finally {
       setIsLoading(false);
     }
@@ -201,13 +197,38 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
     try {
       const { error } = await verifyEmailOtp(email.trim(), otpToken.trim());
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error));
       } else {
         onSuccess();
         onClose();
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Verification failed. Please check the code.');
+      setErrorMsg(formatAuthError(err) || 'Verification failed. Please check the code.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasteSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pastedUrl.trim()) {
+      setErrorMsg('Please paste the email link or token.');
+      return;
+    }
+
+    setIsLoading(true);
+    resetForm();
+
+    try {
+      const { user, error } = await setSessionFromUrlOrHash(pastedUrl.trim());
+      if (error || !user) {
+        setErrorMsg(error?.message || 'Could not authenticate from the pasted URL. Please ensure it contains access_token or code.');
+      } else {
+        onSuccess();
+        onClose();
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to authenticate from pasted URL.');
     } finally {
       setIsLoading(false);
     }
@@ -239,17 +260,25 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
       const { error } = await signInWithGoogle(popup);
       if (error) {
         if (popup && !popup.closed) popup.close();
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error));
       } else {
         setInfoMsg('Connecting with Google... Please complete login in the popup window.');
       }
     } catch (err: any) {
       if (popup && !popup.closed) popup.close();
-      setErrorMsg(err.message || 'Google OAuth failed to start.');
+      setErrorMsg(formatAuthError(err) || 'Google OAuth failed to start.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  const diagnostics = getSupabaseDiagnostics();
+  const isUnregisteredApiKey = Boolean(
+    errorMsg && (
+      errorMsg.toLowerCase().includes('unregistered api key') || 
+      errorMsg.toLowerCase().includes('not registered for this project')
+    )
+  );
 
   return (
     <div className={`fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto ${isRequired ? 'cursor-default' : ''}`}>
@@ -317,7 +346,6 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
             </svg>
             <span>Continue with Google</span>
           </button>
-
         </div>
 
         {/* Divider */}
@@ -369,7 +397,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
             <div className="flex-1">
               <span className="font-semibold block text-amber-200">Supabase Cloud Sync Not Configured</span>
               <span className="text-[11px] text-amber-300/80">
-                To connect user accounts and save simulations in the cloud, add <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">VITE_SUPABASE_URL</code> and <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">VITE_SUPABASE_ANON_KEY</code> to your <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">.env</code> file. Local simulation autosaves remain fully functional.
+                To connect user accounts and save simulations in the cloud, add <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">VITE_SUPABASE_URL</code> and <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">VITE_SUPABASE_ANON_KEY</code> to your <code className="bg-amber-900/40 px-1 py-0.5 rounded font-mono text-[10px]">.env</code> file or Secrets panel. Local simulation autosaves remain fully functional.
               </span>
             </div>
           </div>
@@ -379,8 +407,41 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
         {errorMsg && (
           <div className="mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 flex items-start gap-2.5 text-rose-300 text-xs">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <span className="font-medium">{errorMsg}</span>
+            <div className="flex-1 space-y-2">
+              <span className="font-medium block leading-relaxed">{errorMsg}</span>
+              
+              {/* Specialized diagnosis and resolution guide for Supabase Unregistered API Key */}
+              {isUnregisteredApiKey && (
+                <div className="pt-2 border-t border-rose-800/50 space-y-2 text-zinc-200">
+                  <div className="p-2.5 rounded-lg bg-zinc-950/90 border border-amber-500/30 space-y-2">
+                    <div className="flex items-center gap-1.5 font-semibold text-amber-300 text-[11px]">
+                      <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Why did this happen and how to resolve it:</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-relaxed">
+                      Your secrets are loaded into the app, but <strong>Supabase's API gateway rejected the key</strong> with: <em className="text-amber-200">"Double check the provided API key as it is not registered for this project."</em>
+                    </p>
+                    <div className="text-[11px] space-y-1.5 pl-1">
+                      <div className="flex items-center gap-1 text-[10px] text-zinc-400">
+                        <span>Project ID from URL:</span>
+                        <code className="text-emerald-400 bg-zinc-900 px-1 py-0.5 rounded font-mono">{diagnostics.projectId || 'hwujvjzazdsvbkwxddhd'}</code>
+                        <span>• Detected key type:</span>
+                        <code className="text-amber-300 bg-zinc-900 px-1 py-0.5 rounded font-mono">{diagnostics.keyType} ({diagnostics.keySnippet})</code>
+                      </div>
+                      <div className="pt-1 text-emerald-400 font-semibold text-[11px]">
+                        Quick Fix:
+                      </div>
+                      <p className="text-zinc-300 text-[11px] leading-relaxed">
+                        In your Supabase dashboard, click <strong>Connect</strong> (or look under Step 2). Copy the <strong>Publishable key</strong> (starts with <code className="text-emerald-300 font-mono text-[10px]">sb_publishable_...</code> or <code className="text-emerald-300 font-mono text-[10px]">eyJ...</code>).
+                      </p>
+                      <p className="text-zinc-300 text-[11px] leading-relaxed">
+                        In Google AI Studio, open <strong>Settings ➔ Secrets</strong>, paste it into <code className="text-emerald-300 font-mono text-[10px]">VITE_SUPABASE_ANON_KEY</code>, and reload preview.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {errorMsg.toLowerCase().includes('expired') && (
                 <div className="mt-2 pt-2 border-t border-rose-800/40 flex items-center justify-between text-[11px]">
                   <span className="text-rose-300/80">Links expire after a short time or once clicked.</span>
@@ -598,81 +659,174 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
                 </button>
               </form>
             ) : (
-              <div className="space-y-4">
-                {/* Dual verification instructions */}
-                <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-2 text-xs">
-                  <div className="font-semibold text-emerald-400 flex items-center gap-1.5">
-                    <Mail className="w-4 h-4" />
-                    <span>Email dispatched to {email}</span>
-                  </div>
-                  
-                  <div className="text-zinc-300 space-y-1.5 text-[11px]">
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold text-emerald-400">Method A:</span>
-                      <span>
-                        Click the <strong>"Log In"</strong> button in your email. It will authenticate this browser tab automatically!
-                      </span>
+              <div className="space-y-3.5">
+                {/* Email Dispatched Status Header */}
+                <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5 text-xs">
+                  <div className="font-semibold text-emerald-400 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Mail className="w-4 h-4 text-emerald-400" />
+                      <span>Email sent to {email}</span>
                     </div>
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold text-amber-400">Method B:</span>
-                      <span>
-                        If your email includes a 6-digit verification code, enter it below:
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <form onSubmit={handleVerifyOtp} className="space-y-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-zinc-400 mb-1">
-                      6-Digit Verification Code
-                    </label>
-                    <div className="relative">
-                      <ShieldCheck className="w-4 h-4 text-zinc-400 absolute left-3 top-2.5 pointer-events-none" />
-                      <input
-                        type="text"
-                        value={otpToken}
-                        onChange={e => setOtpToken(e.target.value)}
-                        placeholder="123456"
-                        required
-                        autoFocus
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500 font-mono tracking-widest text-center"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-900/30 disabled:opacity-50"
-                  >
-                    {isLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <>
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Verify Code &amp; Sign In</span>
-                      </>
-                    )}
-                  </button>
-
-                  <div className="flex justify-between items-center text-[11px] pt-1">
                     <button
                       type="button"
                       onClick={() => { setIsOtpSent(false); resetForm(); }}
-                      className="text-zinc-400 hover:text-zinc-200 underline"
+                      className="text-[10px] text-zinc-400 hover:text-zinc-200 underline"
                     >
-                      Use a different email
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setAuthMode('password'); resetForm(); }}
-                      className="text-emerald-400 hover:underline font-medium"
-                    >
-                      Use Email &amp; Password instead
+                      Change email
                     </button>
                   </div>
-                </form>
+                  <p className="text-zinc-300 text-[11px] leading-relaxed">
+                    Supabase dispatched an authentication email. Choose how you want to sign in:
+                  </p>
+                </div>
+
+                {/* Sub-selector: Link vs 6-Digit Code */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-950/80 border border-zinc-850 rounded-xl text-xs">
+                  <button
+                    type="button"
+                    onClick={() => { setOtpInputMethod('link'); resetForm(); }}
+                    className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center ${
+                      otpInputMethod === 'link'
+                        ? 'bg-zinc-800 text-emerald-400 shadow-sm border border-zinc-700/60 font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Magic Link (Default)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setOtpInputMethod('code'); resetForm(); }}
+                    className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center ${
+                      otpInputMethod === 'code'
+                        ? 'bg-zinc-800 text-amber-400 shadow-sm border border-zinc-700/60 font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Enter 6-Digit Code
+                  </button>
+                </div>
+
+                {/* Method 1: Magic Link handling */}
+                {otpInputMethod === 'link' && (
+                  <div className="space-y-3">
+                    <div className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800/80 text-zinc-300 space-y-2 text-xs">
+                      <div className="flex items-start gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <span className="text-[11px] leading-relaxed">
+                          <strong>Option 1:</strong> Click the <strong>"Log In"</strong> button in your email. If opened in this browser, it authenticates automatically!
+                        </span>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handlePasteSession} className="space-y-2 pt-1">
+                      <label className="block text-[11px] font-medium text-zinc-400">
+                        Option 2: Opened the link in another browser or tab?
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={pastedUrl}
+                          onChange={e => setPastedUrl(e.target.value)}
+                          placeholder="Paste the opened URL or access_token here..."
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-3 pr-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 font-mono"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={isLoading || !pastedUrl.trim()}
+                        className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-emerald-900/20 disabled:opacity-40"
+                      >
+                        {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <span>Complete Sign In from Pasted URL</span>}
+                      </button>
+                    </form>
+
+                    {/* 403 Google Bridge Alert and Fix */}
+                    <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-800/50 text-[11px] text-amber-300 space-y-1.5">
+                      <div className="font-semibold text-amber-200 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span>Seeing Google's "403 That's an error" on the link?</span>
+                      </div>
+                      <p className="text-zinc-300 leading-relaxed text-[10px]">
+                        Google's 403 happens because your Supabase <strong>Site URL</strong> is currently set to <code className="bg-zinc-900 px-1 py-0.5 rounded text-amber-300">aistudio.google.com/applet-auth-bridge</code> (which does not exist).
+                      </p>
+                      <p className="text-zinc-300 leading-relaxed text-[10px]">
+                        To fix: In Supabase Dashboard ➔ <strong>Authentication</strong> ➔ <strong>URL Configuration</strong>, change <strong>Site URL</strong> to: <code className="bg-zinc-900 px-1 py-0.5 rounded text-emerald-300 font-mono">{gitHubPagesUrl}</code>
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Method 2: 6-Digit Code handling */}
+                {otpInputMethod === 'code' && (
+                  <form onSubmit={handleVerifyOtp} className="space-y-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-medium text-zinc-400">
+                          6-Digit Verification Code
+                        </label>
+                        <span className="text-[10px] text-zinc-400">e.g. 123456</span>
+                      </div>
+                      <div className="relative">
+                        <ShieldCheck className="w-4 h-4 text-zinc-400 absolute left-3 top-2.5 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={otpToken}
+                          onChange={e => setOtpToken(e.target.value)}
+                          placeholder="123456"
+                          required
+                          autoFocus
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500 font-mono tracking-widest text-center"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-900/30 disabled:opacity-50"
+                    >
+                      {isLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Verify Code &amp; Sign In</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Explanation of why Supabase doesn't send code by default */}
+                    <div className="p-2.5 rounded-xl bg-zinc-950 border border-zinc-850 space-y-1.5 text-[10px] text-zinc-400">
+                      <div className="font-semibold text-zinc-300 flex items-center gap-1">
+                        <HelpCircle className="w-3 h-3 text-amber-400" />
+                        <span>Why didn't my email contain a 6-digit code?</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        Supabase's built-in free mailer only sends the clickable <strong>"Sign in"</strong> button. Editing templates to add numeric codes requires configuring external SMTP (like SendGrid or Resend).
+                      </p>
+                      <p className="leading-relaxed text-emerald-400 font-medium">
+                        ✓ <strong>No subscription needed:</strong> Simply click the <strong>Magic Link (Default)</strong> tab above to use the link from your email, or use <strong>Email &amp; Password</strong> below!
+                      </p>
+                    </div>
+                  </form>
+                )}
+
+                <div className="flex justify-between items-center text-[11px] pt-1">
+                  <button
+                    type="button"
+                    onClick={() => { setIsOtpSent(false); resetForm(); }}
+                    className="text-zinc-400 hover:text-zinc-200 underline"
+                  >
+                    Resend email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('password'); resetForm(); }}
+                    className="text-emerald-400 hover:underline font-medium"
+                  >
+                    Use Password instead (instant)
+                  </button>
+                </div>
               </div>
             )}
 
@@ -698,22 +852,25 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
 
               {showConfigHelp && (
                 <div className="mt-2.5 p-3.5 rounded-xl bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-300 space-y-3 animate-in fade-in duration-150">
-                  {/* 1. Localhost redirect explanation */}
+                  {/* 1. Google 403 / Redirect URL explanation */}
                   <div>
                     <h4 className="font-semibold text-amber-300 mb-1 flex items-center gap-1.5">
                       <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-300 flex items-center justify-center text-[10px]">1</span>
-                      Link redirects to localhost:3000?
+                      Google 403 Error or Redirects to localhost?
                     </h4>
                     <p className="text-zinc-400 leading-relaxed mb-2">
-                      New Supabase projects set the default <strong>Site URL</strong> to <code className="text-zinc-300 bg-zinc-800 px-1 py-0.5 rounded">http://localhost:3000</code>. When an email link is clicked, Supabase redirects to that default unless your app URL is whitelisted.
+                      If clicking the email link opens Google's <em>"403 That's an error"</em> (<code className="text-zinc-300 bg-zinc-900 px-1 py-0.5 rounded text-[10px]">aistudio.google.com/applet-auth-bridge</code>), or redirects to <code className="text-zinc-300 bg-zinc-900 px-1 py-0.5 rounded text-[10px]">localhost:3000</code>: that means your Supabase project's <strong>Site URL</strong> has that invalid bridge URL or localhost configured!
                     </p>
                     <p className="text-zinc-400 mb-1.5 font-medium">
-                      To fix in Supabase Dashboard (takes 30 seconds):
+                      To fix in Supabase Dashboard (takes 20 seconds):
                     </p>
                     <ol className="list-decimal list-inside space-y-1 text-zinc-300 pl-1">
                       <li>Go to <strong>Authentication</strong> ➔ <strong>URL Configuration</strong></li>
                       <li>
-                        Set <strong>Site URL</strong> or add to <strong>Redirect URLs</strong>:
+                        Delete any <code className="text-amber-300 bg-zinc-900 px-1 py-0.5 rounded text-[10px]">aistudio.google.com/applet-auth-bridge</code> entry.
+                      </li>
+                      <li>
+                        Set <strong>Site URL</strong> to your GitHub Pages site, and add the wildcard URLs below to <strong>Redirect URLs</strong>:
                       </li>
                     </ol>
 
@@ -786,28 +943,9 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({
                       <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-[10px]">2</span>
                       Why is there no 6-digit code in the email?
                     </h4>
-                    <p className="text-zinc-400 leading-relaxed mb-2">
-                      Supabase's default <strong>Magic Link</strong> email template only includes the clickable button (<code className="text-zinc-300 bg-zinc-800 px-1 py-0.5 rounded">{'{{ .ConfirmationURL }}'}</code>) and omits the code tag by default.
+                    <p className="text-zinc-400 leading-relaxed">
+                      Supabase's built-in email service delivers a <strong>"Sign in" magic link button</strong> by default. Editing email templates to add a numeric code requires custom SMTP (like SendGrid or Resend). You <strong>do not need to pay or configure SMTP</strong>—simply click the "Sign in" link in your email or use <strong>Email &amp; Password</strong>!
                     </p>
-                    <p className="text-zinc-400 mb-1">
-                      If you want an actual numeric 6-digit code in the email:
-                    </p>
-                    <div className="bg-zinc-900 border border-zinc-850 p-2 rounded-lg text-zinc-300 space-y-1">
-                      <p>
-                        In Supabase Dashboard ➔ <strong>Authentication</strong> ➔ <strong>Email Templates</strong> ➔ <strong>Magic Link</strong>, add:
-                      </p>
-                      <div className="flex items-center justify-between bg-zinc-950 px-2 py-1 rounded font-mono text-[10px] text-amber-300">
-                        <span>{'Your code is: {{ .Token }}'}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopy('Your code is: {{ .Token }}', 'token_tag')}
-                          className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] flex items-center gap-1"
-                        >
-                          {copiedKey === 'token_tag' ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
-                          <span>{copiedKey === 'token_tag' ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      </div>
-                    </div>
                   </div>
 
                   {/* 3. Instant alternative */}

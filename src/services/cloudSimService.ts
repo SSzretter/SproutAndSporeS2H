@@ -65,6 +65,25 @@ export function subscribeToAuthState(callback: (user: User | null, session: Sess
 }
 
 /**
+ * Formats auth errors with actionable explanations for common issues like
+ * "Unregistered API key" (Supabase Kong rejection) and invalid credentials.
+ */
+export function formatAuthError(err: any): string {
+  if (!err) return 'An unexpected authentication error occurred.';
+  const msg = typeof err === 'string' ? err : (err.message || err.error_description || String(err));
+  
+  if (msg.toLowerCase().includes('unregistered api key') || msg.toLowerCase().includes('not registered for this project')) {
+    return 'Supabase rejected the API key with "Unregistered API key". This means the key in your secrets does not match your active Supabase project. In Supabase Dashboard (Settings > API), copy the standard "anon" "public" JWT key (starts with "eyJ...") or ensure the key belongs to the active project.';
+  }
+  
+  if (msg.toLowerCase().includes('invalid login credentials')) {
+    return 'Account not found or password incorrect. If you haven\'t created an account with a password yet, switch to "Create Cloud Account" or use Continue with Google.';
+  }
+  
+  return msg;
+}
+
+/**
  * Sign up with Email and Password
  */
 export async function signUpWithPassword(email: string, password: string): Promise<{ user: User | null; error: AuthError | null; needsEmailConfirm?: boolean }> {

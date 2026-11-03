@@ -1,15 +1,35 @@
 import { createClient } from '@supabase/supabase-js';
 import { SimulationState } from '../types/sim';
 
+// Helper to sanitize credential strings from environment variables
+function cleanEnvString(val?: string | null): string {
+  if (!val) return '';
+  return val.trim().replace(/^["']|["']$/g, '').trim();
+}
+
 // Read credentials securely from Vite or Next-style environment variables.
 // In a public GitHub repository, live project URLs and keys must NEVER be hardcoded in source code.
-const envUrl = 
-  (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL)) ||
-  '';
+const rawUrl = 
+  (typeof import.meta !== 'undefined' && import.meta.env && (
+    import.meta.env.VITE_SUPABASE_URL ||
+    import.meta.env.SUPABASE_URL ||
+    import.meta.env.NEXT_PUBLIC_SUPABASE_URL
+  )) || '';
 
-const envAnonKey = 
-  (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY)) ||
-  '';
+const rawAnonKey = 
+  (typeof import.meta !== 'undefined' && import.meta.env && (
+    import.meta.env.VITE_SUPABASE_ANON_KEY ||
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.VITE_SUPABASE_KEY ||
+    import.meta.env.SUPABASE_ANON_KEY ||
+    import.meta.env.SUPABASE_KEY ||
+    import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  )) || '';
+
+const envUrl = cleanEnvString(rawUrl);
+const envAnonKey = cleanEnvString(rawAnonKey);
 
 export const isSupabaseConfigured = Boolean(
   envUrl &&
@@ -20,8 +40,43 @@ export const isSupabaseConfigured = Boolean(
 );
 
 // Fallback to placeholder if environment variables are not configured in local development
-const supabaseUrl = isSupabaseConfigured ? envUrl : 'https://placeholder.supabase.co';
-const supabaseAnonKey = isSupabaseConfigured ? envAnonKey : 'placeholder-anon-key';
+export const supabaseUrl = isSupabaseConfigured ? envUrl : 'https://placeholder.supabase.co';
+export const supabaseAnonKey = isSupabaseConfigured ? envAnonKey : 'placeholder-anon-key';
+
+// Safe diagnostics helper to identify credentials mismatches without exposing secrets
+export function getSupabaseDiagnostics() {
+  const urlMatch = envUrl.match(/https:\/\/([^.]+)\.supabase\.co/);
+  const projectId = urlMatch ? urlMatch[1] : '';
+  
+  let keyType: 'jwt' | 'publishable' | 'empty' | 'unknown' = 'empty';
+  if (envAnonKey.startsWith('eyJ')) {
+    keyType = 'jwt';
+  } else if (envAnonKey.startsWith('sb_publishable_') || envAnonKey.startsWith('sb_')) {
+    keyType = 'publishable';
+  } else if (envAnonKey) {
+    keyType = 'unknown';
+  }
+
+  const keySnippet = envAnonKey
+    ? (envAnonKey.length > 12 
+        ? `${envAnonKey.substring(0, Math.min(14, envAnonKey.length))}...${envAnonKey.substring(envAnonKey.length - 4)}` 
+        : '***')
+    : 'Not set';
+
+  const dashboardApiUrl = projectId 
+    ? `https://supabase.com/dashboard/project/${projectId}/settings/api`
+    : 'https://supabase.com/dashboard';
+
+  return {
+    isConfigured: isSupabaseConfigured,
+    url: envUrl,
+    projectId,
+    keyType,
+    keySnippet,
+    keyLength: envAnonKey.length,
+    dashboardApiUrl
+  };
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
