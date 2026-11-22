@@ -103,10 +103,12 @@ export function resolveRoomDoorways(currentRoom: Room, allRooms: Room[]): Doorwa
   };
   // Every room has a way outside: its first unlinked wall gets an exterior door instead of an Add Room portal
   const outsideSide = OUTSIDE_DOOR_PREFERENCE.find(side => !isLinked(side));
+  const outsideTarget = resolveOutsideDestination(active, migratedRooms);
+  const outsideLabel = !outsideTarget ? '🌳 Outside' : isOutdoorRoom(outsideTarget) ? `🌳 ${outsideTarget.name}` : '🏠 Back inside';
 
   return ALL_WALL_SIDES.map(side => {
     if (side === outsideSide) {
-      return { roomId: OUTSIDE_DOOR_ID, label: '🌳 Outside', side, isReturn: false };
+      return { roomId: OUTSIDE_DOOR_ID, label: outsideLabel, side, isReturn: false };
     }
     const linkedRoomId = doors[side];
     if (linkedRoomId) {
@@ -191,4 +193,27 @@ export function getDoorSpawnPoint(room: Room, enteredFromWall: WallSide): { x: n
       // Entered from front wall, facing -Z (north)
       return { x: L / 2, y: Math.max(margin, W - margin), facing: Math.PI };
   }
+}
+
+function isOutdoorRoom(room: Room) {
+  return room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
+}
+
+/** The wall holding a room's exterior door (the first wall not linked to another room), or null when all are linked. */
+export function getOutsideDoorSide(room: Room, allRooms: Room[]): WallSide | null {
+  return resolveRoomDoorways(room, allRooms).find(d => d.roomId === OUTSIDE_DOOR_ID)?.side ?? null;
+}
+
+/**
+ * Where a room's exterior door leads. From an indoor room: the first outdoor garden, else the first greenhouse.
+ * From a garden or greenhouse: back inside, to `preferredIndoorId` (the room the cultivator came from) if it
+ * still exists, else the first indoor room. Null when there is nowhere to go.
+ */
+export function resolveOutsideDestination(current: Room, allRooms: Room[], preferredIndoorId?: string): Room | null {
+  const others = allRooms.filter(r => r.id !== current.id);
+  if (!isOutdoorRoom(current)) {
+    return others.find(r => r.environmentType === 'outdoor_garden') || others.find(r => r.environmentType === 'greenhouse') || null;
+  }
+  const indoor = others.filter(r => !isOutdoorRoom(r));
+  return indoor.find(r => r.id === preferredIndoorId) || indoor[0] || null;
 }
