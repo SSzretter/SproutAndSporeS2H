@@ -27,8 +27,9 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - **Still procedural:** no free model fits the rest. The pedestal fan and tower humidifier are detailed code-built models in `ApplianceModels.tsx`:
   - the fan has a merged wire guard, cupped blades and an oscillating head;
   - the humidifier has a control panel, a clear tank showing the water level, and mist sprites;
-  - fans face the middle of their tent or room via `faceYaw`, because items store no rotation.
-- **Simple boxes:** the dehumidifier, heater, portable AC, LED panels and interior doors.
+  - the tower heater, dehumidifier and portable AC, plus LED fixtures (a "bar" light or a quantum board with a diode-grid texture), are code-built too;
+  - fans face the middle of their tent or room via `faceYaw`, because items store no rotation. Boxy units snap to the nearest quarter turn (`quarterTurn`), swapping length and width so they keep their footprint.
+- **Simple boxes:** interior doors.
 
 **Interaction rules:**
 - Clicks after a camera drag are ignored (`e.delta`).

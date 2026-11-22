@@ -6,7 +6,7 @@ import { getRackTiers, getTierShelfHeightFt, TRAY_1020 } from '../../utils/growR
 import { getNutrientCapacityL, getNutrientLevelL, isNutrientReservoirEmpty } from '../../utils/nutrientReservoirs';
 import { isLightScheduledOn } from '../../utils/roomThermal';
 import { AssetSlot, FluorescentFixture, InlineFan, PendantLamp, ReservoirTote } from './AssetModels';
-import { HumidifierModel, OscillatingFanModel } from './ApplianceModels';
+import { DehumidifierModel, HeaterModel, HumidifierModel, LedFixtureModel, OscillatingFanModel, PortableAcModel, quarterTurn } from './ApplianceModels';
 
 /** Which fixture model a grow light gets, from its name: fluorescent tubes, a pendant lamp, or an LED panel. */
 function growLightStyle(name: string): 'fluorescent' | 'pendant' | 'panel' {
@@ -207,19 +207,7 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12, faceYaw
       return (
         <group>
           <HangingCords length={L} width={W} topY={h} hangFt={hangFt} />
-          <mesh position={[0, h / 2, 0]}>
-            <boxGeometry args={[L, h, W]} />
-            <meshStandardMaterial color="#d4d4d8" metalness={0.5} roughness={0.4} />
-          </mesh>
-          <mesh position={[0, -0.002, 0]} rotation={[Math.PI / 2, 0, 0]}>
-            <planeGeometry args={[L * 0.94, W * 0.94]} />
-            <meshStandardMaterial
-              color={isLit ? '#fff7d6' : '#71717a'}
-              emissive={isLit ? '#ffe9a8' : '#000000'}
-              emissiveIntensity={isLit ? 1.6 : 0}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
+          <LedFixtureModel L={L} W={W} h={h} lit={isLit} bars={/\bbars?\b/i.test(eq.name)} />
         </group>
       );
     }
@@ -260,67 +248,20 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12, faceYaw
       return <HumidifierModel L={L} W={W} h={h} on={on} fill={fill} empty={empty} misting={misting} setting={setting} />;
     }
     case 'dehumidifier': {
-      const full = isBucketFull(eq);
+      const turn = quarterTurn(faceYaw);
       const bucketFill = eq.drainHoseConnected ? 0 : getBucketLevelL(eq) / getBucketCapacityL(eq);
-      // Pull-out bucket window along the bottom front, showing the condensate level
-      const winH = h * 0.22;
-      const winW = L * 0.7;
-      const statusColor = !on ? '#52525b' : full ? '#f43f5e' : '#10b981';
       return (
-        <group>
-          <mesh position={[0, h / 2, 0]}>
-            <boxGeometry args={[L, h, W]} />
-            <meshStandardMaterial color="#e4e4e7" roughness={0.5} />
-          </mesh>
-          {[0.45, 0.55, 0.65, 0.75].map(t => (
-            <mesh key={t} position={[0, h * t, W / 2 + 0.002]}>
-              <planeGeometry args={[L * 0.7, h * 0.04]} />
-              <meshStandardMaterial color="#52525b" />
-            </mesh>
-          ))}
-          <mesh position={[0, h * 0.05 + winH / 2, W / 2 + 0.003]}>
-            <planeGeometry args={[winW, winH]} />
-            <meshStandardMaterial color="#18181b" transparent opacity={0.6} />
-          </mesh>
-          {bucketFill > 0.01 && (
-            <mesh position={[0, h * 0.05 + (winH * bucketFill) / 2, W / 2 + 0.004]}>
-              <planeGeometry args={[winW * 0.96, winH * bucketFill]} />
-              <meshStandardMaterial color={full ? '#f43f5e' : bucketFill > 0.8 ? '#fbbf24' : '#38bdf8'} transparent opacity={0.8} />
-            </mesh>
-          )}
-          <mesh position={[L * 0.3, h * 0.88, W / 2 + 0.003]}>
-            <circleGeometry args={[0.04, 10]} />
-            <meshStandardMaterial color={statusColor} emissive={statusColor} emissiveIntensity={on ? 0.8 : 0} />
-          </mesh>
-          {eq.drainHoseConnected && (
-            // Drain hose out the back, down to the floor drain
-            <mesh position={[0, h * 0.06, -W / 2 - 0.35]} rotation={[Math.PI / 2, 0, 0]}>
-              <cylinderGeometry args={[0.03, 0.03, 0.7, 8]} />
-              <meshStandardMaterial color="#334155" roughness={0.6} />
-            </mesh>
-          )}
+        <group rotation={[0, turn.rotationY, 0]}>
+          <DehumidifierModel L={turn.swap ? W : L} W={turn.swap ? L : W} h={h} on={on} full={isBucketFull(eq)} bucketFill={bucketFill} drainHose={!!eq.drainHoseConnected} />
         </group>
       );
     }
     case 'portable_ac': {
+      const turn = quarterTurn(faceYaw);
       const cooling = on && (eq.effectiveSetting ?? 0) > 0;
       return (
-        <group>
-          <mesh position={[0, h / 2, 0]}>
-            <boxGeometry args={[L, h, W]} />
-            <meshStandardMaterial color="#f4f4f5" roughness={0.45} />
-          </mesh>
-          {[0.55, 0.65, 0.75].map(t => (
-            <mesh key={t} position={[0, h * t, W / 2 + 0.002]}>
-              <planeGeometry args={[L * 0.75, h * 0.035]} />
-              <meshStandardMaterial color={cooling ? '#38bdf8' : '#71717a'} emissive={cooling ? '#0ea5e9' : '#000000'} emissiveIntensity={cooling ? 0.5 : 0} />
-            </mesh>
-          ))}
-          {/* Exhaust hose stub out the back, toward the window kit */}
-          <mesh position={[0, h * 0.6, -W / 2 - 0.25]} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[0.2, 0.2, 0.5, 14]} />
-            <meshStandardMaterial color="#a1a1aa" roughness={0.6} />
-          </mesh>
+        <group rotation={[0, turn.rotationY, 0]}>
+          <PortableAcModel L={turn.swap ? W : L} W={turn.swap ? L : W} h={h} on={on} cooling={cooling} />
         </group>
       );
     }
@@ -343,19 +284,14 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12, faceYaw
         </group>
       );
     }
-    case 'heater':
+    case 'heater': {
+      const turn = quarterTurn(faceYaw);
       return (
-        <group>
-          <mesh position={[0, h / 2, 0]}>
-            <boxGeometry args={[L, h, W]} />
-            <meshStandardMaterial color="#451a03" roughness={0.6} />
-          </mesh>
-          <mesh position={[0, h * 0.55, W / 2 + 0.002]}>
-            <planeGeometry args={[L * 0.7, h * 0.6]} />
-            <meshStandardMaterial color={on ? '#f97316' : '#78350f'} emissive={on ? '#f97316' : '#000000'} emissiveIntensity={on ? 1.2 : 0} />
-          </mesh>
+        <group rotation={[0, turn.rotationY, 0]}>
+          <HeaterModel L={turn.swap ? W : L} W={turn.swap ? L : W} h={h} heating={on} />
         </group>
       );
+    }
     case 'heat_mat': {
       const matColor = on ? '#3b0d0d' : '#18181b';
       const glow = on ? '#7f1d1d' : '#000000';
