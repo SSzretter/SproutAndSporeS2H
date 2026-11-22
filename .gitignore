@@ -60,3 +60,6 @@ yarn-error.log*
 
 # Temporary / stray files
 nul
+
+# Raw third-party asset downloads (trimmed copies go in public/)
+assets-src/

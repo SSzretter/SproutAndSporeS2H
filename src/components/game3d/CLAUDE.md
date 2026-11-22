@@ -29,6 +29,15 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 
 **Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways. `CameraRig` follows it with orbit and zoom.
 
+**People** (`QuaterniusCharacter.tsx`): the player and NPCs are rigged, animated Quaternius CC0 models from `public/models/characters/` (credits there).
+- **Assets:** `npm run build:characters` rebuilds the three GLBs from the raw packs in the git-ignored `assets-src/quaternius/x/`. It's Windows-only (it resizes textures with PowerShell), and you rarely need it: the built GLBs are committed.
+- **One skeleton:** both bodies, the hairstyles and the animation clips share one 65-bone rig, so clips play without retargeting. The pelvis track is scaled per body (`clipsForBody`).
+- **Clothes are a shader, not meshes:** `makeClothMaterial` paints shirt, trousers and shoes by bind-pose height and arm distance, and pushes them out slightly along the normal. Skin colour is a tint relative to the texture's average.
+- **Looks:** `lookForId` derives body, skin, hair colour and style from the person's id. Role colours come from `ROLE_METADATA`.
+- **Animation:** `clipForNpc` maps an NPC's `currentAction` text to a clip. The player switches between idle and jog based on whether `walkFrame` is still advancing.
+- **Gear:** hats and belts attach through `useBoneAnchor` (feet, character-aligned, following the bone). Held tools follow the right hand's position but stay upright.
+- **Fallback:** the procedural `Figure` shows while the GLBs load and if they fail to.
+
 `PlantSprites.ts` 2D drawings remain only for `PlantVisualizerModal`.
 
 **Lighting and shadows** (`SceneFx.tsx`, wired in `SceneLighting`):
