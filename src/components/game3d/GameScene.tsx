@@ -149,6 +149,11 @@ function ItemNode({
   const containerTopY = tent ? tentWorldOrigin(tent, room)[1] + tent.dimensions.height : room.dimensions.height;
   const ceilingMounted = isCeilingMounted(item, tent ? tent.dimensions.height : room.dimensions.height);
   const hangFt = Math.max(0, containerTopY - (position[1] + item.dimensions.height));
+  // Gear with a front (fans) turns toward the middle of its tent or room; items have no stored rotation
+  const containerCenter: [number, number] = tent
+    ? [tentWorldOrigin(tent, room)[0] + tent.dimensions.length / 2, tentWorldOrigin(tent, room)[2] + tent.dimensions.width / 2]
+    : [room.dimensions.length / 2, room.dimensions.width / 2];
+  const faceYaw = Math.atan2(containerCenter[0] - position[0], containerCenter[1] - position[2]);
 
   const handlers = {
     onClick: (e: ThreeEvent<MouseEvent>) => {
@@ -178,7 +183,7 @@ function ItemNode({
       : matTarget.kind === 'rack_tray' ? { kind: 'rack_tray', longAlongX: getRackTrayLayout(matTarget.rack) !== 'side_by_side' }
       : matTarget.kind === 'item' && matTarget.wrapped ? { kind: 'wrap', radius: matTarget.item.dimensions.length / 2, height: matTarget.item.dimensions.height }
       : undefined;
-    model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} simHour={hour} />;
+    model = <EquipmentModel eq={item as EquipmentItem} hangFt={ceilingMounted ? hangFt : 0} matMount={matMount} simHour={hour} faceYaw={faceYaw} />;
   }
   else model = <OccupantModel occ={item} />;
 

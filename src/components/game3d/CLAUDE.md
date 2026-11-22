@@ -24,7 +24,11 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - **Fallback:** wrap every use in `<AssetSlot fallback={…}>`. The procedural model shows while the model loads and if it fails to.
 - **Materials:** pass `glow` or `metalness` to `Part` for per-instance materials; bare metal reads as black in dark rooms.
 - **Assets:** `npm run build:equipment` rebuilds the GLBs from the 1K glTF downloads in git-ignored `assets-src/polyhaven/`. Like the character build it's Windows-only, and its shared helpers are in `scripts/gltf-tools.mjs`.
-- **Still procedural:** the humidifier, dehumidifier, heater, oscillating fan, portable AC and LED panels, plus interior doors. No free model fits these.
+- **Still procedural:** no free model fits the rest. The pedestal fan and tower humidifier are detailed code-built models in `ApplianceModels.tsx`:
+  - the fan has a merged wire guard, cupped blades and an oscillating head;
+  - the humidifier has a control panel, a clear tank showing the water level, and mist sprites;
+  - fans face the middle of their tent or room via `faceYaw`, because items store no rotation.
+- **Simple boxes:** the dehumidifier, heater, portable AC, LED panels and interior doors.
 
 **Interaction rules:**
 - Clicks after a camera drag are ignored (`e.delta`).

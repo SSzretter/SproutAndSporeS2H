@@ -1,5 +1,4 @@
-import React, { useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import React from 'react';
 import * as THREE from 'three';
 import { EquipmentItem } from '../../types/sim';
 import { getReservoirLevelL, getReservoirLiters, isReservoirEmpty, getBucketLevelL, getBucketCapacityL, isBucketFull } from '../../utils/equipmentLinks';
@@ -7,6 +6,7 @@ import { getRackTiers, getTierShelfHeightFt, TRAY_1020 } from '../../utils/growR
 import { getNutrientCapacityL, getNutrientLevelL, isNutrientReservoirEmpty } from '../../utils/nutrientReservoirs';
 import { isLightScheduledOn } from '../../utils/roomThermal';
 import { AssetSlot, FluorescentFixture, InlineFan, PendantLamp, ReservoirTote } from './AssetModels';
+import { HumidifierModel, OscillatingFanModel } from './ApplianceModels';
 
 /** Which fixture model a grow light gets, from its name: fluorescent tubes, a pendant lamp, or an LED panel. */
 function growLightStyle(name: string): 'fluorescent' | 'pendant' | 'panel' {
@@ -20,40 +20,6 @@ function growLightStyle(name: string): 'fluorescent' | 'pendant' | 'panel' {
  * Group origin is the item's base center. `hangFt` is the drop from the item's top to the
  * container ceiling, used to draw hanging cords for ceiling-mounted gear.
  */
-
-function SpinningBlades({ radius, on, axis = 'z' }: { radius: number; on: boolean; axis?: 'x' | 'z' }) {
-  const ref = useRef<THREE.Group>(null);
-  useFrame((_, delta) => {
-    if (ref.current && on) ref.current.rotation[axis] += delta * 14;
-  });
-  return (
-    <group ref={ref}>
-      {[0, 1, 2].map(i => (
-        <mesh key={i} rotation={[0, 0, (i * Math.PI * 2) / 3]} position={[0, 0, 0]}>
-          <boxGeometry args={[radius * 0.32, radius * 1.8, 0.01]} />
-          <meshStandardMaterial color="#38bdf8" />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-function MistPlume({ topY, on }: { topY: number; on: boolean }) {
-  const ref = useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    if (!ref.current) return;
-    const t = clock.getElapsedTime();
-    ref.current.position.y = topY + 0.25 + Math.sin(t * 2) * 0.05;
-    ref.current.scale.setScalar(0.18 + (Math.sin(t * 3) + 1) * 0.03);
-  });
-  if (!on) return null;
-  return (
-    <mesh ref={ref} position={[0, topY + 0.25, 0]}>
-      <sphereGeometry args={[1, 10, 8]} />
-      <meshStandardMaterial color="#e0f2fe" transparent opacity={0.35} />
-    </mesh>
-  );
-}
 
 function HangingCords({ length, width, topY, hangFt }: { length: number; width: number; topY: number; hangFt: number }) {
   if (hangFt <= 0.05) return null;
@@ -180,7 +146,8 @@ function GrowRackModel({ eq }: { eq: EquipmentItem }) {
 // rack_tray: under one 1020 tray of a grow rack, its long side turned to match the tray's
 export type HeatMatMount = { kind: 'wrap'; radius: number; height: number } | { kind: 'under_tray' } | { kind: 'rack_tray'; longAlongX: boolean };
 
-export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq: EquipmentItem; hangFt?: number; matMount?: HeatMatMount; simHour?: number }) {
+/** `faceYaw`: heading (radians about +Y, 0 = +Z) for gear with a front, such as fans. */
+export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12, faceYaw = 0 }: { eq: EquipmentItem; hangFt?: number; matMount?: HeatMatMount; simHour?: number; faceYaw?: number }) {
   const { length: L, width: W, height: H } = eq.dimensions;
   const h = Math.max(0.04, H);
   const on = eq.powerOn;
@@ -285,37 +252,12 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
       );
     }
     case 'humidifier': {
-      // Opaque base, clear tank above it showing the real water level
-      const baseH = h * 0.3;
-      const tankH = h * 0.6;
       const empty = isReservoirEmpty(eq);
       const fill = empty ? 0 : getReservoirLevelL(eq) / getReservoirLiters(eq);
-      const waterH = Math.max(0.005, tankH * fill);
+      const setting = eq.effectiveSetting ?? eq.setting;
       // Mist only while it has water and the controller has it running
-      const misting = on && !empty && (eq.effectiveSetting ?? eq.setting) > 0;
-      return (
-        <group>
-          <mesh position={[0, baseH / 2, 0]}>
-            <cylinderGeometry args={[L * 0.47, L * 0.5, baseH, 18]} />
-            <meshStandardMaterial color="#f4f4f5" roughness={0.4} />
-          </mesh>
-          <mesh position={[0, baseH + tankH / 2, 0]}>
-            <cylinderGeometry args={[L * 0.45, L * 0.47, tankH, 18]} />
-            <meshStandardMaterial color="#e0f2fe" transparent opacity={0.25} roughness={0.1} depthWrite={false} />
-          </mesh>
-          {fill > 0 && (
-            <mesh position={[0, baseH + waterH / 2, 0]}>
-              <cylinderGeometry args={[L * 0.42, L * 0.44, waterH, 18]} />
-              <meshStandardMaterial color={fill < 0.2 ? '#fbbf24' : '#38bdf8'} transparent opacity={0.7} />
-            </mesh>
-          )}
-          <mesh position={[0, h * 0.95, 0]}>
-            <cylinderGeometry args={[L * 0.12, L * 0.12, h * 0.1, 10]} />
-            <meshStandardMaterial color={empty && on ? '#f43f5e' : '#a1a1aa'} emissive={empty && on ? '#f43f5e' : '#000000'} emissiveIntensity={empty && on ? 0.8 : 0} />
-          </mesh>
-          <MistPlume topY={h} on={misting} />
-        </group>
-      );
+      const misting = on && !empty && setting > 0;
+      return <HumidifierModel L={L} W={W} h={h} on={on} fill={fill} empty={empty} misting={misting} setting={setting} />;
     }
     case 'dehumidifier': {
       const full = isBucketFull(eq);
@@ -444,29 +386,12 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
         </mesh>
       );
     }
-    case 'oscillating_fan': {
-      const headR = Math.min(L, W) * 0.45;
-      const poleH = Math.max(0.1, h - headR * 2);
+    case 'oscillating_fan':
       return (
-        <group>
-          <mesh position={[0, 0.03, 0]}>
-            <cylinderGeometry args={[headR * 0.8, headR * 0.9, 0.06, 16]} />
-            <meshStandardMaterial color="#27272a" />
-          </mesh>
-          <mesh position={[0, poleH / 2, 0]}>
-            <cylinderGeometry args={[0.04, 0.04, poleH, 8]} />
-            <meshStandardMaterial color="#52525b" metalness={0.5} />
-          </mesh>
-          <group position={[0, poleH + headR, 0]}>
-            <mesh>
-              <torusGeometry args={[headR, 0.025, 6, 24]} />
-              <meshStandardMaterial color="#a1a1aa" metalness={0.6} />
-            </mesh>
-            <SpinningBlades radius={headR * 0.5} on={on} />
-          </group>
+        <group rotation={[0, faceYaw, 0]}>
+          <OscillatingFanModel L={L} W={W} h={h} on={on} setting={eq.effectiveSetting ?? eq.setting} />
         </group>
       );
-    }
     case 'co2_regulator':
       return (
         <group>
