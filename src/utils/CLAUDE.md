@@ -6,6 +6,8 @@ Loaded when working in `src/utils/`. The root `CLAUDE.md` covers the state tree,
 - SVP/VPD math.
 - Room climate (indoor vs `outdoor_garden` vs `greenhouse`) and per-tent climate.
 - `arbitrateEnclosureEquipment`: the central controller. It resolves conflicting equipment by `controllerPriority` and produces `activeInterlocks`.
+  - Controls have dead bands keyed off the unit's previous `effectiveSetting`, so a 1-minute tick in a small tent doesn't flick them on and off: exhaust triggers (`exhaustFanDemand`: keeps running to 1°F / 3% RH / 75 ppm under the trigger), the CO2 solenoid (`co2SolenoidCallsForGas`: opens 50 ppm below target, closes at target), dehumidifiers (`dehumidistatCallsForDrying`).
+  - Under `balanced_auto`, a fan venting heat or humidity pauses the CO2 solenoid (no gas pumped straight out the exhaust); `co2_enrichment` keeps the gas and suspends the fan below 84°F.
 - Per-crop growth.
 
 Plant stage requirements, durations, stage transitions and cultivar profiles (hops, peppers) live in `plantLifecycle.ts`. Plant height and canopy are not incremented directly. Each tick eases them toward `getPlantTargetSize`, which interpolates the per-species `STAGE_END_SIZES` by `stageProgress` and scales by `getContainerSizeFactor` (pot volume). They never shrink. Tune sizes in that table.

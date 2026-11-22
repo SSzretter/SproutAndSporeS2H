@@ -240,6 +240,94 @@ function dehumidistatCallsForDrying(eq: EquipmentItem, rh: number): boolean {
   return rh > target + (running ? -2 : 1.5);
 }
 
+/** A CO2 solenoid with a dead band: it opens 50 ppm below target and, once open, stays open until target. */
+function co2SolenoidCallsForGas(eq: EquipmentItem, co2Ppm: number): boolean {
+  const target = eq.targetCo2Ppm ?? 1200;
+  const open = (eq.effectiveSetting ?? 0) > 0;
+  return co2Ppm < (open ? target : target - 50);
+}
+
+type FanDemand = { speed: number; reasons: string[]; ventilating: boolean };
+
+/**
+ * What an exhaust fan's own mode and triggers ask for, before interlocks. In auto, a running fan keeps going
+ * until the tent is a little under the trigger it started on (1°F, 3% RH, 75 ppm), so it doesn't flick on and
+ * off every minute as each burst of exhaust drops the reading just below it. `ventilating` is true when heat
+ * or humidity (not CO2 intake) is what calls for air.
+ */
+function exhaustFanDemand(
+  eq: EquipmentItem,
+  climate: { tempF: number; rh: number; co2Ppm: number },
+  isShroomEnclosure: boolean,
+  isDay: boolean,
+  simTime: number
+): FanDemand {
+  const mode = eq.controlMode || 'auto';
+  const triggers = eq.autoTriggers || {};
+  const minSpeed = triggers.minSpeedPercent ?? 0;
+  const maxSpeed = triggers.maxSpeedPercent ?? (eq.setting || 100);
+  const reasons: string[] = [];
+
+  if (mode === 'manual') {
+    return { speed: eq.setting, reasons: [`Manual fixed speed (${eq.setting}%)`], ventilating: false };
+  }
+  if (mode === 'cycle') {
+    const cycleOn = triggers.cycleOnMinutes ?? 3;
+    const cycleOff = triggers.cycleOffMinutes ?? 20;
+    const totalCycle = cycleOn + cycleOff;
+    const minuteIndex = Math.floor(simTime / 60000) % totalCycle;
+    return minuteIndex < cycleOn
+      ? { speed: eq.setting, reasons: [`Cycle timer active pulse (${cycleOn - minuteIndex}m left)`], ventilating: false }
+      : { speed: minSpeed, reasons: [`Cycle timer idle (${totalCycle - minuteIndex}m to next pulse)`], ventilating: false };
+  }
+
+  // Auto (intelligent environmental triggers)
+  const tempHighTrigger = triggers.tempTriggerHighF ?? (isShroomEnclosure ? 76 : 79);
+  const rhHighTrigger = triggers.rhTriggerHigh ?? (isShroomEnclosure ? 98 : 68);
+  const co2HighTrigger = triggers.co2TriggerHighPpm ?? (isShroomEnclosure ? 950 : 1500);
+  const co2LowTrigger = triggers.co2TriggerLowPpm ?? 380;
+  const running = (eq.effectiveSetting ?? 0) > 0;
+  const band = running ? { tempF: 1, rh: 3, co2: 75 } : { tempF: 0, rh: 0, co2: 0 };
+  let speed = minSpeed;
+  let ventilating = false;
+
+  // 1. High temperature
+  if (climate.tempF > tempHighTrigger - band.tempF) {
+    const heatSpeed = Math.min(maxSpeed, Math.round(minSpeed + Math.max(0, climate.tempF - tempHighTrigger) * 15 + 25));
+    ventilating = true;
+    if (heatSpeed > speed) {
+      speed = heatSpeed;
+      reasons.push(`High Temp (${climate.tempF.toFixed(1)}°F > ${tempHighTrigger}°F)`);
+    }
+  }
+  // 2. High humidity (evacuate excess moisture)
+  if (climate.rh > rhHighTrigger - band.rh) {
+    const rhSpeed = Math.min(maxSpeed, Math.round(minSpeed + Math.max(0, climate.rh - rhHighTrigger) * 6 + 30));
+    ventilating = true;
+    if (rhSpeed > speed) {
+      speed = rhSpeed;
+      reasons.push(`High RH (${Math.round(climate.rh)}% > ${rhHighTrigger}%)`);
+    }
+  }
+  // 3. High CO2 (mushroom FAE evacuation)
+  if (climate.co2Ppm > co2HighTrigger - band.co2) {
+    const co2Speed = Math.min(maxSpeed, Math.round(minSpeed + Math.min(60, Math.max(0, climate.co2Ppm - co2HighTrigger) * 0.15) + 30));
+    if (co2Speed > speed) {
+      speed = co2Speed;
+      reasons.push(`High CO₂ FAE (${Math.round(climate.co2Ppm)} > ${co2HighTrigger} PPM)`);
+    }
+  }
+  // 4. Low CO2 (plants starving for carbon under light)
+  if (climate.co2Ppm < co2LowTrigger && isDay) {
+    const co2DeficitSpeed = Math.min(maxSpeed, 45);
+    if (co2DeficitSpeed > speed) {
+      speed = co2DeficitSpeed;
+      reasons.push(`Low CO₂ intake (${Math.round(climate.co2Ppm)} < ${co2LowTrigger} PPM)`);
+    }
+  }
+  return { speed, reasons, ventilating };
+}
+
 /**
  * Central Controller Arbitration Engine:
  * Prevents equipment from fighting each other (e.g. Humidifier vs Exhaust Fan, Humidifier vs Dehumidifier, CO2 Solenoid vs Exhaust).
@@ -301,6 +389,7 @@ export function arbitrateEnclosureEquipment(params: {
 
   let co2RegulatorTarget: number | null = null;
   let co2RegulatorActive = false;
+  let ventilationDemanded = false; // an auto exhaust fan wants air out for heat or humidity
 
   // Pre-calculate light status for CO2 and heat
   items.forEach(item => {
@@ -347,13 +436,25 @@ export function arbitrateEnclosureEquipment(params: {
         }
       } else if (item.type === 'co2_regulator' && item.powerOn) {
         const target = item.targetCo2Ppm ?? 1200;
-        if (climate.co2Ppm < target - 50 && isDay) {
+        if (isDay && co2SolenoidCallsForGas(item, climate.co2Ppm)) {
           co2RegulatorActive = true;
           co2RegulatorTarget = target;
         }
+      } else if (item.type === 'exhaust_fan' && item.powerOn && exhaustFanDemand(item, climate, isShroomEnclosure, isDay, simTime).ventilating) {
+        ventilationDemanded = true;
       }
     }
   });
+
+  // Balanced auto: a tent that needs venting for heat or humidity gets it; the CO2 solenoid waits rather
+  // than pumping gas straight out of the exhaust (CO2 Enrichment priority keeps the gas instead)
+  let co2PausedForVenting = false;
+  if (co2RegulatorActive && ventilationDemanded && priority === 'balanced_auto') {
+    co2RegulatorActive = false;
+    co2RegulatorTarget = null;
+    co2PausedForVenting = true;
+    activeInterlocks.push('CO₂ enrichment paused: Exhaust venting heat/humidity (Balanced Auto)');
+  }
 
   // 2. Conflict Arbitration: Humidifier vs Dehumidifier
   let humidifierSuppressed = false;
@@ -474,9 +575,12 @@ export function arbitrateEnclosureEquipment(params: {
       if (!isDay) {
         eq.effectiveSetting = 0;
         eq.interlockStatus = 'Solenoid closed: Night cycle (Stomata closed)';
-      } else if (climate.co2Ppm >= target) {
+      } else if (!co2SolenoidCallsForGas(eq, climate.co2Ppm)) {
         eq.effectiveSetting = 0;
-        eq.interlockStatus = `Idle: Canopy enriched (${climate.co2Ppm} ≥ ${target} PPM)`;
+        eq.interlockStatus = `Idle: Canopy enriched (${Math.round(climate.co2Ppm)} PPM, target ${target})`;
+      } else if (co2PausedForVenting) {
+        eq.effectiveSetting = 0;
+        eq.interlockStatus = 'Paused: Exhaust venting heat/humidity (Balanced Auto)';
       } else {
         eq.effectiveSetting = eq.setting;
         eq.interlockStatus = `Injecting: Enriching canopy to ${target} PPM`;
@@ -486,76 +590,11 @@ export function arbitrateEnclosureEquipment(params: {
 
     // F. EXHAUST FANS (INTELLIGENT DYNAMIC TRIGGERS & CONFLICT PROTECTION)
     if (eq.type === 'exhaust_fan') {
-      const triggers = eq.autoTriggers || {};
       // Off unless a trigger calls for air; an idling fan just vents heat & humidity the tent needs
+      const triggers = eq.autoTriggers || {};
       const minSpeed = triggers.minSpeedPercent ?? 0;
-      const maxSpeed = triggers.maxSpeedPercent ?? (eq.setting || 100);
-
-      const tempHighTrigger = triggers.tempTriggerHighF ?? (isShroomEnclosure ? 76 : 79);
-      const rhHighTrigger = triggers.rhTriggerHigh ?? (isShroomEnclosure ? 98 : 68);
       const rhLowFloor = triggers.rhTriggerLow ?? (isShroomEnclosure ? 80 : 45);
-      const co2HighTrigger = triggers.co2TriggerHighPpm ?? (isShroomEnclosure ? 950 : 1500);
-      const co2LowTrigger = triggers.co2TriggerLowPpm ?? 380;
-
-      let demandedSpeed = minSpeed;
-      let activeTriggerReasons: string[] = [];
-
-      if (mode === 'manual') {
-        demandedSpeed = eq.setting;
-        activeTriggerReasons.push(`Manual fixed speed (${eq.setting}%)`);
-      } else if (mode === 'cycle') {
-        const cycleOn = triggers.cycleOnMinutes ?? 3;
-        const cycleOff = triggers.cycleOffMinutes ?? 20;
-        const totalCycle = cycleOn + cycleOff;
-        const minuteIndex = Math.floor(simTime / 60000) % totalCycle;
-        if (minuteIndex < cycleOn) {
-          demandedSpeed = eq.setting;
-          activeTriggerReasons.push(`Cycle timer active pulse (${cycleOn - minuteIndex}m left)`);
-        } else {
-          demandedSpeed = minSpeed;
-          activeTriggerReasons.push(`Cycle timer idle (${totalCycle - minuteIndex}m to next pulse)`);
-        }
-      } else {
-        // Mode === 'auto' (Intelligent environmental triggers)
-        // 1. High Temp Trigger:
-        if (climate.tempF > tempHighTrigger) {
-          const excessTemp = climate.tempF - tempHighTrigger;
-          const heatSpeed = Math.min(maxSpeed, Math.round(minSpeed + excessTemp * 15 + 25));
-          if (heatSpeed > demandedSpeed) {
-            demandedSpeed = heatSpeed;
-            activeTriggerReasons.push(`High Temp (${climate.tempF.toFixed(1)}°F > ${tempHighTrigger}°F)`);
-          }
-        }
-
-        // 2. High Humidity Trigger (evacuate excess moisture):
-        if (climate.rh > rhHighTrigger) {
-          const excessRh = climate.rh - rhHighTrigger;
-          const rhSpeed = Math.min(maxSpeed, Math.round(minSpeed + excessRh * 6 + 30));
-          if (rhSpeed > demandedSpeed) {
-            demandedSpeed = rhSpeed;
-            activeTriggerReasons.push(`High RH (${climate.rh}% > ${rhHighTrigger}%)`);
-          }
-        }
-
-        // 3. High CO2 Trigger (Mushroom FAE evacuation):
-        if (climate.co2Ppm > co2HighTrigger) {
-          const excessCo2 = climate.co2Ppm - co2HighTrigger;
-          const co2Speed = Math.min(maxSpeed, Math.round(minSpeed + Math.min(60, excessCo2 * 0.15) + 30));
-          if (co2Speed > demandedSpeed) {
-            demandedSpeed = co2Speed;
-            activeTriggerReasons.push(`High CO₂ FAE (${climate.co2Ppm} > ${co2HighTrigger} PPM)`);
-          }
-        }
-
-        // 4. Low CO2 Trigger (Plants starving for carbon under daylight):
-        if (climate.co2Ppm < co2LowTrigger && isDay) {
-          const co2DeficitSpeed = Math.min(maxSpeed, 45);
-          if (co2DeficitSpeed > demandedSpeed) {
-            demandedSpeed = co2DeficitSpeed;
-            activeTriggerReasons.push(`Low CO₂ intake (${climate.co2Ppm} < ${co2LowTrigger} PPM)`);
-          }
-        }
-      }
+      const { speed: demandedSpeed, reasons: activeTriggerReasons } = exhaustFanDemand(item, climate, isShroomEnclosure, isDay, simTime);
 
       // 4. CENTRAL CONTROLLER INTERLOCKS & PROTECTION ARBITRATION
       let arbitratedSpeed = demandedSpeed;
