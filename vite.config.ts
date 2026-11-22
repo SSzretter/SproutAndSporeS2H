@@ -1,9 +1,12 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({mode}) => {
+  // Real environment variables (AI Studio secrets, CI) win over .env files.
+  // Vite doesn't put .env values into process.env while loading this config, so read them here.
+  const env: Record<string, string | undefined> = {...loadEnv(mode, process.cwd(), ''), ...process.env};
   return {
     base: './', // Ensures assets load correctly on GitHub Pages
     plugins: [react(), tailwindcss()],
@@ -12,23 +15,23 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    // Map process.env variables (from AI Studio secrets or environment) to import.meta.env
+    // Map Supabase/app variables (AI Studio secrets, CI env or .env) to import.meta.env
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(
-        process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+        env.VITE_SUPABASE_URL || env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || ''
       ),
       'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(
-        process.env.VITE_SUPABASE_ANON_KEY || 
-        process.env.VITE_SUPABASE_PUBLISHABLE_KEY || 
-        process.env.SUPABASE_PUBLISHABLE_KEY || 
-        process.env.SUPABASE_ANON_KEY || 
-        process.env.SUPABASE_KEY || 
-        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
+        env.VITE_SUPABASE_ANON_KEY || 
+        env.VITE_SUPABASE_PUBLISHABLE_KEY || 
+        env.SUPABASE_PUBLISHABLE_KEY || 
+        env.SUPABASE_ANON_KEY || 
+        env.SUPABASE_KEY || 
+        env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 
+        env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
         ''
       ),
       'import.meta.env.VITE_APP_URL': JSON.stringify(
-        process.env.VITE_APP_URL || process.env.APP_URL || ''
+        env.VITE_APP_URL || env.APP_URL || ''
       ),
     },
     // Pre-bundle the lazily-loaded 3D game deps so the dev server doesn't re-optimize
