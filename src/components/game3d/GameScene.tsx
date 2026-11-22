@@ -738,7 +738,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
     <>
       <SceneLighting room={room} simTime={simTime} />
       <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} selectedTarget={props.selectedTarget} onUpdateItemPosition={props.onUpdateItemPosition} onUpdateTentPosition={props.onUpdateTentPosition} />
-      <RoomModel room={room} onFloorClick={handleFloorClick} />
+      <RoomModel room={room} onFloorClick={handleFloorClick} doorSides={doorways.map(d => d.side)} />
       {doorways.map(door => (
         <DoorwayModel
           key={`${door.side}-${door.roomId}`}

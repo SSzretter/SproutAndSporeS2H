@@ -14,6 +14,18 @@ Built with three.js via `@react-three/fiber` + `@react-three/drei`. `GameWorld.t
 
 Each piece of equipment gets a status LED from `getEquipmentActivity`.
 
+**Textured models** (`AssetModels.tsx`): some gear and room fixtures use Poly Haven CC0 GLBs from `public/models/equipment/` (credits there). Each one is fitted to the item's real size in feet.
+- **What uses them:**
+  - the nutrient reservoir (a tote);
+  - the inline exhaust fan (duct fan housing plus collars);
+  - grow lights by name: `growLightStyle` picks fluorescent strips for T5/T8/fluorescent, a pendant lamp for HPS/CMH/MH, else the procedural LED panel;
+  - in indoor rooms, a breaker panel and caged work light (`RoomFixtures`), placed to avoid doors;
+  - a roll-up shutter for the outside door of a garage, workshop or shed.
+- **Fallback:** wrap every use in `<AssetSlot fallback={…}>`. The procedural model shows while the model loads and if it fails to.
+- **Materials:** pass `glow` or `metalness` to `Part` for per-instance materials; bare metal reads as black in dark rooms.
+- **Assets:** `npm run build:equipment` rebuilds the GLBs from the 1K glTF downloads in git-ignored `assets-src/polyhaven/`. Like the character build it's Windows-only, and its shared helpers are in `scripts/gltf-tools.mjs`.
+- **Still procedural:** the humidifier, dehumidifier, heater, oscillating fan, portable AC and LED panels, plus interior doors. No free model fits these.
+
 **Interaction rules:**
 - Clicks after a camera drag are ignored (`e.delta`).
 - Tents are clickable everywhere but defer to any item under the pointer (`ITEM_USER_DATA` + `pointerHitsItem`).

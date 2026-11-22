@@ -4,6 +4,8 @@ import { Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { Room, Tent } from '../../types/sim';
 import { Vec3 } from './coords';
+import { AssetSlot, BreakerPanel, CagedWorkLight, RollerShutter } from './AssetModels';
+import type { WallSide } from '../../types/sim';
 
 /**
  * A vertical wall panel that fades out whenever the camera is on its outward side,
@@ -75,7 +77,36 @@ function Walls({ length, width, height, color, opacity, metalness }: { length: n
   );
 }
 
-export function RoomModel({ room, onFloorClick }: { room: Room; onFloorClick: (e: ThreeEvent<MouseEvent>) => void }) {
+/**
+ * Utility corner of an indoor room: a breaker panel on the back wall near the left corner and a caged work
+ * light hanging from the ceiling in front of it. The light runs along the back wall unless a door there would
+ * put it in the way, in which case it runs along the left wall.
+ */
+function RoomFixtures({ room, doorSides }: { room: Room; doorSides: WallSide[] }) {
+  const { length: L, width: W, height: H } = room.dimensions;
+  if (L < 6 || W < 6 || H < 6.5) return null;
+  const lightSpan = 3.9; // the work light's length in feet
+  const backBlocked = doorSides.includes('back') && L / 2 - 1.8 < 0.3 + lightSpan;
+  const leftBlocked = doorSides.includes('left') && W / 2 - 1.8 < 0.3 + lightSpan;
+  const alongLeft = backBlocked && !leftBlocked;
+  const lightPos: Vec3 = alongLeft ? [1.4, H, 0.3 + lightSpan / 2] : [0.3 + lightSpan / 2, H, 1.4];
+  return (
+    <group>
+      <group position={[1.3, 4.6, 0]}>
+        <AssetSlot fallback={null}>
+          <BreakerPanel />
+        </AssetSlot>
+      </group>
+      <group position={lightPos} rotation={[0, alongLeft ? Math.PI / 2 : 0, 0]}>
+        <AssetSlot fallback={null}>
+          <CagedWorkLight lit />
+        </AssetSlot>
+      </group>
+    </group>
+  );
+}
+
+export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; onFloorClick: (e: ThreeEvent<MouseEvent>) => void; doorSides?: WallSide[] }) {
   const { length: L, width: W, height: H } = room.dimensions;
   const isOutdoor = room.environmentType === 'outdoor_garden';
   const isGreenhouse = room.environmentType === 'greenhouse';
@@ -122,7 +153,10 @@ export function RoomModel({ room, onFloorClick }: { room: Room; onFloorClick: (e
       ) : isGreenhouse ? (
         <Walls length={L} width={W} height={H} color="#e0f2fe" opacity={0.18} />
       ) : (
-        <Walls length={L} width={W} height={H} color="#3f3f46" opacity={1} />
+        <>
+          <Walls length={L} width={W} height={H} color="#3f3f46" opacity={1} />
+          <RoomFixtures room={room} doorSides={doorSides} />
+        </>
       )}
     </group>
   );
@@ -157,6 +191,8 @@ export function DoorwayModel({
   const { length: L, width: W } = room.dimensions;
   const isAdd = door.roomId === 'ADD_ROOM';
   const isOutside = door.roomId === OUTSIDE_DOOR_ID;
+  // A garage opens to the outside through a roll-up shutter
+  const isShutter = isOutside && /garage|workshop|shed|barn|warehouse/i.test(room.name);
 
   let position: Vec3;
   let rotation: [number, number, number];
@@ -198,11 +234,19 @@ export function DoorwayModel({
       >
         <boxGeometry args={[3.0, 7.0, 0.16]} />
         <meshStandardMaterial 
-          color={isAdd ? '#047857' : isOutside ? '#e7e5e4' : '#991b1b'} 
+          color={isAdd ? '#047857' : isShutter ? '#52525b' : isOutside ? '#e7e5e4' : '#991b1b'} 
           emissive={isAdd ? '#10b981' : isOutside ? '#000000' : '#7f1d1d'} 
           emissiveIntensity={isAdd ? 0.35 : isOutside ? 0 : 0.18} 
           roughness={0.5} 
         />
+        {isShutter && (
+          // Child of the click target, so clicks on the shutter open the door too
+          <group position={[0, -3.5, 0.09]}>
+            <AssetSlot fallback={null}>
+              <RollerShutter width={3.0} height={7.0} />
+            </AssetSlot>
+          </group>
+        )}
       </mesh>
 
       {/* Visual Door Styling Details */}
@@ -218,7 +262,7 @@ export function DoorwayModel({
             <meshStandardMaterial color="#6ee7b7" emissive="#34d399" emissiveIntensity={0.8} />
           </mesh>
         </group>
-      ) : isOutside ? (
+      ) : isShutter ? null : isOutside ? (
         // White exterior door with a daylight window and a brass handle
         <group position={[0, 0, 0.11]}>
           <mesh position={[0, 5.2, 0]}>

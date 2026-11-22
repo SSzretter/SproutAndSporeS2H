@@ -6,6 +6,14 @@ import { getReservoirLevelL, getReservoirLiters, isReservoirEmpty, getBucketLeve
 import { getRackTiers, getTierShelfHeightFt, TRAY_1020 } from '../../utils/growRacks';
 import { getNutrientCapacityL, getNutrientLevelL, isNutrientReservoirEmpty } from '../../utils/nutrientReservoirs';
 import { isLightScheduledOn } from '../../utils/roomThermal';
+import { AssetSlot, FluorescentFixture, InlineFan, PendantLamp, ReservoirTote } from './AssetModels';
+
+/** Which fixture model a grow light gets, from its name: fluorescent tubes, a pendant lamp, or an LED panel. */
+function growLightStyle(name: string): 'fluorescent' | 'pendant' | 'panel' {
+  if (/\b(t5|t8|t12|fluor\w*|cfl)\b/i.test(name)) return 'fluorescent';
+  if (/\b(hps|cmh|lec|mh|halide|sodium|ceramic|de)\b/i.test(name)) return 'pendant';
+  return 'panel';
+}
 
 /**
  * Low-poly equipment at true scale (item.dimensions L × W × H in feet).
@@ -185,8 +193,8 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
       // Black tote with a lid; a translucent strip on the side shows the solution level
       const fill = getNutrientLevelL(eq) / getNutrientCapacityL(eq);
       const bodyH = Math.max(0.1, h - 0.08);
-      return (
-        <group>
+      const simpleTote = (
+        <>
           <mesh position={[0, bodyH / 2, 0]}>
             <boxGeometry args={[L * 0.96, bodyH, W * 0.96]} />
             <meshStandardMaterial color="#18181b" roughness={0.7} />
@@ -195,14 +203,40 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
             <boxGeometry args={[L, 0.08, W]} />
             <meshStandardMaterial color="#3f3f46" roughness={0.6} />
           </mesh>
-          <mesh position={[0, (bodyH * fill) / 2 + 0.01, W * 0.48 + 0.003]}>
+        </>
+      );
+      return (
+        <group>
+          <AssetSlot fallback={simpleTote}>
+            <ReservoirTote L={L} W={W} h={h} />
+          </AssetSlot>
+          <mesh position={[0, (bodyH * fill) / 2 + 0.01, W * 0.5 + 0.006]}>
             <planeGeometry args={[L * 0.1, Math.max(0.01, bodyH * fill)]} />
             <meshStandardMaterial color={isNutrientReservoirEmpty(eq) ? '#ef4444' : '#7dd3fc'} emissive={on ? '#0ea5e9' : '#000000'} emissiveIntensity={0.3} />
           </mesh>
         </group>
       );
     }
-    case 'grow_light':
+    case 'grow_light': {
+      const style = growLightStyle(eq.name);
+      if (style !== 'panel') {
+        const simpleBox = (
+          <mesh position={[0, h / 2, 0]}>
+            <boxGeometry args={[L, h, W]} />
+            <meshStandardMaterial color="#d4d4d8" metalness={0.5} roughness={0.4} />
+          </mesh>
+        );
+        return (
+          <group>
+            <HangingCords length={L} width={W} topY={h} hangFt={hangFt} />
+            <AssetSlot fallback={simpleBox}>
+              {style === 'fluorescent'
+                ? <FluorescentFixture L={L} W={W} h={h} lit={isLit} />
+                : <PendantLamp L={L} W={W} lit={isLit} />}
+            </AssetSlot>
+          </group>
+        );
+      }
       return (
         <group>
           <HangingCords length={L} width={W} topY={h} hangFt={hangFt} />
@@ -221,12 +255,12 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
           </mesh>
         </group>
       );
+    }
     case 'exhaust_fan': {
       const r = Math.min(W, h) / 2;
       const blowing = on && (eq.effectiveSetting ?? eq.setting) > 0;
-      return (
-        <group>
-          <HangingCords length={L * 0.5} width={0.01} topY={h} hangFt={hangFt} />
+      const simpleFan = (
+        <>
           <mesh position={[0, h / 2, 0]} rotation={[0, 0, Math.PI / 2]}>
             <cylinderGeometry args={[r, r, L * 0.6, 16]} />
             <meshStandardMaterial color="#3f3f46" metalness={0.4} roughness={0.5} />
@@ -235,7 +269,15 @@ export function EquipmentModel({ eq, hangFt = 0, matMount, simHour = 12 }: { eq:
             <cylinderGeometry args={[r * 0.55, r * 0.55, L, 12]} />
             <meshStandardMaterial color="#71717a" metalness={0.5} roughness={0.4} />
           </mesh>
-          <mesh position={[L * 0.31, h / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
+        </>
+      );
+      return (
+        <group>
+          <HangingCords length={L * 0.5} width={0.01} topY={h} hangFt={hangFt} />
+          <AssetSlot fallback={simpleFan}>
+            <InlineFan L={L} r={r} y={h / 2} />
+          </AssetSlot>
+          <mesh position={[0, h / 2 + r + 0.003, 0]} rotation={[-Math.PI / 2, 0, 0]}>
             <circleGeometry args={[r * 0.18, 10]} />
             <meshStandardMaterial color={blowing ? '#10b981' : '#52525b'} emissive={blowing ? '#10b981' : '#000000'} emissiveIntensity={0.8} />
           </mesh>
