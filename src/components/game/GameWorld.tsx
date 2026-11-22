@@ -1433,9 +1433,11 @@ export const GameWorld: React.FC<GameWorldProps> = ({
                 <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
                 <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Select object (floor / Esc deselects)</div>
                 <div><span className="text-zinc-200 font-semibold">[Right Click]</span> Edit object properties</div>
-                <div><span className="text-zinc-200 font-semibold">[Right Drag]</span> Rotate camera</div>
-                <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Move selected object, else pan camera</div>
-                <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Raise / lower selected object, else zoom</div>
+                <div><span className="text-zinc-200 font-semibold">[Drag]</span> Look around (left or right button)</div>
+                <div><span className="text-zinc-200 font-semibold">[Middle Drag]</span> Move selected object</div>
+                <div><span className="text-zinc-200 font-semibold">[Scroll]</span> Raise / lower selected object, else zoom (far out = overview)</div>
+                <div><span className="text-zinc-200 font-semibold">[Shift + Scroll]</span> Camera aim height</div>
+                <div><span className="text-zinc-200 font-semibold">[R]</span> Camera behind the cultivator</div>
                 <div><span className="text-zinc-200 font-semibold">[E / Space]</span> Interact / Water / Harvest</div>
                 <div><span className="text-zinc-200 font-semibold">[Right-click Tent / T]</span> Edit Tent &amp; Inspect Internal Items</div>
                 <div><span className="text-zinc-200 font-semibold">[I]</span> Harvest Inventory</div>

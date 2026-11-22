@@ -27,7 +27,14 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - Crops with problems get an issue badge (red critical / amber warning) from `getCropIssues`. Their hover tooltip shows the full list.
 - Tent labels can carry live `stats` (temp / RH / VPD coloured by `getVpdZone` / CO2). The game header's Tent Stats button toggles them, remembered in `localStorage` key `sprout_spore_show_tent_stats`.
 
-**Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways. `CameraRig` follows it with orbit and zoom.
+**Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways.
+
+The camera is `FollowCamera` (`FollowCamera.tsx`, tuning in `FOLLOW_CAM`), an over-the-shoulder rig. `CameraRig` hosts it, plus middle-drag / wheel moving of the selected object.
+- **Input:** drag with the left or right button to look; the wheel sets distance, Shift + wheel the aim height; R re-centres. Inputs set targets and the camera eases toward them.
+- **Collision:** it stays inside the room and out of tent boxes. It pulls in at a bounded speed, eases back out, tilts up when there's no room behind, and lowers its aim when close so the feet stay in frame.
+- **Smart heading:** when cramped and not being steered, it swings to the nearest clear heading. It never does this while the player walks with WASD, so the walk doesn't bend.
+- **Overview:** zoomed past `roomClipMax`, it rises to an overview that may leave the room.
+- **Fading:** `OcclusionFader` fades item groups (`ITEM_USER_DATA`) and tent shells (`TENT_USER_DATA`) that block rays to the cultivator. It swaps in transparent material copies and restores the originals afterwards.
 
 **People** (`QuaterniusCharacter.tsx`): the player and NPCs are rigged, animated Quaternius CC0 models from `public/models/characters/` (credits there).
 - **Assets:** `npm run build:characters` rebuilds the three GLBs from the raw packs in the git-ignored `assets-src/quaternius/x/`. It's Windows-only (it resizes textures with PowerShell), and you rarely need it: the built GLBs are committed.

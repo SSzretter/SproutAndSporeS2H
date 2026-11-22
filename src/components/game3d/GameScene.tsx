@@ -1,7 +1,5 @@
 import React, { useEffect, useRef } from 'react';
 import { Canvas, useFrame, useThree, ThreeEvent } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
-import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import { Room, Tent, Item, PlantItem, MushroomItem, EquipmentItem, PersonItem, Position3D } from '../../types/sim';
 import { ROLE_METADATA } from '../../utils/npcWorker';
@@ -12,6 +10,7 @@ import { EquipmentModel, HeatMatMount } from './EquipmentModel';
 import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
+import { FollowCamera, OcclusionFader, TENT_USER_DATA } from './FollowCamera';
 import { SceneEnvironment, KeyLight, GrowLightSpot, ShadowManager, ContactShadowDecal, CASTS_SHADOW_USER_DATA } from './SceneFx';
 import { getVpdZone } from '../../utils/physics';
 import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
@@ -216,10 +215,9 @@ function ItemNode({
 }
 
 /**
- * Third-person follow camera around the cultivator. Right-drag orbits, middle-drag pans along
- * the floor, scroll zooms; left button is left free for interacting. While an item or tent is
- * selected, the wheel raises / lowers it and middle-drag slides it instead. A pan offset holds while
- * the cultivator stands still and eases back to center once they walk.
+ * Camera and object moving. The camera itself is the over-the-shoulder `FollowCamera` (drag to look, wheel to zoom,
+ * Shift + wheel for aim height, R to re-centre). While an item or tent is selected, the wheel raises / lowers it and
+ * middle-drag slides it instead.
  */
 function CameraRig({ 
   playerRef, 
@@ -236,15 +234,13 @@ function CameraRig({
   onUpdateItemPosition?: GameSceneProps['onUpdateItemPosition'];
   onUpdateTentPosition?: GameSceneProps['onUpdateTentPosition'];
 }) {
-  const controlsRef = useRef<OrbitControlsImpl>(null);
   const { camera, gl } = useThree();
-  const desired = useRef(new THREE.Vector3());
-  const panOffset = useRef(new THREE.Vector3());
-  const panning = useRef(false);
-  const lastPlayer = useRef({ x: playerRef.current.x, y: playerRef.current.y });
 
   const selectedRef = useRef<HoverTarget | null>(selectedTarget || null);
   selectedRef.current = selectedTarget || null;
+  // The wheel belongs to the selected item / tent; with nothing selected it zooms the camera
+  const wheelBlockedRef = useRef(!!selectedTarget);
+  wheelBlockedRef.current = !!selectedTarget;
 
   const isDraggingItemRef = useRef<{
     itemId: string;
@@ -268,20 +264,13 @@ function CameraRig({
     tentName: string;
   } | null>(null);
 
-  useEffect(() => {
-    const p = playerRef.current;
-    camera.position.set(p.x, 15, p.y + 15);
-    controlsRef.current?.target.set(p.x, 2.5, p.y);
-    controlsRef.current?.update();
-  }, [camera, playerRef]);
-
-  // Pointer & Wheel listeners for item Z-height scrolling and middle-click X,Y panning
+  // Pointer & Wheel listeners for item Z-height scrolling and middle-drag X,Y sliding
   useEffect(() => {
     const el = gl.domElement;
 
     const onDown = (e: PointerEvent) => {
       if (e.button === 1) {
-        // Middle button: slides the selected item / tent, otherwise pans the camera
+        // Middle button: slides the selected item / tent
         const target = selectedRef.current;
         if (target && target.kind === 'item' && onUpdateItemPosition) {
           e.preventDefault();
@@ -318,10 +307,6 @@ function CameraRig({
             currentZ,
             itemName: item.name
           };
-
-          if (controlsRef.current) {
-            controlsRef.current.enablePan = false;
-          }
           document.body.style.cursor = 'move';
           return;
         }
@@ -354,15 +339,10 @@ function CameraRig({
             currentZ,
             tentName: tent.name
           };
-
-          if (controlsRef.current) {
-            controlsRef.current.enablePan = false;
-          }
           document.body.style.cursor = 'move';
           return;
         }
 
-        panning.current = true;
       }
     };
 
@@ -434,19 +414,12 @@ function CameraRig({
       if (e.button === 1) {
         if (isDraggingTentRef.current) {
           isDraggingTentRef.current = null;
-          if (controlsRef.current) {
-            controlsRef.current.enablePan = true;
-          }
           document.body.style.cursor = 'default';
         }
         if (isDraggingItemRef.current) {
           isDraggingItemRef.current = null;
-          if (controlsRef.current) {
-            controlsRef.current.enablePan = true;
-          }
           document.body.style.cursor = 'default';
         }
-        panning.current = false;
       }
     };
 
@@ -527,45 +500,11 @@ function CameraRig({
     };
   }, [gl, camera, room, onUpdateItemPosition]);
 
-  useFrame(() => {
-    const controls = controlsRef.current;
-    if (!controls) return;
-
-    // The wheel belongs to the selected item / tent; with nothing selected it zooms
-    controls.enableZoom = !selectedRef.current;
-    
-
-    const p = playerRef.current;
-    desired.current.set(p.x, 2.5, p.y);
-
-    if (panning.current) {
-      panOffset.current.copy(controls.target).sub(desired.current);
-    } else {
-      const moved = p.x !== lastPlayer.current.x || p.y !== lastPlayer.current.y;
-      if (moved) panOffset.current.multiplyScalar(0.92);
-      desired.current.add(panOffset.current);
-      const delta = desired.current.sub(controls.target).multiplyScalar(0.12);
-      controls.target.add(delta);
-      camera.position.add(delta);
-    }
-    lastPlayer.current.x = p.x;
-    lastPlayer.current.y = p.y;
-
-    controls.update();
-    cameraYawRef.current = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
-  });
-
   return (
-    <OrbitControls
-      ref={controlsRef}
-      makeDefault
-      mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
-      screenSpacePanning={false}
-      minDistance={4}
-      maxDistance={45}
-      maxPolarAngle={Math.PI * 0.46}
-      minPolarAngle={0.15}
-    />
+    <>
+      <FollowCamera playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} wheelBlockedRef={wheelBlockedRef} />
+      <OcclusionFader playerRef={playerRef} />
+    </>
   );
 }
 
@@ -811,14 +750,17 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
       ))}
       {room.tents.map(tent => (
         <group key={tent.id}>
-          <TentModel
-            tent={tent}
-            origin={tentWorldOrigin(tent, room)}
-            highlighted={hoveredId === tent.id || selectedId === tent.id}
-            onClick={onClickTent}
-            onRightClick={onRightClickTent}
-            onHover={t => onHover(t ? { kind: 'tent', tent: t } : null)}
-          />
+          {/* Tagged so the follow camera's occlusion fader can fade the tent shell (not its contents) */}
+          <group userData={TENT_USER_DATA}>
+            <TentModel
+              tent={tent}
+              origin={tentWorldOrigin(tent, room)}
+              highlighted={hoveredId === tent.id || selectedId === tent.id}
+              onClick={onClickTent}
+              onRightClick={onRightClickTent}
+              onHover={t => onHover(t ? { kind: 'tent', tent: t } : null)}
+            />
+          </group>
           {tent.items.map(item => (
             <ItemNode key={item.id} item={item} room={room} tent={tent} hour={hour} hovered={hoveredId === item.id} selected={selectedId === item.id} onHover={onHover} onClickItem={onClickItem} onRightClickItem={onRightClickItem} />
           ))}
