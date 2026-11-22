@@ -53,8 +53,9 @@ import {
   Gauge
 } from 'lucide-react';
 
-// Walking speed of the cultivator: ~6 ft/s at 60 ticks per second
-const WALK_SPEED_FT_PER_TICK = 0.1;
+// Cultivator speeds at 60 ticks per second: an easy walk (~4.3 ft/s), or a jog (~6.6 ft/s) while Shift is held
+const WALK_SPEED_FT_PER_TICK = 0.072;
+const JOG_SPEED_FT_PER_TICK = 0.11;
 // How far (ft, beyond a crop's footprint edge) the cultivator can reach with E / Space
 const REACH_FT = 3;
 // Doorways are 3ft wide openings centered on the left/right walls
@@ -509,6 +510,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({
       if (keysPressed['d'] || keysPressed['arrowright']) strafe += 1;
       if (keysPressed['a'] || keysPressed['arrowleft']) strafe -= 1;
       const usingKeys = forward !== 0 || strafe !== 0;
+      p.running = !!keysPressed['shift'];
+      const speed = p.running ? JOG_SPEED_FT_PER_TICK : WALK_SPEED_FT_PER_TICK;
 
       let dx = 0;
       let dy = 0;
@@ -518,13 +521,13 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         dx = -Math.sin(yaw) * forward + Math.cos(yaw) * strafe;
         dy = -Math.cos(yaw) * forward - Math.sin(yaw) * strafe;
         const len = Math.hypot(dx, dy) || 1;
-        dx = (dx / len) * WALK_SPEED_FT_PER_TICK;
-        dy = (dy / len) * WALK_SPEED_FT_PER_TICK;
+        dx = (dx / len) * speed;
+        dy = (dy / len) * speed;
       } else {
         // Walk toward the clicked floor target
         const dist = Math.hypot(p.targetX - p.x, p.targetY - p.y);
         if (dist > 0.1) {
-          const step = Math.min(WALK_SPEED_FT_PER_TICK, dist);
+          const step = Math.min(speed, dist);
           dx = ((p.targetX - p.x) / dist) * step;
           dy = ((p.targetY - p.y) / dist) * step;
         }
@@ -1430,7 +1433,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
                 <span className="ml-auto pl-3 text-[10px] font-mono text-zinc-500">{controlsPinned ? 'pinned · H' : 'click to pin · H'}</span>
               </button>
               <div className="space-y-0.5 text-[11px] text-zinc-400 font-mono">
-                <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around</div>
+                <div><span className="text-zinc-200 font-semibold">[WASD / Click floor]</span> Walk around (hold Shift to jog)</div>
                 <div><span className="text-zinc-200 font-semibold">[Left Click]</span> Select object (floor / Esc deselects)</div>
                 <div><span className="text-zinc-200 font-semibold">[Right Click]</span> Edit object properties</div>
                 <div><span className="text-zinc-200 font-semibold">[Drag]</span> Look around (left or right button)</div>

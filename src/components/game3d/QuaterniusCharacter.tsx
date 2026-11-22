@@ -39,6 +39,63 @@ export interface CharacterLook {
 }
 
 const ARM_SLIM = 0.86;
+
+/**
+ * The pack's idle is a "ready" stance: fists, arms held out, feet wide. RELAX eases it after each animation
+ * update. Fingers (and thumbs, less) slerp toward their open bind pose in the idle and walk clips; in the idle
+ * the shoulders drop, the arms come in toward the body and the legs close a little. Angles are radians about
+ * the character's forward axis; negative closes in.
+ */
+const RELAX = { fingers: 0.75, thumb: 0.55, clavicle: -0.06, upperArm: -0.12, thigh: -0.07 };
+const RELAX_HAND_CLIPS = new Set<string>(['Idle_Loop', 'Walk_Loop', 'Jog_Fwd_Loop']);
+const FINGERS = ['index', 'middle', 'ring', 'pinky'].flatMap(f => [1, 2, 3].map(k => `${f}_0${k}`));
+const THUMB = [1, 2, 3].map(k => `thumb_0${k}`);
+
+type RelaxRig = {
+  fingers: Array<{ bone: THREE.Object3D; rest: THREE.Quaternion; amount: number }>;
+  turns: Array<{ bone: THREE.Object3D; angle: number }>;
+};
+
+function makeRelaxRig(root: THREE.Object3D): RelaxRig {
+  const fingers: RelaxRig['fingers'] = [];
+  const turns: RelaxRig['turns'] = [];
+  for (const side of ['l', 'r'] as const) {
+    const sign = side === 'l' ? 1 : -1;
+    for (const [names, amount] of [[FINGERS, RELAX.fingers], [THUMB, RELAX.thumb]] as const) {
+      for (const name of names) {
+        const bone = root.getObjectByName(`${name}_${side}`);
+        if (bone) fingers.push({ bone, rest: bone.quaternion.clone(), amount });
+      }
+    }
+    for (const [name, angle] of [['clavicle', RELAX.clavicle], ['upperarm', RELAX.upperArm], ['thigh', RELAX.thigh]] as const) {
+      const bone = root.getObjectByName(`${name}_${side}`);
+      if (bone) turns.push({ bone, angle: sign * angle });
+    }
+  }
+  return { fingers, turns };
+}
+
+const relaxTmp = { axis: new THREE.Vector3(), q: new THREE.Quaternion(), world: new THREE.Quaternion(), parent: new THREE.Quaternion(), rootQ: new THREE.Quaternion() };
+
+/** Applies RELAX on top of the animated pose: `hands` and `stance` are 0–1 blend weights. */
+function applyRelax(root: THREE.Object3D, rig: RelaxRig, hands: number, stance: number) {
+  if (hands > 0.001) for (const f of rig.fingers) f.bone.quaternion.slerp(f.rest, f.amount * hands);
+  if (stance <= 0.001) return;
+  const t = relaxTmp;
+  root.updateMatrixWorld(true);
+  root.getWorldQuaternion(t.rootQ);
+  t.axis.set(0, 0, 1).applyQuaternion(t.rootQ).normalize(); // the character's forward axis, in world space
+  for (const { bone, angle } of rig.turns) {
+    const parent = bone.parent;
+    if (!parent) continue;
+    // Turn the bone in world space about the forward axis, then express that back in its parent's space
+    bone.getWorldQuaternion(t.world);
+    t.q.setFromAxisAngle(t.axis, angle * stance).multiply(t.world);
+    parent.getWorldQuaternion(t.parent).invert();
+    bone.quaternion.copy(t.parent.multiply(t.q));
+    bone.updateMatrixWorld(true);
+  }
+}
 // Tints are relative to the texture's average, under dim grow-room light, so the darkest stays well off black.
 const SKIN_TONES = ['#f0d6c4', '#e3bfa3', '#cfa587', '#b88d6d', '#9c735a', '#86604b'];
 const HAIR_COLORS = ['#2a1c13', '#3d2818', '#5e3b22', '#8a5a33', '#b8915e', '#151515', '#7a7a7a'];
@@ -323,6 +380,7 @@ function QuaterniusCharacterInner({ heightFt, look, clip = 'Idle_Loop', getClip,
     });
   }, [look, uniforms, hairMaterials, root]);
 
+  const relaxRig = useMemo(() => makeRelaxRig(root), [root]);
   const mixer = useMemo(() => new THREE.AnimationMixer(root), [root]);
   useEffect(() => () => { mixer.stopAllAction(); mixer.uncacheRoot(root); }, [mixer, root]);
   const current = useRef<{ name: CharacterClip; action: THREE.AnimationAction } | null>(null);
@@ -359,6 +417,18 @@ function QuaterniusCharacterInner({ heightFt, look, clip = 'Idle_Loop', getClip,
       play(next.clip, next.timeScale);
     }
     mixer.update(Math.min(dt, 0.1));
+    // Relax the pose by how much of the relaxable clips is playing (smooth through crossfades)
+    let hands = 0;
+    let stance = 0;
+    for (const c of clips) {
+      if (!RELAX_HAND_CLIPS.has(c.name)) continue;
+      const action = mixer.existingAction(c);
+      if (!action?.isRunning()) continue;
+      const w = action.getEffectiveWeight();
+      hands += w;
+      if (c.name === 'Idle_Loop') stance += w;
+    }
+    applyRelax(root, relaxRig, Math.min(1, hands), Math.min(1, stance));
     // Held items follow the hand's position but stay upright.
     if (heldRef.current && handBone && scaledRef.current?.parent) {
       handBone.getWorldPosition(tmp);

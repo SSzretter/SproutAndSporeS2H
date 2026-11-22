@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useFrame, ThreeEvent } from '@react-three/fiber';
 import { Grid } from '@react-three/drei';
 import * as THREE from 'three';
@@ -6,6 +6,7 @@ import { Room, Tent } from '../../types/sim';
 import { Vec3 } from './coords';
 import { AssetSlot, BreakerPanel, CagedWorkLight, RollerShutter } from './AssetModels';
 import type { WallSide } from '../../types/sim';
+import { disposeSurfaceMaps, makeSurfaceMaps, roomSurfaces, SurfaceKind, SurfaceMaps } from './surfaceTextures';
 
 /**
  * A vertical wall panel that fades out whenever the camera is on its outward side,
@@ -19,7 +20,8 @@ function FadingWall({
   color,
   opacity,
   metalness = 0,
-  fadedOpacity = 0.04
+  fadedOpacity = 0.04,
+  surface
 }: {
   center: Vec3;
   width: number;
@@ -29,7 +31,9 @@ function FadingWall({
   opacity: number;
   metalness?: number;
   fadedOpacity?: number;
+  surface?: SurfaceKind; // textured finish; `color` is used without one
 }) {
+  const maps = useSurfaceMaps(surface, width, height);
   const matRef = useRef<THREE.MeshStandardMaterial>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const worldCenter = useRef(new THREE.Vector3());
@@ -54,26 +58,73 @@ function FadingWall({
       <planeGeometry args={[width, height]} />
       <meshStandardMaterial
         ref={matRef}
-        color={color}
+        color={maps ? maps.color : color}
+        map={maps?.map ?? null}
+        normalMap={maps?.normalMap ?? null}
+        normalScale={maps?.normalScale}
+        roughnessMap={maps?.roughnessMap ?? null}
+        aoMap={maps?.aoMap ?? null}
         transparent
         opacity={opacity}
         metalness={metalness}
-        roughness={0.6}
+        roughness={maps ? 1 : 0.6}
         side={THREE.DoubleSide}
       />
     </mesh>
   );
 }
 
-function Walls({ length, width, height, color, opacity, metalness }: { length: number; width: number; height: number; color: string; opacity: number; metalness?: number }) {
+function Walls({ length, width, height, color, opacity, metalness, surface }: { length: number; width: number; height: number; color: string; opacity: number; metalness?: number; surface?: SurfaceKind }) {
   const h = height / 2;
+  const common = { height, color, opacity, metalness, surface };
   return (
     <>
-      <FadingWall center={[length / 2, h, 0]} width={length} height={height} normal={[0, -1]} color={color} opacity={opacity} metalness={metalness} />
-      <FadingWall center={[length / 2, h, width]} width={length} height={height} normal={[0, 1]} color={color} opacity={opacity} metalness={metalness} />
-      <FadingWall center={[0, h, width / 2]} width={width} height={height} normal={[-1, 0]} color={color} opacity={opacity} metalness={metalness} />
-      <FadingWall center={[length, h, width / 2]} width={width} height={height} normal={[1, 0]} color={color} opacity={opacity} metalness={metalness} />
+      <FadingWall center={[length / 2, h, 0]} width={length} normal={[0, -1]} {...common} />
+      <FadingWall center={[length / 2, h, width]} width={length} normal={[0, 1]} {...common} />
+      <FadingWall center={[0, h, width / 2]} width={width} normal={[-1, 0]} {...common} />
+      <FadingWall center={[length, h, width / 2]} width={width} normal={[1, 0]} {...common} />
     </>
+  );
+}
+
+/** Textured maps for a `w` × `h` plane (feet), or null without a surface; clones are freed on change/unmount. */
+function useSurfaceMaps(surface: SurfaceKind | undefined, w: number, h: number): SurfaceMaps | null {
+  const maps = useMemo(() => (surface ? makeSurfaceMaps(surface, w, h) : null), [surface, w, h]);
+  useEffect(() => () => { if (maps) disposeSurfaceMaps(maps); }, [maps]);
+  return maps;
+}
+
+/** Plain or textured floor plane, `L` × `W` feet centred on the room. */
+function RoomFloor({ L, W, color, surface, onClick }: { L: number; W: number; color: string; surface?: SurfaceKind; onClick: (e: ThreeEvent<MouseEvent>) => void }) {
+  const maps = useSurfaceMaps(surface, L, W);
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2, 0, W / 2]} onClick={onClick}>
+      <planeGeometry args={[L, W]} />
+      <meshStandardMaterial
+        color={maps ? maps.color : color}
+        map={maps?.map ?? null}
+        normalMap={maps?.normalMap ?? null}
+        normalScale={maps?.normalScale}
+        roughnessMap={maps?.roughnessMap ?? null}
+        aoMap={maps?.aoMap ?? null}
+        roughness={maps ? 1 : 0.95}
+      />
+    </mesh>
+  );
+}
+
+/**
+ * Ceiling at height `H`, facing down only: from above (the overview camera) it is back-facing and not drawn,
+ * so the room stays visible. It never takes clicks.
+ */
+function RoomCeiling({ L, W, H, surface }: { L: number; W: number; H: number; surface: SurfaceKind }) {
+  const maps = useSurfaceMaps(surface, L, W);
+  if (!maps) return null;
+  return (
+    <mesh rotation={[Math.PI / 2, 0, 0]} position={[L / 2, H, W / 2]} raycast={() => null}>
+      <planeGeometry args={[L, W]} />
+      <meshStandardMaterial color={maps.color} map={maps.map} normalMap={maps.normalMap} normalScale={maps.normalScale} roughnessMap={maps.roughnessMap} aoMap={maps.aoMap} roughness={1} />
+    </mesh>
   );
 }
 
@@ -111,6 +162,8 @@ export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; 
   const isOutdoor = room.environmentType === 'outdoor_garden';
   const isGreenhouse = room.environmentType === 'greenhouse';
   const floorColor = isOutdoor ? '#3f6212' : isGreenhouse ? '#57534e' : '#27272a';
+  const surfaces = roomSurfaces(room);
+  const faintGrid = !!surfaces.floor; // a textured floor only needs a hint of the 1 ft grid
 
   return (
     <group>
@@ -121,20 +174,18 @@ export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; 
       </mesh>
 
       {/* Walkable floor */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2, 0, W / 2]} onClick={onFloorClick}>
-        <planeGeometry args={[L, W]} />
-        <meshStandardMaterial color={floorColor} roughness={0.95} />
-      </mesh>
+      <RoomFloor L={L} W={W} color={floorColor} surface={surfaces.floor} onClick={onFloorClick} />
+      {surfaces.ceiling && <RoomCeiling L={L} W={W} H={H} surface={surfaces.ceiling} />}
       <Grid
         position={[L / 2, 0.005, W / 2]}
         args={[L, W]}
         cellSize={1}
-        cellThickness={0.6}
+        cellThickness={faintGrid ? 0.25 : 0.6}
         cellColor={isOutdoor ? '#4d7c0f' : '#3f3f46'}
         sectionSize={4}
-        sectionThickness={1}
+        sectionThickness={faintGrid ? 0.5 : 1}
         sectionColor={isOutdoor ? '#65a30d' : '#52525b'}
-        fadeDistance={80}
+        fadeDistance={faintGrid ? 30 : 80}
         infiniteGrid={false}
       />
 
@@ -154,7 +205,7 @@ export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; 
         <Walls length={L} width={W} height={H} color="#e0f2fe" opacity={0.18} />
       ) : (
         <>
-          <Walls length={L} width={W} height={H} color="#3f3f46" opacity={1} />
+          <Walls length={L} width={W} height={H} color="#3f3f46" opacity={1} surface={surfaces.wall} />
           <RoomFixtures room={room} doorSides={doorSides} />
         </>
       )}

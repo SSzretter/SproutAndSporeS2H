@@ -13,6 +13,7 @@ export interface PlayerState {
   targetY: number;
   facing: number; // yaw in radians (0 = facing +Z / toward the front wall)
   isMoving: boolean;
+  running?: boolean; // Shift held: jog instead of walk
   walkFrame: number;
   stepTimer: number;
 }
@@ -448,7 +449,10 @@ export function PlayerAvatar({ playerRef }: { playerRef: React.MutableRefObject<
 
   const getClip = useMemo(() => () => {
     const moving = playerRef.current.isMoving && performance.now() - lastStep.current.at < 150;
-    return moving ? { clip: 'Jog_Fwd_Loop' as CharacterClip, timeScale: 0.9 } : { clip: 'Idle_Loop' as CharacterClip };
+    if (!moving) return { clip: 'Idle_Loop' as CharacterClip };
+    return playerRef.current.running
+      ? { clip: 'Jog_Fwd_Loop' as CharacterClip, timeScale: 0.95 }
+      : { clip: 'Walk_Loop' as CharacterClip, timeScale: 1.05 };
   }, [playerRef]);
 
   return (

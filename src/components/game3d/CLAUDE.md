@@ -31,6 +31,11 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
   - fans face the middle of their tent or room via `faceYaw`, because items store no rotation. Boxy units snap to the nearest quarter turn (`quarterTurn`), swapping length and width so they keep their footprint.
 - **Simple boxes:** interior doors.
 
+**Room surfaces** (`surfaceTextures.ts`): walls, floor and ceiling use Poly Haven CC0 PBR textures from `public/textures/` (credits there; `npm run build:textures` rebuilds them from git-ignored `assets-src/polyhaven-tex/`, Windows-only).
+- `roomSurfaces(room)` picks the set: basements, garages, workshops and similar (by name) get painted block walls on concrete; other indoor rooms get plaster over laminate; every indoor room gets a ceiling. Greenhouses get only a gravel floor; outdoor gardens stay plain.
+- `makeSurfaceMaps(kind, w, h)` clones the cached textures per surface so each repeats at true real-world scale; `useSurfaceMaps` frees the clones on change or unmount.
+- The ceiling faces down only, so the overview camera looks straight through it. It never takes clicks.
+
 **Interaction rules:**
 - Clicks after a camera drag are ignored (`e.delta`).
 - Tents are clickable everywhere but defer to any item under the pointer (`ITEM_USER_DATA` + `pointerHitsItem`).
@@ -58,7 +63,8 @@ The camera is `FollowCamera` (`FollowCamera.tsx`, tuning in `FOLLOW_CAM`), an ov
 - **One skeleton:** both bodies, the hairstyles and the animation clips share one 65-bone rig, so clips play without retargeting. The pelvis track is scaled per body (`clipsForBody`).
 - **Clothes are a shader, not meshes:** `makeClothMaterial` paints shirt, trousers and shoes by bind-pose height and arm distance, and pushes them out slightly along the normal. Skin colour is a tint relative to the texture's average.
 - **Looks:** `lookForId` derives body, skin, hair colour and style from the person's id. Role colours come from `ROLE_METADATA`.
-- **Animation:** `clipForNpc` maps an NPC's `currentAction` text to a clip. The player switches between idle and jog based on whether `walkFrame` is still advancing.
+- **Animation:** `clipForNpc` maps an NPC's `currentAction` text to a clip. The player idles when `walkFrame` stops advancing, otherwise walks; holding Shift (`PlayerState.running`) jogs at a higher speed.
+- **Relaxed pose:** the pack's idle has fists and raised arms, so after `mixer.update` `applyRelax` opens the fingers toward bind pose and lowers the clavicles, upper arms and thighs, weighted by the idle/walk/jog clips' effective weights (`RELAX`).
 - **Gear:** hats and belts attach through `useBoneAnchor` (feet, character-aligned, following the bone). Held tools follow the right hand's position but stay upright.
 - **Fallback:** the procedural `Figure` shows while the GLBs load and if they fail to.
 
