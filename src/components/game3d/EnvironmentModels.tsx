@@ -271,7 +271,7 @@ export function DoorwayModel({
 }) {
   const { length: L, width: W } = room.dimensions;
   const isAdd = door.roomId === 'ADD_ROOM';
-  const isOutside = door.roomId === OUTSIDE_DOOR_ID;
+  const isOutside = door.roomId === OUTSIDE_DOOR_ID || !!door.isExterior;
   // A garage opens to the outside through a roll-up shutter
   const isShutter = isOutside && /garage|workshop|shed|barn|warehouse/i.test(room.name);
 

@@ -5,11 +5,16 @@ export interface Doorway {
   label: string;
   side: WallSide;
   isReturn?: boolean;
+  /** Leads between indoors and outdoors: the room's own exterior door, or a linked door to/from a garden or greenhouse. */
+  isExterior?: boolean;
 }
 
 export const ALL_WALL_SIDES: WallSide[] = ['left', 'right', 'back', 'front'];
 
-/** Every room keeps one exterior door to the outdoors, on a wall that isn't linked to another room. */
+/**
+ * Every room keeps one exterior door to the outdoors. A door linking it with a garden or greenhouse serves as that;
+ * otherwise it is a door of its own (OUTSIDE_DOOR_ID) on a wall that isn't linked to another room.
+ */
 export const OUTSIDE_DOOR_ID = 'OUTSIDE';
 // The hub layout links other rooms right, back, then left, so the left wall stays free longest.
 // New rooms are only ever added through green Add Room walls, so the exterior door never moves.
@@ -101,14 +106,20 @@ export function resolveRoomDoorways(currentRoom: Room, allRooms: Room[]): Doorwa
     const id = doors[side];
     return !!id && migratedRooms.some(r => r.id === id && r.id !== active.id);
   };
-  // Every room has a way outside: its first unlinked wall gets an exterior door instead of an Add Room portal
-  const outsideSide = OUTSIDE_DOOR_PREFERENCE.find(side => !isLinked(side));
+  // A door linking indoors with a garden or greenhouse already is the way outside (or back in)
+  const crossesOutside = (side: WallSide) => {
+    const target = isLinked(side) ? migratedRooms.find(r => r.id === doors[side]) : undefined;
+    return !!target && isOutdoorRoom(target) !== isOutdoorRoom(active);
+  };
+  const hasLinkedExterior = ALL_WALL_SIDES.some(crossesOutside);
+  // Otherwise every room has a way outside: its first unlinked wall gets an exterior door instead of an Add Room portal
+  const outsideSide = hasLinkedExterior ? undefined : OUTSIDE_DOOR_PREFERENCE.find(side => !isLinked(side));
   const outsideTarget = resolveOutsideDestination(active, migratedRooms);
   const outsideLabel = !outsideTarget ? '🌳 Outside' : isOutdoorRoom(outsideTarget) ? `🌳 ${outsideTarget.name}` : '🏠 Back inside';
 
   return ALL_WALL_SIDES.map(side => {
     if (side === outsideSide) {
-      return { roomId: OUTSIDE_DOOR_ID, label: outsideLabel, side, isReturn: false };
+      return { roomId: OUTSIDE_DOOR_ID, label: outsideLabel, side, isReturn: false, isExterior: true };
     }
     const linkedRoomId = doors[side];
     if (linkedRoomId) {
@@ -116,9 +127,10 @@ export function resolveRoomDoorways(currentRoom: Room, allRooms: Room[]): Doorwa
       if (targetRoom) {
         return {
           roomId: targetRoom.id,
-          label: targetRoom.name,
+          label: crossesOutside(side) ? `${isOutdoorRoom(targetRoom) ? '🌳' : '🏠'} ${targetRoom.name}` : targetRoom.name,
           side,
-          isReturn: true
+          isReturn: true,
+          isExterior: crossesOutside(side)
         };
       }
     }
@@ -199,9 +211,9 @@ function isOutdoorRoom(room: Room) {
   return room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
 }
 
-/** The wall holding a room's exterior door (the first wall not linked to another room), or null when all are linked. */
+/** The wall holding a room's exterior door (its own, or a linked door to/from outdoors), or null if it has none. */
 export function getOutsideDoorSide(room: Room, allRooms: Room[]): WallSide | null {
-  return resolveRoomDoorways(room, allRooms).find(d => d.roomId === OUTSIDE_DOOR_ID)?.side ?? null;
+  return resolveRoomDoorways(room, allRooms).find(d => d.isExterior)?.side ?? null;
 }
 
 /**

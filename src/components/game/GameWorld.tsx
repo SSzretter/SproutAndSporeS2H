@@ -397,6 +397,10 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   /** `enterAtWall` overrides where the cultivator appears (default: the wall opposite `fromWall`). */
   const handleTravelToRoom = (roomId: string, fromWall?: WallSide, enterAtWall?: WallSide | null) => {
     soundEffects.playDoor();
+    // Remember the indoor room the cultivator stepped out of, so the garden's exterior door leads back to it
+    const target = allRooms.find(r => r.id === roomId);
+    const isOutdoor = (r?: Room) => r?.environmentType === 'outdoor_garden' || r?.environmentType === 'greenhouse';
+    if (target && isOutdoor(target) && !isOutdoor(currentRoom)) lastIndoorRoomIdRef.current = currentRoom.id;
     onUpdateState(prev => {
       const targetRoom = (prev.rooms && prev.rooms.find(r => r.id === roomId)) || prev.room;
       const nextState: SimulationState = {
@@ -582,7 +586,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
         if (door) {
           lastDoorTravelTimeRef.current = now;
           if (door.roomId === OUTSIDE_DOOR_ID) {
-            handleUseOutsideDoor();
+            handleUseOutsideDoor(door);
           } else if (door.roomId === 'ADD_ROOM') {
             onOpenAddRoom(door.side);
           } else {
@@ -1073,19 +1077,17 @@ export const GameWorld: React.FC<GameWorldProps> = ({
 
   /**
    * The exterior door leads to the garden (or greenhouse) and, from there, back to the room the cultivator
-   * came from; they arrive at the destination's own exterior door. With no garden yet, it offers to build one.
+   * came from; they arrive at the destination's own exterior door. With no garden yet, it offers to build one
+   * through this door's wall, so the new garden's door replaces it.
    */
-  const handleUseOutsideDoor = () => {
+  const handleUseOutsideDoor = (door: Doorway) => {
     const destination = resolveOutsideDestination(currentRoom, allRooms, lastIndoorRoomIdRef.current);
     const p = playerRef.current;
     if (!destination) {
       const isIndoor = currentRoom.environmentType !== 'outdoor_garden' && currentRoom.environmentType !== 'greenhouse';
       addFloatingText(isIndoor ? '🌳 No garden yet: build one' : '🏠 No indoor room to go back to', p.x, p.y, '#bae6fd');
-      if (isIndoor) onOpenAddRoom();
+      if (isIndoor) onOpenAddRoom(door.side);
       return;
-    }
-    if (destination.environmentType === 'outdoor_garden' || destination.environmentType === 'greenhouse') {
-      lastIndoorRoomIdRef.current = currentRoom.id;
     }
     handleTravelToRoom(destination.id, undefined, getOutsideDoorSide(destination, allRooms));
   };
@@ -1093,7 +1095,7 @@ export const GameWorld: React.FC<GameWorldProps> = ({
   const handleSceneClickDoor = (door: Doorway) => {
     setSelection(null);
     if (door.roomId === OUTSIDE_DOOR_ID) {
-      handleUseOutsideDoor();
+      handleUseOutsideDoor(door);
     } else if (door.roomId === 'ADD_ROOM') {
       onOpenAddRoom(door.side);
     } else {

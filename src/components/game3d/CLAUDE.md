@@ -58,7 +58,7 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - Tent labels can carry live `stats` (temp / RH / VPD coloured by `getVpdZone` / CO2). The game header's Tent Stats button toggles them, remembered in `localStorage` key `sprout_spore_show_tent_stats`.
 
 **Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways.
-- **Exterior door:** `resolveOutsideDestination` (`roomDoorways.ts`) sends an indoor room's outside door to the first outdoor garden (else greenhouse). From there, it goes back to the indoor room last walked out of. The cultivator arrives at the destination's own exterior door. With no garden, the door opens Add Room.
+- **Exterior door:** a door linking an indoor room with a garden or greenhouse is that room's exterior door (`Doorway.isExterior`, drawn as the white outside door). Only rooms with no such link get a separate outside door (`OUTSIDE_DOOR_ID`). `resolveOutsideDestination` (`roomDoorways.ts`) sends it to the first garden (else greenhouse), and from there back to the indoor room last walked out of. The cultivator arrives at the destination's exterior door. With no garden, it opens Add Room on its own wall, so the new garden's door replaces it.
 
 The camera is `FollowCamera` (`FollowCamera.tsx`, tuning in `FOLLOW_CAM`), an over-the-shoulder rig. `CameraRig` hosts it, plus middle-drag / wheel moving of the selected object.
 - **Input:** drag with the left or right button to look; the wheel sets distance, Shift + wheel the aim height; R re-centres. Inputs set targets and the camera eases toward them.
