@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useRef } from 'react';
 import { useFrame, ThreeEvent } from '@react-three/fiber';
 import { Grid } from '@react-three/drei';
 import * as THREE from 'three';
@@ -6,7 +6,8 @@ import { Room, Tent } from '../../types/sim';
 import { Vec3 } from './coords';
 import { AssetSlot, BreakerPanel, CagedWorkLight, RollerShutter } from './AssetModels';
 import type { WallSide } from '../../types/sim';
-import { disposeSurfaceMaps, makeSurfaceMaps, roomSurfaces, SurfaceKind, SurfaceMaps } from './surfaceTextures';
+import { roomSurfaces, SurfaceKind, useSurfaceMaps } from './surfaceTextures';
+import { GardenSurroundings } from './OutdoorModels';
 
 /**
  * A vertical wall panel that fades out whenever the camera is on its outward side,
@@ -87,13 +88,6 @@ function Walls({ length, width, height, color, opacity, metalness, surface }: { 
   );
 }
 
-/** Textured maps for a `w` × `h` plane (feet), or null without a surface; clones are freed on change/unmount. */
-function useSurfaceMaps(surface: SurfaceKind | undefined, w: number, h: number): SurfaceMaps | null {
-  const maps = useMemo(() => (surface ? makeSurfaceMaps(surface, w, h) : null), [surface, w, h]);
-  useEffect(() => () => { if (maps) disposeSurfaceMaps(maps); }, [maps]);
-  return maps;
-}
-
 /** Plain or textured floor plane, `L` × `W` feet centred on the room. */
 function RoomFloor({ L, W, color, surface, onClick }: { L: number; W: number; color: string; surface?: SurfaceKind; onClick: (e: ThreeEvent<MouseEvent>) => void }) {
   const maps = useSurfaceMaps(surface, L, W);
@@ -157,7 +151,49 @@ function RoomFixtures({ room, doorSides }: { room: Room; doorSides: WallSide[] }
   );
 }
 
-export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; onFloorClick: (e: ThreeEvent<MouseEvent>) => void; doorSides?: WallSide[] }) {
+/** Low wooden garden fence: posts every 2 ft and two rails, with a 3 ft gap at each doorway. */
+function GardenFence({ L, W, doorSides }: { L: number; W: number; doorSides: WallSide[] }) {
+  const GAP = 1.6; // half the opening at a door
+  const sides: Array<{ side: WallSide; from: [number, number]; to: [number, number] }> = [
+    { side: 'back', from: [0, 0], to: [L, 0] },
+    { side: 'front', from: [0, W], to: [L, W] },
+    { side: 'left', from: [0, 0], to: [0, W] },
+    { side: 'right', from: [L, 0], to: [L, W] },
+  ];
+  const posts: Array<[number, number]> = [];
+  const rails: Array<{ c: [number, number]; len: number; alongX: boolean }> = [];
+  for (const { side, from, to } of sides) {
+    const alongX = from[1] === to[1];
+    const len = alongX ? L : W;
+    const at = (t: number): [number, number] => (alongX ? [t, from[1]] : [from[0], t]);
+    const door = doorSides.includes(side);
+    const open = (t: number) => door && Math.abs(t - len / 2) < GAP;
+    for (let t = 0; t <= len + 1e-6; t += 2) if (!open(t)) posts.push(at(Math.min(len, t)));
+    if (door) posts.push(at(len / 2 - GAP), at(len / 2 + GAP));
+    const spans: Array<[number, number]> = door ? [[0, len / 2 - GAP], [len / 2 + GAP, len]] : [[0, len]];
+    for (const [t0, t1] of spans) rails.push({ c: at((t0 + t1) / 2), len: t1 - t0, alongX });
+  }
+  return (
+    <group>
+      {posts.map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.8, z]}>
+          <boxGeometry args={[0.18, 1.6, 0.18]} />
+          <meshStandardMaterial color="#7a6048" roughness={0.95} />
+        </mesh>
+      ))}
+      {rails.flatMap(({ c, len, alongX }, i) =>
+        [0.55, 1.3].map(y => (
+          <mesh key={`${i}-${y}`} position={[c[0], y, c[1]]} raycast={() => null}>
+            <boxGeometry args={alongX ? [len, 0.14, 0.06] : [0.06, 0.14, len]} />
+            <meshStandardMaterial color="#8a6e52" roughness={0.95} />
+          </mesh>
+        ))
+      )}
+    </group>
+  );
+}
+
+export function RoomModel({ room, onFloorClick, doorSides = [], outsideDoorSide }: { room: Room; onFloorClick: (e: ThreeEvent<MouseEvent>) => void; doorSides?: WallSide[]; outsideDoorSide?: WallSide }) {
   const { length: L, width: W, height: H } = room.dimensions;
   const isOutdoor = room.environmentType === 'outdoor_garden';
   const isGreenhouse = room.environmentType === 'greenhouse';
@@ -167,11 +203,15 @@ export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; 
 
   return (
     <group>
-      {/* Surrounding ground (yard outside the room) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2, -0.02, W / 2]}>
-        <planeGeometry args={[L + 60, W + 60]} />
-        <meshStandardMaterial color={isOutdoor || isGreenhouse ? '#365314' : '#0c0c0e'} roughness={1} />
-      </mesh>
+      {/* Surrounding ground (yard outside the room); a garden gets lawn, plants and trees instead */}
+      {isOutdoor ? (
+        <GardenSurroundings room={room} doorSides={doorSides} outsideDoorSide={outsideDoorSide} />
+      ) : (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2, -0.02, W / 2]}>
+          <planeGeometry args={[L + 60, W + 60]} />
+          <meshStandardMaterial color={isGreenhouse ? '#365314' : '#0c0c0e'} roughness={1} />
+        </mesh>
+      )}
 
       {/* Walkable floor */}
       <RoomFloor L={L} W={W} color={floorColor} surface={surfaces.floor} onClick={onFloorClick} />
@@ -190,17 +230,7 @@ export function RoomModel({ room, onFloorClick, doorSides = [] }: { room: Room; 
       />
 
       {isOutdoor ? (
-        // Low garden fence
-        <group>
-          {Array.from({ length: Math.ceil(L / 2) + 1 }, (_, i) => Math.min(L, i * 2)).flatMap(x => [[x, 0], [x, W]]).concat(
-            Array.from({ length: Math.ceil(W / 2) + 1 }, (_, i) => Math.min(W, i * 2)).flatMap(z => [[0, z], [L, z]])
-          ).map(([x, z], i) => (
-            <mesh key={i} position={[x, 0.75, z]}>
-              <boxGeometry args={[0.15, 1.5, 0.15]} />
-              <meshStandardMaterial color="#a16207" roughness={0.9} />
-            </mesh>
-          ))}
-        </group>
+        <GardenFence L={L} W={W} doorSides={doorSides} />
       ) : isGreenhouse ? (
         <Walls length={L} width={W} height={H} color="#e0f2fe" opacity={0.18} />
       ) : (

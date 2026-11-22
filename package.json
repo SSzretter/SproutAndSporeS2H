@@ -12,7 +12,8 @@
     "sim": "tsx scripts/sim-check.mts",
     "build:characters": "node scripts/build-characters.mjs",
     "build:equipment": "node scripts/build-equipment.mjs",
-    "build:textures": "node scripts/build-textures.mjs"
+    "build:textures": "node scripts/build-textures.mjs",
+    "build:outdoor": "node scripts/build-outdoor.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -15,7 +15,10 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace
 const SRC = path.join(ROOT, 'assets-src', 'polyhaven-tex');
 const OUT = path.join(ROOT, 'public', 'textures');
 
-const ASSETS = ['concrete_block_wall', 'plaster_grey_04', 'concrete_floor_worn_001', 'laminate_floor_02', 'ceiling_interior', 'gravel_embedded_concrete_02'];
+const ASSETS = [
+  'concrete_block_wall', 'plaster_grey_04', 'concrete_floor_worn_001', 'laminate_floor_02', 'ceiling_interior', 'gravel_embedded_concrete_02',
+  'grass_ground', 'park_dirt', 'wood_chip_path',
+];
 const MAPS = [
   { src: 'diff.jpg', out: 'color.jpg', size: 1024 },
   { src: 'nor_gl.jpg', out: 'normal.jpg', size: 512 },

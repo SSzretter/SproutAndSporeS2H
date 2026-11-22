@@ -9,6 +9,7 @@ import { MushroomModel } from './MushroomModel';
 import { EquipmentModel, HeatMatMount } from './EquipmentModel';
 import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
+import { OUTSIDE_DOOR_ID } from '../../utils/roomDoorways';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
 import { FollowCamera, OcclusionFader, TENT_USER_DATA } from './FollowCamera';
 import { SceneEnvironment, KeyLight, GrowLightSpot, ShadowManager, ContactShadowDecal, CASTS_SHADOW_USER_DATA } from './SceneFx';
@@ -743,7 +744,7 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
     <>
       <SceneLighting room={room} simTime={simTime} />
       <CameraRig playerRef={playerRef} cameraYawRef={cameraYawRef} room={room} selectedTarget={props.selectedTarget} onUpdateItemPosition={props.onUpdateItemPosition} onUpdateTentPosition={props.onUpdateTentPosition} />
-      <RoomModel room={room} onFloorClick={handleFloorClick} doorSides={doorways.map(d => d.side)} />
+      <RoomModel room={room} onFloorClick={handleFloorClick} doorSides={doorways.map(d => d.side)} outsideDoorSide={doorways.find(d => d.roomId === OUTSIDE_DOOR_ID)?.side} />
       {doorways.map(door => (
         <DoorwayModel
           key={`${door.side}-${door.roomId}`}

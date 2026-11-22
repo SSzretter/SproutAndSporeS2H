@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { Room } from '../../types/sim';
 
@@ -7,7 +8,9 @@ import { Room } from '../../types/sim';
  * Images load once; every surface gets its own clones so it can set its own repeat for true scale.
  */
 
-export type SurfaceKind = 'blockWall' | 'plasterWall' | 'concreteFloor' | 'laminateFloor' | 'ceiling' | 'gravelFloor';
+export type SurfaceKind =
+  | 'blockWall' | 'plasterWall' | 'concreteFloor' | 'laminateFloor' | 'ceiling' | 'gravelFloor'
+  | 'lawn' | 'gardenSoil' | 'woodChips';
 
 const M_TO_FT = 3.28084;
 const BASE = `${import.meta.env.BASE_URL}textures/`;
@@ -20,6 +23,9 @@ const SURFACES: Record<SurfaceKind, { dir: string; tileFt: number; tint: string;
   laminateFloor: { dir: 'laminate_floor_02', tileFt: 1.7 * M_TO_FT, tint: '#d6cbbd', normalScale: 0.7 },
   ceiling: { dir: 'ceiling_interior', tileFt: 2 * M_TO_FT, tint: '#efece6', normalScale: 0.7 },
   gravelFloor: { dir: 'gravel_embedded_concrete_02', tileFt: 2 * M_TO_FT, tint: '#c9c5bd', normalScale: 1 },
+  lawn: { dir: 'grass_ground', tileFt: 2.5 * M_TO_FT, tint: '#bcd49c', normalScale: 0.8 },
+  gardenSoil: { dir: 'park_dirt', tileFt: 3 * M_TO_FT, tint: '#b39e8a', normalScale: 1 },
+  woodChips: { dir: 'wood_chip_path', tileFt: 2.1 * M_TO_FT, tint: '#d8cbbb', normalScale: 1 },
 };
 
 const loader = new THREE.TextureLoader();
@@ -75,13 +81,20 @@ export function disposeSurfaceMaps(m: SurfaceMaps) {
   m.aoMap.dispose();
 }
 
+/** Textured maps for a `w` × `h` plane (feet), or null without a surface; clones are freed on change/unmount. */
+export function useSurfaceMaps(surface: SurfaceKind | undefined, w: number, h: number): SurfaceMaps | null {
+  const maps = useMemo(() => (surface ? makeSurfaceMaps(surface, w, h) : null), [surface, w, h]);
+  useEffect(() => () => { if (maps) disposeSurfaceMaps(maps); }, [maps]);
+  return maps;
+}
+
 /**
  * Which surfaces a room gets. Basements, garages and workshops have painted block walls on bare concrete;
  * other indoor rooms (bedrooms, attics) plaster over laminate. Every indoor room gets a painted ceiling.
- * Greenhouses get a gravel-and-concrete floor; outdoor gardens keep their grass.
+ * Greenhouses get a gravel-and-concrete floor; outdoor gardens a lawn.
  */
 export function roomSurfaces(room: Room): { wall?: SurfaceKind; floor?: SurfaceKind; ceiling?: SurfaceKind } {
-  if (room.environmentType === 'outdoor_garden') return {};
+  if (room.environmentType === 'outdoor_garden') return { floor: 'lawn' };
   if (room.environmentType === 'greenhouse') return { floor: 'gravelFloor' };
   const utility = /basement|cellar|garage|workshop|shed|barn|warehouse|utility|closet/i.test(room.name);
   return utility

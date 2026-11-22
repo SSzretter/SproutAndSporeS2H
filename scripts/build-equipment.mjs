@@ -9,7 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadGltf, GlbWriter, resizeTexture } from './gltf-tools.mjs';
+import { buildModel } from './gltf-build.mjs';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
 const SRC = path.join(ROOT, 'assets-src', 'polyhaven');
@@ -35,90 +35,5 @@ const MODELS = [
   { out: 'rollershutter_door.glb', asset: 'rollershutter_door', nodes: ['rollershutter_door'], tex: 512 },
 ];
 
-const KEEP_ATTRIBUTES = ['POSITION', 'NORMAL', 'TEXCOORD_0'];
-
-function build(spec) {
-  const dir = path.join(SRC, spec.asset);
-  const gltfFile = fs.readdirSync(dir).find(n => n.endsWith('.gltf'));
-  if (!gltfFile) throw new Error(`No .gltf in ${dir}; download the 1K glTF of ${spec.asset} first`);
-  const g = loadGltf(path.join(dir, gltfFile));
-  const w = new GlbWriter();
-  w.json.materials = [];
-  w.json.meshes = [];
-  w.json.nodes = [];
-
-  const textureFor = new Map(); // source image index -> output texture index
-  const outTexture = (texInfo, opts = {}) => {
-    if (!texInfo) return undefined;
-    const imageIndex = g.json.textures[texInfo.index].source;
-    const key = `${imageIndex}`;
-    if (!textureFor.has(key)) {
-      const uri = decodeURIComponent(g.json.images[imageIndex].uri);
-      const img = resizeTexture(path.join(dir, uri), spec.tex, opts);
-      textureFor.set(key, w.image(img.bytes, img.mimeType, path.basename(uri, path.extname(uri))));
-    }
-    return { index: textureFor.get(key) };
-  };
-
-  const materialFor = new Map();
-  const outMaterial = index => {
-    if (materialFor.has(index)) return materialFor.get(index);
-    const m = g.json.materials[index];
-    const pbr = m.pbrMetallicRoughness || {};
-    const out = { name: m.name, doubleSided: !!m.doubleSided, pbrMetallicRoughness: {} };
-    const base = outTexture(pbr.baseColorTexture);
-    if (base) out.pbrMetallicRoughness.baseColorTexture = base;
-    if (pbr.baseColorFactor) out.pbrMetallicRoughness.baseColorFactor = pbr.baseColorFactor;
-    const arm = outTexture(pbr.metallicRoughnessTexture);
-    if (arm) {
-      // Poly Haven ARM: R = ambient occlusion, G = roughness, B = metalness
-      out.pbrMetallicRoughness.metallicRoughnessTexture = arm;
-      out.occlusionTexture = { index: arm.index };
-    }
-    if (pbr.metallicFactor !== undefined) out.pbrMetallicRoughness.metallicFactor = pbr.metallicFactor;
-    if (pbr.roughnessFactor !== undefined) out.pbrMetallicRoughness.roughnessFactor = pbr.roughnessFactor;
-    const normal = outTexture(m.normalTexture);
-    if (normal) out.normalTexture = normal;
-    const emissive = outTexture(m.emissiveTexture);
-    if (emissive) {
-      out.emissiveTexture = emissive;
-      out.emissiveFactor = [1, 1, 1];
-    }
-    if (m.extensions?.KHR_materials_transmission) {
-      // Glass: plain see-through instead of transmission (an extra render pass)
-      out.alphaMode = 'BLEND';
-      out.pbrMetallicRoughness.baseColorFactor = [0.9, 0.92, 0.9, 0.3];
-      out.pbrMetallicRoughness.metallicFactor = 0;
-      out.pbrMetallicRoughness.roughnessFactor = 0.08;
-    }
-    w.json.materials.push(out);
-    materialFor.set(index, w.json.materials.length - 1);
-    return w.json.materials.length - 1;
-  };
-
-  let triangles = 0;
-  for (const name of spec.nodes) {
-    const node = g.json.nodes.find(n => n.name === name);
-    if (!node || node.mesh === undefined) throw new Error(`${spec.asset}: no mesh node named ${name}`);
-    const mesh = g.json.meshes[node.mesh];
-    const primitives = mesh.primitives.map(prim => {
-      const attributes = {};
-      for (const attr of KEEP_ATTRIBUTES) if (prim.attributes[attr] !== undefined) attributes[attr] = w.copyAccessor(g, prim.attributes[attr], 34962);
-      triangles += g.json.accessors[prim.indices].count / 3;
-      return { attributes, indices: w.copyAccessor(g, prim.indices, 34963), material: outMaterial(prim.material) };
-    });
-    w.json.meshes.push({ name: mesh.name, primitives });
-    const outNode = { name, mesh: w.json.meshes.length - 1 };
-    if (spec.keepPlacement) {
-      for (const k of ['translation', 'rotation', 'scale']) if (node[k]) outNode[k] = node[k];
-    }
-    w.json.nodes.push(outNode);
-  }
-  w.json.scenes = [{ nodes: w.json.nodes.map((_, i) => i) }];
-  w.json.scene = 0;
-  const size = w.write(path.join(OUT, spec.out));
-  console.log(`${spec.out.padEnd(24)} ${String(triangles).padStart(6)} tris  ${(size / 1024).toFixed(0)} KB`);
-}
-
 fs.mkdirSync(OUT, { recursive: true });
-for (const spec of MODELS) build(spec);
+for (const spec of MODELS) buildModel(spec, SRC, OUT);

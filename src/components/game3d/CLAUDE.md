@@ -36,6 +36,14 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - `makeSurfaceMaps(kind, w, h)` clones the cached textures per surface so each repeats at true real-world scale; `useSurfaceMaps` frees the clones on change or unmount.
 - The ceiling faces down only, so the overview camera looks straight through it. It never takes clicks.
 
+**Outdoor gardens** (`OutdoorModels.tsx`, `GardenSurroundings`): a lawn floor plus a rougher lawn reaching 40 ft past the wooden fence (`GardenFence`, with gaps at doors).
+- **Ground:** soil patches under every crop, and a wood-chip path from the exterior door until it meets a bed or tent.
+- **Scatter:** grass tufts and sprigs, dandelions, ferns along the fence and shrubs in its corners. Each kind is one `InstancedMesh` per model variant, seeded by the room id. Nothing goes on beds, the path, tents, gear or door thresholds.
+- **Props:** planter boxes on the wall opposite the door, a sprinkler, a hose reel on a post by the door with a watering can, and a boulder and stump outside the fence.
+- **Models:** Poly Haven CC0 GLBs in `public/models/outdoor/` (`npm run build:outdoor`; foliage alpha maps are folded into PNG colour maps and drawn alpha-tested). The shared builder is `scripts/gltf-build.mjs`.
+- **Trees:** procedural (trunk plus lumpy icosphere crowns), because Poly Haven's trees are 100+ MB downloads.
+- Everything is decoration: no clicks, no shadows. The layout re-plans only when crops, tents, gear or doors move (`layoutKey`), not every sim tick.
+
 **Interaction rules:**
 - Clicks after a camera drag are ignored (`e.delta`).
 - Tents are clickable everywhere but defer to any item under the pointer (`ITEM_USER_DATA` + `pointerHitsItem`).
@@ -50,6 +58,7 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 - Tent labels can carry live `stats` (temp / RH / VPD coloured by `getVpdZone` / CO2). The game header's Tent Stats button toggles them, remembered in `localStorage` key `sprout_spore_show_tent_stats`.
 
 **Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways.
+- **Exterior door:** `resolveOutsideDestination` (`roomDoorways.ts`) sends an indoor room's outside door to the first outdoor garden (else greenhouse). From there, it goes back to the indoor room last walked out of. The cultivator arrives at the destination's own exterior door. With no garden, the door opens Add Room.
 
 The camera is `FollowCamera` (`FollowCamera.tsx`, tuning in `FOLLOW_CAM`), an over-the-shoulder rig. `CameraRig` hosts it, plus middle-drag / wheel moving of the selected object.
 - **Input:** drag with the left or right button to look; the wheel sets distance, Shift + wheel the aim height; R re-centres. Inputs set targets and the camera eases toward them.

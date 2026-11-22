@@ -10,3 +10,6 @@ All textures are from [Poly Haven](https://polyhaven.com) and released under **C
 | `laminate_floor_02` | [Laminate Floor 02](https://polyhaven.com/a/laminate_floor_02) | Dario Barresi, Charlotte Baglioni | 1.7 m |
 | `ceiling_interior` | [Ceiling Interior](https://polyhaven.com/a/ceiling_interior) | Dimitrios Savva | 2 m |
 | `gravel_embedded_concrete_02` | [Gravel Embedded Concrete 02](https://polyhaven.com/a/gravel_embedded_concrete_02) | Charlotte Baglioni | 2 m |
+| `grass_ground` | [Grass Ground](https://polyhaven.com/a/grass_ground) | Charlotte Baglioni | 2.5 m |
+| `park_dirt` | [Park Dirt](https://polyhaven.com/a/park_dirt) | Christopher Melani | 3 m |
+| `wood_chip_path` | [Wood Chip Path](https://polyhaven.com/a/wood_chip_path) | Dimitrios Savva | 2.1 m |
