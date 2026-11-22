@@ -22,6 +22,11 @@ const FURNISHINGS_BTU_PER_SQFT_F = 0.6; // per sq ft of floor
 const CONCRETE_BTU_PER_SQFT_F = 2.5; // ~2" active layer of slab / foundation wall
 // Latent heat of water: condensing 1 L/h releases ~630 W; evaporating it absorbs the same
 export const LATENT_WATTS_PER_LITRE_HOUR = 628;
+// Moisture buffering: drywall, wood, fabric and furnishings soak up water vapour when the air gets
+// more humid and give it back as it dries. A room's moisture therefore behaves as if its air were this
+// many times larger, so humidity swings (a humidifier, a dehumidifier, an open door) are slower and
+// smaller than for bare air. Tents (coated fabric) don't buffer.
+export const ROOM_MOISTURE_BUFFER = 3;
 // Longest step the room temperature is integrated in, so thermostats cycle even on time skips
 export const MAX_THERMAL_SUBSTEP_MINUTES = 5;
 

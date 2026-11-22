@@ -34,8 +34,8 @@ export interface SporeGeneticTraits {
 }
 
 // Random helper between min and max
-function randomBetween(min: number, max: number, decimals: number = 2): number {
-  const val = min + Math.random() * (max - min);
+function randomBetween(min: number, max: number, decimals: number = 2, rand: () => number = Math.random): number {
+  const val = min + rand() * (max - min);
   return parseFloat(val.toFixed(decimals));
 }
 
@@ -44,9 +44,10 @@ export function generateSeedTraits(
   species: PlantSpecies,
   strainName: string,
   propagationType: PropagationType = 'seed',
-  grade: 'Certified High-Viability' | 'Standard Breeder Pack' | 'Exotic Wildcraft' = 'Certified High-Viability'
+  grade: 'Certified High-Viability' | 'Standard Breeder Pack' | 'Exotic Wildcraft' = 'Certified High-Viability',
+  rand: () => number = Math.random // pass a seeded generator (rng.ts) for reproducible traits
 ): SeedGeneticTraits {
-  const seedNum = Math.floor(100 + Math.random() * 900);
+  const seedNum = Math.floor(100 + rand() * 900);
   const cleanPrefix = strainName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'SEED';
   const seedId = `${cleanPrefix}-${propagationType === 'cutting' ? 'CL' : 'SD'}${seedNum}`;
 
@@ -63,17 +64,17 @@ export function generateSeedTraits(
 
   // Cuttings have root strike viability instead of seed coat viability
   const viabilityPct = propagationType === 'cutting'
-    ? Math.round(randomBetween(85, 99, 0))
-    : Math.round(randomBetween(minViab, maxViab, 0));
+    ? Math.round(randomBetween(85, 99, 0, rand))
+    : Math.round(randomBetween(minViab, maxViab, 0, rand));
 
-  const germinationVigor = randomBetween(0.80, 1.32, 2);
-  const growthRateMultiplier = randomBetween(0.82, 1.26, 2);
-  const yieldMultiplier = randomBetween(0.82, 1.28, 2);
-  const nutrientEfficiency = randomBetween(0.85, 1.22, 2);
-  const terpeneResinPotential = randomBetween(0.88, 1.32, 2);
+  const germinationVigor = randomBetween(0.80, 1.32, 2, rand);
+  const growthRateMultiplier = randomBetween(0.82, 1.26, 2, rand);
+  const yieldMultiplier = randomBetween(0.82, 1.28, 2, rand);
+  const nutrientEfficiency = randomBetween(0.85, 1.22, 2, rand);
+  const terpeneResinPotential = randomBetween(0.88, 1.32, 2, rand);
 
   // Mold resistance distribution
-  const rollResist = Math.random();
+  const rollResist = rand();
   let pestMoldResistance: SeedGeneticTraits['pestMoldResistance'] = 'moderate';
   if (rollResist > 0.8) pestMoldResistance = 'resilient';
   else if (rollResist > 0.45) pestMoldResistance = 'hardy';
@@ -134,9 +135,10 @@ export function generateSeedTraits(
 export function generateSporeTraits(
   species: MushroomSpecies,
   strainName: string,
-  grade: 'Isolated Commercial LC' | 'Multi-Spore Syringe' | 'Wild Spore Print' = 'Isolated Commercial LC'
+  grade: 'Isolated Commercial LC' | 'Multi-Spore Syringe' | 'Wild Spore Print' = 'Isolated Commercial LC',
+  rand: () => number = Math.random // pass a seeded generator (rng.ts) for reproducible traits
 ): SporeGeneticTraits {
-  const sporeNum = Math.floor(100 + Math.random() * 900);
+  const sporeNum = Math.floor(100 + rand() * 900);
   const cleanPrefix = species.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'SHRM';
   const sporeBatchId = `${cleanPrefix}-SP${sporeNum}`;
 
@@ -150,20 +152,20 @@ export function generateSporeTraits(
     maxViab = 88;
   }
 
-  const viabilityPct = Math.round(randomBetween(minViab, maxViab, 0));
-  const colonizationVigor = randomBetween(0.78, 1.34, 2);
-  const flushYieldMultiplier = randomBetween(0.82, 1.28, 2);
-  const co2Tolerance = randomBetween(0.80, 1.25, 2);
+  const viabilityPct = Math.round(randomBetween(minViab, maxViab, 0, rand));
+  const colonizationVigor = randomBetween(0.78, 1.34, 2, rand);
+  const flushYieldMultiplier = randomBetween(0.82, 1.28, 2, rand);
+  const co2Tolerance = randomBetween(0.80, 1.25, 2, rand);
 
   // Pinning density
-  const rollPin = Math.random();
+  const rollPin = rand();
   let pinningDensity: SporeGeneticTraits['pinningDensity'] = 'moderate';
   if (rollPin > 0.8) pinningDensity = 'prolific';
   else if (rollPin > 0.45) pinningDensity = 'dense';
   else if (rollPin < 0.15) pinningDensity = 'sparse';
 
   // Contamination resistance
-  const rollContam = Math.random();
+  const rollContam = rand();
   let contaminationResistance: SporeGeneticTraits['contaminationResistance'] = 'moderate';
   if (rollContam > 0.8) contaminationResistance = 'impervious';
   else if (rollContam > 0.45) contaminationResistance = 'aggressive';

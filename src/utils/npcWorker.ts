@@ -1,3 +1,4 @@
+import { tickRandom } from './rng';
 import { 
   Room, 
   Tent, 
@@ -511,8 +512,8 @@ export function simulateNpcRoomTick(
     // If resident: periodic peaceful action updates
     if (person.role === 'resident' || !settings.autoWork) {
       // Rotate flavorful resident status occasionally
-      if (Math.random() < 0.15 || !person.currentAction || person.currentAction.startsWith('On standby')) {
-        const randAct = RESIDENT_FLAVOR_ACTIONS[Math.floor(Math.random() * RESIDENT_FLAVOR_ACTIONS.length)];
+      if (tickRandom(simTime, person.id, 'flavor') < 0.15 || !person.currentAction || person.currentAction.startsWith('On standby')) {
+        const randAct = RESIDENT_FLAVOR_ACTIONS[Math.floor(tickRandom(simTime, person.id, 'flavor-pick') * RESIDENT_FLAVOR_ACTIONS.length)];
         return {
           ...person,
           currentAction: randAct

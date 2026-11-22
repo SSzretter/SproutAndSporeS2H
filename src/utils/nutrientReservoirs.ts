@@ -228,6 +228,24 @@ export function getReservoirHeatWatts(eq: EquipmentItem): number {
   return pump + (eq.airStone ? AIR_PUMP_W : 0) + (eq.conditioningWatts ?? 0);
 }
 
+/**
+ * Electricity a reservoir draws: its pump and air stone, plus its water heater's full power or, when
+ * chilling, only the chiller's compressor (the rest of the chiller's heat output is heat pulled from
+ * the water, not electricity).
+ */
+export function getReservoirElectricWatts(eq: EquipmentItem): number {
+  if (!eq.powerOn) return 0;
+  const pump = (eq.powerWatts || 0) * ((eq.effectiveSetting ?? 0) / 100);
+  const conditioning = eq.conditioningWatts ?? 0;
+  const chilling = (eq.reservoirTempF ?? 0) >= (eq.waterTargetTempF ?? 66)
+    && (eq.waterConditioning === 'chiller' || eq.waterConditioning === 'both');
+  // A chiller's output is pulled heat + compressor = pulled × (1 + compressor / capacity)
+  const conditioningElectric = chilling
+    ? conditioning * (CHILLER_COMPRESSOR_W / (CHILLER_CAPACITY_W + CHILLER_COMPRESSOR_W))
+    : conditioning;
+  return pump + (eq.airStone ? AIR_PUMP_W : 0) + conditioningElectric;
+}
+
 /** A container (room floor or tent) and the air temperature around the things in it. */
 export interface ReservoirContainer {
   items: Item[];

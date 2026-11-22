@@ -5,6 +5,7 @@ import { migrateEquipmentLinks } from './equipmentLinks';
 import { createHvacRegister, migrateRoomClimateControl } from './roomThermal';
 import { ensurePersonNpcFields } from './npcWorker';
 import { ensureRoomDoorLinks } from './roomDoorways';
+import { DEFAULT_ELECTRICITY_RATE_PER_KWH } from './energy';
 
 const STORAGE_KEY = 'sprout_spore_grow_sim_v2';
 export const BACKUP_STORAGE_KEY = 'sprout_spore_grow_sim_v2_backup';
@@ -436,6 +437,7 @@ export function createDefaultSimulationState(): SimulationState {
     activeRoomId: initialRoom.id,
     room: initialRoom,
     tempUnit: 'F',
+    electricityRatePerKWh: DEFAULT_ELECTRICITY_RATE_PER_KWH,
     selectedType: 'room',
     selectedId: initialRoom.id,
     selectedParentTentId: null,
@@ -799,6 +801,11 @@ export function loadSimulation(): SimulationState {
       }))
     }));
     state.room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
+
+    // Older saves have no electricity rate (room energy meters start on the first tick)
+    if (typeof state.electricityRatePerKWh !== 'number' || !Number.isFinite(state.electricityRatePerKWh) || state.electricityRatePerKWh < 0) {
+      state.electricityRatePerKWh = DEFAULT_ELECTRICITY_RATE_PER_KWH;
+    }
 
     // Drop a saved player position that is malformed or points at a deleted room (game view respawns)
     const pp = state.playerPosition;

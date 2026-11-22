@@ -1,10 +1,12 @@
-import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
+import { createRng, hashString, tickRandom } from './rng';
+import { stepRoomEnergy } from './energy';
+import { Climate, OutsideConditions, PlantItem, MushroomItem, EquipmentItem, Item, PersonItem, PetItem, Room, Tent, ControllerPriority, JournalCategory } from '../types/sim';
 import { evaluatePlantStageSuitability, getNextPlantStage, DEFAULT_STAGE_DURATIONS, getPepperCultivar, getPlantTargetSize, getContainerSizeFactor } from './plantLifecycle';
 import { syncItemGeometry, getDefaultContainerVolumeGallons } from './spatial';
 import { getDuctTargetTent, getDuctedEquipmentForTent, getMistWaterEffects, isHumidifier, stepReservoirTempF, getRootZoneHeat, applyRootZoneHeat, HOSE_DELIVERY_EFFICIENCY, RootZoneHeat, isReservoirEmpty, getOutdoorVentedCfm, getOutdoorFanShare, isDehumidifier, isBucketFull, getReservoirLevelL, getBucketLevelL, getBucketCapacityL, getMistWaterUseLph, getDehumidifierExtractionLph, absoluteHumidityGm3, shareEnclosureWater, CUBIC_METRES_PER_CUBIC_FOOT, MIST_EVAPORATION_EFFICIENCY } from './equipmentLinks';
 import { INLINE_FAN_SPECS } from './equipmentCatalog';
 import { getTentEnvelope } from './tentEnvelope';
-import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomClimateUnit, stepRoomTemperature, RoomClimateUnitState, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F } from './roomThermal';
+import { getItemHeatWatts, getPortableAcMoistureLph, isLightScheduledOn, isRoomClimateUnit, stepRoomTemperature, RoomClimateUnitState, DEFAULT_REGISTER_CFM, REGISTER_COOL_SUPPLY_F, LATENT_WATTS_PER_LITRE_HOUR, ROOM_MOISTURE_BUFFER } from './roomThermal';
 export { isLightScheduledOn } from './roomThermal';
 import { generateSeedTraits, generateSporeTraits } from './genetics';
 import { getRootZoneWaterL, stepRoomNutrientReservoirs } from './nutrientReservoirs';
@@ -651,6 +653,9 @@ export function simulateEnvironmentTick(
   // vapour it actually added to or removed from the room air
   const roomWaterL = new Map<string, number>();
   const roomVolM3 = roomVolCuFt * CUBIC_METRES_PER_CUBIC_FOOT;
+  // Indoor rooms buffer moisture in their walls and furnishings: grams of vapour move RH as if the air
+  // were ROOM_MOISTURE_BUFFER times larger (roomThermal.ts)
+  const roomMoistureM3 = roomVolM3 * ROOM_MOISTURE_BUFFER;
   // Announce the moment a tank runs dry or a bucket fills
   const announceWaterLimits = <T extends Tent['items'][number]>(before: T, after: T, location?: string): T => {
     if (before.category !== 'equipment' || after.category !== 'equipment') return after;
@@ -703,11 +708,19 @@ export function simulateEnvironmentTick(
     const ventedCfm = tentVentedCfm.reduce((a, b) => a + b, 0) + getOutdoorVentedCfm(room.items, false);
     const makeupAch = (ventedCfm * 60) / roomVolCuFt;
     const infiltrationFraction = Math.min(0.5, (ach + makeupAch) * (elapsedMinutes / 60));
-    vaporGm3 += (absoluteHumidityGm3(outside.tempF, outside.rh) - vaporGm3) * infiltrationFraction;
+    // Swapped air carries its vapour out, but the walls' stored moisture slows how fast the room follows
+    vaporGm3 += (absoluteHumidityGm3(outside.tempF, outside.rh) - vaporGm3) * infiltrationFraction / ROOM_MOISTURE_BUFFER;
     roomCo2 += (outside.co2Ppm - roomCo2) * infiltrationFraction;
 
+    // Plants on the room floor transpire into the room air; leaves in tents cool their tent, whose
+    // heat the room balance counts along with the tent's equipment
+    const roomTranspirationLph = getEnclosureTranspirationLph(room.items, room.climate);
+    const tentTranspirationLph = room.tents.reduce((sum, t) => sum + getEnclosureTranspirationLph(t.items, t.climate), 0);
+    vaporGm3 += (roomTranspirationLph * (elapsedMinutes / 60) * 1000) / roomMoistureM3;
+
     const gainsWatts = [...room.items.filter(i => !isRoomClimateUnit(i)), ...room.tents.flatMap(t => t.items)]
-      .reduce((sum, i) => sum + getItemHeatWatts(i, hour), 0);
+      .reduce((sum, i) => sum + getItemHeatWatts(i, hour), 0)
+      - (roomTranspirationLph + tentTranspirationLph) * LATENT_WATTS_PER_LITRE_HOUR;
     // Heat that tents duct straight outside never reaches the room
     const ventedTentHeatWatts = room.tents.reduce((sum, t, i) => sum + (1.08 * tentVentedCfm[i] * (t.climate.tempF - roomTempF)) / 3.412, 0);
     const thermal = stepRoomTemperature({
@@ -726,9 +739,9 @@ export function simulateEnvironmentTick(
       const runMinutes = thermal.coolingRunMinutes.get(unit.id) ?? 0;
       if (runMinutes <= 0 || unit.category !== 'equipment') continue;
       if (unit.type === 'portable_ac') {
-        vaporGm3 -= (getPortableAcMoistureLph(unit, roomRH) * (runMinutes / 60) * 1000) / roomVolM3;
+        vaporGm3 -= (getPortableAcMoistureLph(unit, roomRH) * (runMinutes / 60) * 1000) / roomMoistureM3;
       } else if (unit.type === 'hvac_register') {
-        const exchanged = Math.min(1, ((unit.flowRateCfm ?? DEFAULT_REGISTER_CFM) * runMinutes) / roomVolCuFt);
+        const exchanged = Math.min(1, ((unit.flowRateCfm ?? DEFAULT_REGISTER_CFM) * runMinutes) / roomVolCuFt) / ROOM_MOISTURE_BUFFER;
         const supplyVapor = absoluteHumidityGm3(REGISTER_COOL_SUPPLY_F, 95);
         if (supplyVapor < vaporGm3) vaporGm3 += (supplyVapor - vaporGm3) * exchanged;
       }
@@ -757,8 +770,9 @@ export function simulateEnvironmentTick(
     }
 
     if (roomOccupantMoistureLitersPerDay > 0) {
+      // Breath and skin moisture: grams of vapour against what the (buffered) room air holds at saturation
       const moistureGrams = (roomOccupantMoistureLitersPerDay * 1000 / 1440) * elapsedMinutes;
-      const rhDelta = (moistureGrams / (roomVolCuFt * 0.03)) * 0.01;
+      const rhDelta = (moistureGrams / (absoluteHumidityGm3(roomTempF, 100) * roomMoistureM3)) * 100;
       roomRH = Math.min(95, roomRH + rhDelta);
     }
 
@@ -774,8 +788,8 @@ export function simulateEnvironmentTick(
             const satGm3 = absoluteHumidityGm3(roomTempF, 100);
             const bucketRoomL = item.drainHoseConnected ? Infinity : getBucketCapacityL(item) - getBucketLevelL(item);
             const capacityG = Math.min(bucketRoomL, getDehumidifierExtractionLph(item, item.setting, roomRH, roomTempF) * (elapsedMinutes / 60)) * 1000;
-            const removedG = Math.max(0, Math.min(capacityG, ((roomRH - target) / 100) * satGm3 * roomVolM3));
-            roomRH -= (removedG / (satGm3 * roomVolM3)) * 100;
+            const removedG = Math.max(0, Math.min(capacityG, ((roomRH - target) / 100) * satGm3 * roomMoistureM3));
+            roomRH -= (removedG / (satGm3 * roomMoistureM3)) * 100;
             roomWaterL.set(item.id, removedG / 1000);
           }
         } else if (item.type === 'humidifier') {
@@ -788,8 +802,8 @@ export function simulateEnvironmentTick(
             const { outputFactor } = getMistWaterEffects(item.reservoirTempF ?? roomTempF, roomTempF);
             const satGm3 = absoluteHumidityGm3(roomTempF, 100);
             const maxWaterL = Math.min(getReservoirLevelL(item), getMistWaterUseLph(item, item.setting) * outputFactor * (elapsedMinutes / 60));
-            const addedG = Math.max(0, Math.min(maxWaterL * 1000 * MIST_EVAPORATION_EFFICIENCY, ((target - roomRH) / 100) * satGm3 * roomVolM3));
-            roomRH += (addedG / (satGm3 * roomVolM3)) * 100;
+            const addedG = Math.max(0, Math.min(maxWaterL * 1000 * MIST_EVAPORATION_EFFICIENCY, ((target - roomRH) / 100) * satGm3 * roomMoistureM3));
+            roomRH += (addedG / (satGm3 * roomMoistureM3)) * 100;
             roomWaterL.set(item.id, addedG / 1000 / MIST_EVAPORATION_EFFICIENCY);
           }
         } else if (item.type === 'co2_regulator') {
@@ -895,7 +909,10 @@ export function simulateEnvironmentTick(
     // condensation heat, minus a humidifier's evaporative cooling) heats the tent air; it loses heat to
     // the room through the mylar walls, roof and floor and with the air the fan (or passive leakage)
     // swaps out. Solved exactly over the step, so the tent settles at room + gains / losses.
-    const tentGainBtuh = arbitratedItems.reduce((sum, i) => sum + getItemHeatWatts(i, hour), 0) * 3.412;
+    // Transpiring leaves absorb latent heat, cooling the tent (~628 W per L/h of water they give off).
+    const tentTranspirationLph = getEnclosureTranspirationLph(tent.items, tent.climate);
+    const tentGainBtuh = (arbitratedItems.reduce((sum, i) => sum + getItemHeatWatts(i, hour), 0)
+      - tentTranspirationLph * LATENT_WATTS_PER_LITRE_HOUR) * 3.412;
     const tentShellSqFt = 2 * (tent.dimensions.length + tent.dimensions.width) * tent.dimensions.height + 2 * tentAreaSqFt;
     // Shell U-value and passive leakage come from the tent's construction (fabric, liner, seal quality)
     const envelope = getTentEnvelope(tent);
@@ -910,6 +927,12 @@ export function simulateEnvironmentTick(
 
     // Relative Humidity dynamics:
     const tentVolM3 = tentVolCuFt * CUBIC_METRES_PER_CUBIC_FOOT;
+    // The plants' transpired water enters the tent air first, so the humidity units below respond to it
+    // (and a humidifier isn't credited with water the plants supplied)
+    if (tentTranspirationLph > 0) {
+      const addedG = tentTranspirationLph * (elapsedMinutes / 60) * 1000;
+      tRH = Math.min(99, tRH + (addedG / (absoluteHumidityGm3(tTempF, 100) * tentVolM3)) * 100);
+    }
     const vaporBeforeGm3 = absoluteHumidityGm3(tTempF, tRH);
     if (activeHumidifierTarget !== null && activeHumidifierCapacity > 0) {
       // Sonic fogger saturation
@@ -964,7 +987,7 @@ export function simulateEnvironmentTick(
     const fanRate = fanFraction * 0.45;
     const roomReturnShare = 1 - getOutdoorFanShare(arbitratedItems) * Math.min(1, fanRate / Math.max(0.04, fanRate));
     const exhaustedVaporG = airExchangeFraction * roomReturnShare * tentVolM3 * (vaporAfterGm3 - roomVaporGm3);
-    roomRH = Math.max(20, Math.min(95, roomRH + (exhaustedVaporG / (absoluteHumidityGm3(roomTempF, 100) * roomVolM3)) * 100));
+    roomRH = Math.max(20, Math.min(95, roomRH + (exhaustedVaporG / (absoluteHumidityGm3(roomTempF, 100) * (isOutdoorGarden || isGreenhouse ? roomVolM3 : roomMoistureM3))) * 100));
 
     // 4. CANOPY CO2 MASS BALANCE & EXPONENTIAL DECAY
     // Continuous ventilation continuously pulls in host room air (roomCo2, e.g. 420 PPM).
@@ -1149,10 +1172,13 @@ export function simulateEnvironmentTick(
     { items: updatedRoomItems, ambientTempF: roomTempF, location: room.name },
     ...updatedTents.map(t => ({ items: t.items, ambientTempF: t.climate.tempF, location: t.name }))
   ], { simTime: currentSimTime, elapsedMinutes }, events);
+  const finalTents = updatedTents.map((t, i) => ({ ...t, items: fedTentItems[i] }));
 
   return {
     room: {
       ...room,
+      // Metered from what every unit did this tick (thermostats, schedules, controllers)
+      energy: stepRoomEnergy({ ...room, items: fedRoomItems, tents: finalTents }, currentSimTime, elapsedMinutes),
       climate: {
         tempF: roomTempF,
         tempC: roomTempC,
@@ -1163,11 +1189,34 @@ export function simulateEnvironmentTick(
         // One decimal: per-minute exchange with tents and outdoors is a fraction of a ppm
         co2Ppm: Math.round(Math.max(350, Math.min(5000, roomCo2)) * 10) / 10
       },
-      tents: updatedTents.map((t, i) => ({ ...t, items: fedTentItems[i] })),
+      tents: finalTents,
       items: fedRoomItems
     },
     events
   };
+}
+
+/**
+ * Water a plant transpires (L/day): scales with its canopy (leaf area), how hard the air pulls (VPD)
+ * and whether the lights are on. ~2.5 L/day for a 30" canopy at ~1 kPa VPD; a 72-cell seedling ~0.04.
+ */
+export function getPlantTranspirationLPerDay(plant: PlantItem, vpdKpa: number, isDay: boolean): number {
+  if (plant.isHarvested) return 0;
+  const canopyIn = Math.max(0.5, plant.canopyWidthInches || 0);
+  return 0.015 * Math.pow(canopyIn, 1.5)
+    * Math.max(0.4, Math.min(1.8, vpdKpa || 1))
+    * (isDay ? 1.3 : 0.35);
+}
+
+/**
+ * Transpiration of the plants in a container (L/h) at its last climate. That water vapour enters the
+ * air, and evaporating it absorbs latent heat (~628 W per L/h), so leaves cool the space around them.
+ */
+export function getEnclosureTranspirationLph(items: Item[], climate: { vpdKpa: number; lightPPFD: number }): number {
+  const isDay = climate.lightPPFD > 60;
+  return items.reduce((sum, i) => i.category === 'plant'
+    ? sum + getPlantTranspirationLPerDay(i as PlantItem, climate.vpdKpa, isDay) / 24
+    : sum, 0);
 }
 
 /**
@@ -1273,7 +1322,7 @@ function simulateCropItem(params: {
 
     // Ensure seed/cutting genetic traits exist
     if (!plant.traits) {
-      plant.traits = generateSeedTraits(plant.species, plant.strainName, plant.propagationType);
+      plant.traits = generateSeedTraits(plant.species, plant.strainName, plant.propagationType, undefined, createRng(hashString(plant.id)));
       if (plant.stage !== 'germination' && plant.stage !== 'rooting') {
         plant.traits.germinationOutcome = 'germinated';
       }
@@ -1298,10 +1347,7 @@ function simulateCropItem(params: {
     // at ~1 kPa VPD; a 72-cell seedling ~0.04 L/day.
     // Under a humidity dome, evaporation is suppressed to 15% (closed) or 35% (vented), conserving moisture!
     const volGallons = plant.containerVolumeGallons || getDefaultContainerVolumeGallons(plant.containerType);
-    const canopyIn = Math.max(0.5, plant.canopyWidthInches || 0);
-    const transpirationLPerDay = 0.015 * Math.pow(canopyIn, 1.5)
-      * Math.max(0.4, Math.min(1.8, cropClimate.vpdKpa || 1))
-      * (isDay ? 1.3 : 0.35);
+    const transpirationLPerDay = getPlantTranspirationLPerDay(plant, cropClimate.vpdKpa, isDay);
     const potSurfaceSqFt = plant.containerDimensions ? plant.containerDimensions.length * plant.containerDimensions.width : 0.8;
     const evapMultiplier = trayMicro ? trayMicro.soilMoistureEvapMultiplier : 1.0;
     const evaporationLPerDay = 0.1 * potSurfaceSqFt * evapMultiplier;
@@ -1379,7 +1425,7 @@ function simulateCropItem(params: {
     );
 
     // Occasional events for tray dome dangers
-    if (trayMicro?.isOverheating && Math.random() < 0.04) {
+    if (trayMicro?.isOverheating && tickRandom(currentSimTime, plant.id, 'dome-heat') < 0.04) {
       events.push({
         type: 'warning',
         category: 'crop',
@@ -1387,7 +1433,7 @@ function simulateCropItem(params: {
         title: `🔥 Dome Overheating: ${plant.name}`,
         message: trayMicro.warning || `Interior dome temperature reached ${trayMicro.tempF}°F. Open vents or dim lights.`
       });
-    } else if (trayMicro?.isDampingOffRisk && Math.random() < 0.04) {
+    } else if (trayMicro?.isDampingOffRisk && tickRandom(currentSimTime, plant.id, 'damping-off') < 0.04) {
       events.push({
         type: 'warning',
         category: 'crop',
@@ -1622,7 +1668,7 @@ function simulateCropItem(params: {
 
     // Ensure mushroom spore genetic traits exist
     if (!shroom.traits) {
-      shroom.traits = generateSporeTraits(shroom.species, shroom.strainName);
+      shroom.traits = generateSporeTraits(shroom.species, shroom.strainName, undefined, createRng(hashString(shroom.id)));
       if (shroom.stage !== 'colonizing') {
         shroom.traits.sporeViabilityOutcome = 'germinated';
       }

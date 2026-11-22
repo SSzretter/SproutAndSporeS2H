@@ -12,6 +12,7 @@ import { EquipmentModel, HeatMatMount } from './EquipmentModel';
 import { OccupantModel, PlayerAvatar, PlayerState } from './CharacterModels';
 import { RoomModel, TentModel, DoorwayModel, Doorway, ITEM_USER_DATA } from './EnvironmentModels';
 import { LabelProjector, LabelLayer, WorldLabel, LabelRegistry } from './ScreenLabels';
+import { SceneEnvironment, KeyLight, GrowLightSpot, ShadowManager, ContactShadowDecal, CASTS_SHADOW_USER_DATA } from './SceneFx';
 import { getVpdZone } from '../../utils/physics';
 import { getCropIssues, issueBadgeText } from '../../utils/cropIssues';
 import { HoseModel, ExhaustDuctModel, FeedLinesModel } from './HoseModel';
@@ -574,8 +575,6 @@ function SceneLighting({ room, simTime }: { room: Room; simTime: number }) {
   const hour = date.getHours() + date.getMinutes() / 60;
   const daylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
   const exposed = room.environmentType === 'outdoor_garden' || room.environmentType === 'greenhouse';
-  const { length: L, width: W, height: H } = room.dimensions;
-
   const growLights: Vec3[] = [];
   const addLights = (items: Item[], tent?: Tent) => {
     for (const it of items) {
@@ -596,16 +595,16 @@ function SceneLighting({ room, simTime }: { room: Room; simTime: number }) {
   return (
     <>
       <color attach="background" args={[sky]} />
-      <hemisphereLight args={['#e0f2fe', '#1c1917', exposed ? 0.25 + daylight * 0.6 : 0.55]} />
-      <ambientLight intensity={exposed ? 0.15 + daylight * 0.25 : 0.35} />
-      {exposed ? (
-        <directionalLight position={[L / 2 + 20, 10 + daylight * 30, W / 2 + 10]} intensity={0.2 + daylight * 1.8} color={daylight > 0.3 ? '#fff7e6' : '#fbbf24'} />
-      ) : (
-        <directionalLight position={[L / 2, H + 6, W + 8]} intensity={0.9} color="#f4f4f5" />
-      )}
+      {/* Image-based fill and reflections; the flat fills are lower than before since the environment adds light */}
+      <SceneEnvironment exposed={exposed} daylight={daylight} />
+      <hemisphereLight args={['#e0f2fe', '#1c1917', exposed ? 0.2 + daylight * 0.45 : 0.35]} />
+      <ambientLight intensity={exposed ? 0.1 + daylight * 0.15 : 0.18} />
+      <KeyLight room={room} exposed={exposed} daylight={daylight} />
       {growLights.map((pos, i) => (
-        <pointLight key={i} position={pos} intensity={4} distance={8} decay={1.6} color="#fbfaf5" />
+        <GrowLightSpot key={i} position={pos} />
       ))}
+      <ShadowManager />
+      <ContactShadowDecal room={room} />
     </>
   );
 }
@@ -844,7 +843,9 @@ function SceneContent(props: GameSceneProps & { labels: WorldLabel[]; labelRegis
         const ductTent = getDuctTargetTent(room, item);
         return ductTent ? <HoseModel key={`hose-${item.id}`} eq={item as EquipmentItem} tent={ductTent} room={room} /> : null;
       })}
-      <PlayerAvatar playerRef={playerRef} />
+      <group userData={CASTS_SHADOW_USER_DATA}>
+        <PlayerAvatar playerRef={playerRef} />
+      </group>
       <LabelProjector labels={labels} registry={labelRegistry} />
     </>
   );
@@ -857,6 +858,7 @@ export function GameScene(props: GameSceneProps) {
     <div className="absolute inset-0">
       <Canvas
         dpr={[1, 2]}
+        shadows="percentage"
         camera={{ fov: 50, near: 0.1, far: 400, position: [8, 15, 22] }}
         onPointerMissed={e => {
           props.onHover(null);

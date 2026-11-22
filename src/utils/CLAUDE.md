@@ -96,4 +96,12 @@ Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-m
 
 **Catalogs:** tent models are in `tentCatalog.ts`; equipment and crop presets are mostly inline in `AddItemModal.tsx` / `AddRoomModal.tsx`.
 
+**Growth breakdown** (`evaluatePlantStageSuitability`): every condition goes through `flag` (a problem) or `adjust` (a bonus or expected tweak) with its multiplier. The rate is their product. `factors` comes back worst first, and `limitingFactor` is the worst problem, not the first one checked. Add new conditions through those helpers, never with a bare `scoreMultiplier *=`.
+
+**Transpiration and moisture buffering:** `getEnclosureTranspirationLph` (plants, from the container's last climate) adds vapour to tent or room air and cools it by `LATENT_WATTS_PER_LITRE_HOUR`. Indoor rooms convert grams of vapour to RH against `roomVolM3 × ROOM_MOISTURE_BUFFER` (walls and furnishings), and that includes infiltration and register exchange. Tents don't buffer.
+
+**Energy** (`energy.ts`): `stepRoomEnergy` runs at the end of each tick on the post-tick items and fills `room.energy` (today, yesterday, total, by category). Wall draw comes from `getItemElectricWatts`, which is separate from `getItemHeatWatts`: a chiller's heat isn't its electricity, and registers are metered at 0. Cost uses `state.electricityRatePerKWh`.
+
+**Randomness:** anything in the tick that can change the simulation uses `tickRandom(simTime, id, purpose)` or `createRng(hashString(id))` from `rng.ts`, never `Math.random`, so `npm run sim` stays reproducible.
+
 **Checking a physics change:** run `npm run sim` (see `scripts/sim-check.mts`) instead of writing a throwaway script.

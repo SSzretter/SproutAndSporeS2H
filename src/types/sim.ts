@@ -522,6 +522,20 @@ export interface Room {
   roomCo2BaselinePpm?: number; // Baseline outdoor fresh air infiltration (420 ppm)
   controllerPriority?: ControllerPriority;
   activeInterlocks?: string[];
+  energy?: RoomEnergyMeter; // Electricity used by the room's equipment (tents included); utils/energy.ts
+}
+
+export type EnergyCategory = 'lighting' | 'climate' | 'humidity' | 'airflow' | 'water' | 'heat_mats' | 'other';
+
+/** A room's electricity meter, advanced every tick by stepRoomEnergy. */
+export interface RoomEnergyMeter {
+  totalKWh: number;
+  todayKWh: number; // since sim midnight
+  yesterdayKWh: number;
+  dayStartTime: number; // sim time (ms) of the midnight that started "today"
+  currentWatts: number; // draw during the last tick
+  peakWattsToday: number;
+  byCategoryKWh: Partial<Record<EnergyCategory, number>>; // lifetime kWh by kind of equipment
 }
 
 export type JournalCategory = 'crop' | 'care' | 'automation' | 'alert' | 'note' | 'general';
@@ -569,6 +583,7 @@ export interface SimulationState {
   activeRoomId?: string; // Currently active room ID
   room: Room; // Active room (for backwards compatibility and direct access)
   tempUnit: 'F' | 'C';
+  electricityRatePerKWh: number; // cost of electricity, for the energy meter's cost estimate
   selectedType: 'room' | 'tent' | 'item' | null;
   selectedId: string | null;
   selectedParentTentId?: string | null; // If selected item is inside a tent

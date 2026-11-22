@@ -259,7 +259,7 @@ export default function App() {
   useEffect(() => {
     saveSimulation(state);
     setLastSavedAt(Date.now());
-  }, [state.room, state.rooms, state.activeRoomId, state.outside, state.outdoorLocation, state.tempUnit, state.harvests, state.playerPosition]);
+  }, [state.room, state.rooms, state.activeRoomId, state.outside, state.outdoorLocation, state.tempUnit, state.electricityRatePerKWh, state.harvests, state.playerPosition]);
 
   // Periodic cloud auto-save to the active Supabase save (skipped when nothing changed)
   useEffect(() => {
@@ -1081,6 +1081,15 @@ export default function App() {
     });
   }, []);
 
+  // Electricity price used for the energy meter's cost estimates
+  const handleUpdateElectricityRate = useCallback((ratePerKWh: number) => {
+    setState(prev => {
+      const nextState: SimulationState = { ...prev, electricityRatePerKWh: ratePerKWh };
+      broadcastSimulationState(nextState);
+      return nextState;
+    });
+  }, []);
+
   // Harvest Plant
   const handleHarvestPlant = useCallback((plant: PlantItem, tentId?: string) => {
     const activeR = (state.rooms && state.rooms.find(r => r.id === (state.activeRoomId || state.room.id))) || state.room;
@@ -1379,6 +1388,8 @@ export default function App() {
               onOpenLocationModal={() => setIsLocationModalOpen(true)}
               onDeleteTent={handleDeleteTent}
               onUpdateOutdoorCo2={handleUpdateOutdoorCo2}
+              electricityRatePerKWh={state.electricityRatePerKWh}
+              onUpdateElectricityRate={handleUpdateElectricityRate}
             />
 
             {/* View Switcher Tabs: Climate Overview vs 2D Layout Plan */}

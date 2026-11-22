@@ -195,8 +195,32 @@ export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 
 
         {suitability.limitingFactor && (
           <div className="p-2.5 bg-amber-950/30 border border-amber-900/50 rounded-lg text-xs text-amber-300 flex items-center gap-2">
-            <span className="font-bold">⚠️ Limiting Factor:</span>
+            <span className="font-bold">⚠️ Limiting Factor{suitability.limitingFactorLabel ? ` (${suitability.limitingFactorLabel})` : ''}:</span>
             <span>{suitability.limitingFactor}</span>
+          </div>
+        )}
+
+        {/* Growth breakdown: the rate is the product of these multipliers, worst first */}
+        {suitability.factors.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold">
+              Growth breakdown (rate = product of factors)
+            </div>
+            {suitability.factors.map((f, i) => {
+              const pct = Math.min(100, (f.multiplier / 1.5) * 100);
+              const tone = f.multiplier > 1 ? 'bg-emerald-500' : f.multiplier >= 0.85 ? 'bg-amber-400' : 'bg-rose-500';
+              return (
+                <div key={`${f.label}-${i}`} className="flex items-center gap-2 text-[11px]" title={f.message}>
+                  <span className="w-28 shrink-0 text-zinc-300 truncate">{f.label}</span>
+                  <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                    <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className={`w-12 text-right font-mono font-bold ${f.multiplier > 1 ? 'text-emerald-400' : f.multiplier >= 0.85 ? 'text-amber-300' : 'text-rose-400'}`}>
+                    ×{f.multiplier.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

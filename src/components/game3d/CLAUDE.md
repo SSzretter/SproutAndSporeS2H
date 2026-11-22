@@ -30,3 +30,9 @@ Each piece of equipment gets a status LED from `getEquipmentActivity`.
 **Player and camera:** the cultivator (`PlayerState`, in room feet) is moved by a 60 Hz interval in `GameWorld`. It handles camera-relative WASD via `cameraYawRef`, click-to-walk, tent collision and walk-through doorways. `CameraRig` follows it with orbit and zoom.
 
 `PlantSprites.ts` 2D drawings remain only for `PlantVisualizerModal`.
+
+**Lighting and shadows** (`SceneFx.tsx`, wired in `SceneLighting`):
+- `SceneEnvironment` is image-based lighting from a procedural drei `<Environment>` (Lightformers, rendered locally, no HDRI download). It re-bakes only when the daylight level changes.
+- `KeyLight` (directional) and one `GrowLightSpot` per grow light (max 4) cast shadows. The Canvas uses `shadows="percentage"`: three r186 removed PCFSoftShadowMap.
+- `ShadowManager` renders shadow maps on demand (`autoUpdate = false`). Every 100 ms it flags meshes under an `isItem` or `castsShadow` (`CASTS_SHADOW_USER_DATA`) ancestor as casters, and re-renders the maps only when that set or the lights change. Wrap new non-item models in a `CASTS_SHADOW_USER_DATA` group if they should cast.
+- `ContactShadowDecal` is one baked canvas texture on the floor (soft blobs under floor items and tents, wall-base darkening). It re-bakes when the layout changes.

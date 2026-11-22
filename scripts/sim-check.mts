@@ -30,6 +30,11 @@ const hour = new Date(simTime).getHours();
 console.log(`After ${hours} h, outdoors ${outdoorTempF}°F / ${outdoorRh}% RH (ends ${new Date(simTime).toLocaleString()})`);
 for (const room of rooms) {
   console.log(`\n${room.name}: ${fmt(room.climate)}`);
+  if (room.energy) {
+    const e = room.energy;
+    const parts = Object.entries(e.byCategoryKWh).map(([k, v]) => `${k} ${(v ?? 0).toFixed(2)}`).join(', ');
+    console.log(`  energy: ${Math.round(e.currentWatts)} W now, ${e.todayKWh.toFixed(2)} kWh today, ${e.yesterdayKWh.toFixed(2)} yesterday, ${e.totalKWh.toFixed(2)} total (${parts})`);
+  }
   const show = (items: typeof room.items, indent: string) => {
     for (const item of items) {
       const a = getEquipmentActivity(item, hour);

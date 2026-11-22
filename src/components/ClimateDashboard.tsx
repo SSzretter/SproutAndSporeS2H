@@ -25,7 +25,18 @@ import {
   User,
   Dog
 } from 'lucide-react';
-import { Room, Tent, OutsideConditions, WeatherType, OutdoorLocation } from '../types/sim';
+import { Room, Tent, OutsideConditions, WeatherType, OutdoorLocation, EnergyCategory } from '../types/sim';
+import { ENERGY_CATEGORY_LABELS, DEFAULT_ELECTRICITY_RATE_PER_KWH } from '../utils/energy';
+
+const ENERGY_CATEGORY_COLORS: Record<EnergyCategory, string> = {
+  lighting: 'bg-yellow-400',
+  climate: 'bg-rose-400',
+  humidity: 'bg-cyan-400',
+  airflow: 'bg-sky-500',
+  water: 'bg-blue-500',
+  heat_mats: 'bg-orange-500',
+  other: 'bg-zinc-500'
+};
 import { VpdBadge } from './VpdBadge';
 
 interface ClimateDashboardProps {
@@ -46,6 +57,8 @@ interface ClimateDashboardProps {
   onOpenLocationModal: () => void;
   onDeleteTent?: (tentId: string) => void;
   onUpdateOutdoorCo2?: (co2Ppm: number) => void;
+  electricityRatePerKWh?: number;
+  onUpdateElectricityRate?: (ratePerKWh: number) => void;
 }
 
 export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
@@ -66,6 +79,8 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
   onOpenLocationModal,
   onDeleteTent,
   onUpdateOutdoorCo2,
+  electricityRatePerKWh = DEFAULT_ELECTRICITY_RATE_PER_KWH,
+  onUpdateElectricityRate,
 }) => {
   const [tentToDelete, setTentToDelete] = useState<string | null>(null);
   const [roomToDelete, setRoomToDelete] = useState<Room | null>(null);
@@ -452,6 +467,84 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
                       {co2BadgeText}
                     </span>
                   </div>
+                </div>
+              );
+            })()}
+
+            {/* Electricity meter: everything running in the room and its tents */}
+            {(() => {
+              const meter = room.energy;
+              const totalKWh = meter?.totalKWh ?? 0;
+              const shares = (Object.entries(meter?.byCategoryKWh ?? {}) as Array<[EnergyCategory, number]>)
+                .filter(([, kWh]) => kWh > 0)
+                .sort((a, b) => b[1] - a[1]);
+              const money = (kWh: number) => `$${(kWh * electricityRatePerKWh).toFixed(2)}`;
+              return (
+                <div className="mt-2 bg-zinc-950/70 border border-zinc-850 rounded-xl px-2.5 py-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-zinc-400 text-xs">
+                      <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                      <span>Electricity</span>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-zinc-100" title={`Peak today: ${Math.round(meter?.peakWattsToday ?? 0)} W`}>
+                      {Math.round(meter?.currentWatts ?? 0)} <span className="text-[10px] text-zinc-400 font-normal">W now</span>
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
+                    <div>
+                      <span className="block text-zinc-500 uppercase text-[9px]">Today</span>
+                      <span className="text-zinc-200">{(meter?.todayKWh ?? 0).toFixed(2)} kWh</span>
+                      <span className="block text-emerald-400/90">{money(meter?.todayKWh ?? 0)}</span>
+                    </div>
+                    <div>
+                      <span className="block text-zinc-500 uppercase text-[9px]">Yesterday</span>
+                      <span className="text-zinc-200">{(meter?.yesterdayKWh ?? 0).toFixed(2)} kWh</span>
+                      <span className="block text-emerald-400/90">{money(meter?.yesterdayKWh ?? 0)}</span>
+                    </div>
+                    <div>
+                      <span className="block text-zinc-500 uppercase text-[9px]">Total</span>
+                      <span className="text-zinc-200">{totalKWh.toFixed(1)} kWh</span>
+                      <span className="block text-emerald-400/90">{money(totalKWh)}</span>
+                    </div>
+                  </div>
+                  {shares.length > 0 && (
+                    <div
+                      className="flex h-1.5 rounded-full overflow-hidden bg-zinc-800"
+                      title={shares.map(([c, kWh]) => `${ENERGY_CATEGORY_LABELS[c]}: ${kWh.toFixed(2)} kWh (${Math.round((kWh / totalKWh) * 100)}%)`).join('\n')}
+                    >
+                      {shares.map(([c, kWh]) => (
+                        <div key={c} className={ENERGY_CATEGORY_COLORS[c]} style={{ width: `${(kWh / totalKWh) * 100}%` }} />
+                      ))}
+                    </div>
+                  )}
+                  {shares.length > 0 && (
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[9px] text-zinc-400">
+                      {shares.map(([c, kWh]) => (
+                        <span key={c} className="flex items-center gap-1">
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${ENERGY_CATEGORY_COLORS[c]}`} />
+                          {ENERGY_CATEGORY_LABELS[c]} {Math.round((kWh / totalKWh) * 100)}%
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {onUpdateElectricityRate && (
+                    <label className="flex items-center justify-end gap-1 text-[10px] text-zinc-500" onClick={e => e.stopPropagation()}>
+                      Rate $
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={electricityRatePerKWh}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value);
+                          if (Number.isFinite(v) && v >= 0) onUpdateElectricityRate(v);
+                        }}
+                        className="w-14 bg-zinc-900 border border-zinc-800 rounded px-1 py-0.5 font-mono text-zinc-200 text-right"
+                        aria-label="Electricity rate in dollars per kWh"
+                      />
+                      /kWh
+                    </label>
+                  )}
                 </div>
               );
             })()}
