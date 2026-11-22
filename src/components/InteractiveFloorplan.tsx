@@ -288,7 +288,7 @@ export const InteractiveFloorplan: React.FC<InteractiveFloorplanProps> = ({
           <div className="flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 rounded-lg px-2.5 py-1 text-[11px] text-zinc-400 pointer-events-auto">
             <span>{isOutdoor ? 'Ambient: ' : 'Temp: '}<strong className="text-zinc-200">{room.climate.tempF.toFixed(1)}°F</strong></span>
             <span className="text-zinc-600">·</span>
-            <span>RH: <strong className="text-zinc-200">{room.climate.rh}%</strong></span>
+            <span>RH: <strong className="text-zinc-200">{room.climate.rh.toFixed(1)}%</strong></span>
             <span className="text-zinc-600">·</span>
             <span>{isOutdoor ? 'Sunlight: ' : 'Light: '}<strong className="text-amber-400 font-mono">{room.climate.lightPPFD || 0} μmol</strong></span>
           </div>

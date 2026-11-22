@@ -120,7 +120,7 @@ export const PlantStageAuditCard: React.FC<ItemSectionProps & Pick<PlantLocals, 
           <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1">
             <span className="text-[10px] text-zinc-400 font-medium block">Humidity (RH)</span>
             <div className="font-mono font-bold text-zinc-100 text-sm">
-              {enclosureClimate.rh}%
+              {enclosureClimate.rh.toFixed(1)}%
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
               Target: {req.rhMin}-{req.rhMax}%

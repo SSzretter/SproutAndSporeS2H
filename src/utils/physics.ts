@@ -230,6 +230,17 @@ export function simulateOutsideConditions(simTime: number): OutsideConditions {
  * Checks if a light scheduled on/off is active for a given hour
  */
 /**
+ * A dehumidistat with a dead band: it starts above target + 1.5% and, once running, keeps going until
+ * the air is 2% below target. In a small tent the unit only removes what's needed to hold target, so it
+ * runs at part duty there instead of flicking on and off every minute.
+ */
+function dehumidistatCallsForDrying(eq: EquipmentItem, rh: number): boolean {
+  const target = eq.targetRh ?? 50;
+  const running = (eq.effectiveSetting ?? 0) > 0;
+  return rh > target + (running ? -2 : 1.5);
+}
+
+/**
  * Central Controller Arbitration Engine:
  * Prevents equipment from fighting each other (e.g. Humidifier vs Exhaust Fan, Humidifier vs Dehumidifier, CO2 Solenoid vs Exhaust).
  * Implements intelligent dynamic triggers for exhaust fans (temperature, humidity, CO2 FAE, low RH protection).
@@ -327,7 +338,7 @@ export function arbitrateEnclosureEquipment(params: {
         }
       } else if (item.type === 'dehumidifier' && item.powerOn && !isBucketFull(item)) {
         const target = item.targetRh ?? 50;
-        if (climate.rh > target + 1.5) {
+        if (dehumidistatCallsForDrying(item, climate.rh)) {
           dehumidifierDemanded = true;
           activeDehumidifierTarget = Math.min(activeDehumidifierTarget ?? 100, target);
           const powerRatio = Math.max(0.1, (item.setting || 60) / 100);
@@ -434,9 +445,9 @@ export function arbitrateEnclosureEquipment(params: {
       } else if (dehumidifierSuppressed) {
         eq.effectiveSetting = 0;
         eq.interlockStatus = 'Locked out: Humidifier priority active';
-      } else if (climate.rh <= target) {
+      } else if (!dehumidistatCallsForDrying(eq, climate.rh)) {
         eq.effectiveSetting = 0;
-        eq.interlockStatus = `Idle: Target reached (${climate.rh}% ≤ ${target}%)`;
+        eq.interlockStatus = `Idle: Target reached (${Math.round(climate.rh)}% ≤ ${target}%)`;
       } else {
         eq.effectiveSetting = eq.setting;
         eq.interlockStatus = `Dehumidifying: Extracting moisture to ${target}%`;
@@ -819,8 +830,8 @@ export function simulateEnvironmentTick(
 
     // Not rounded: with the room's ~1.4 h time constant, a 1-minute tick moves it only a few hundredths of a degree
     roomTempF = Math.max(35, Math.min(115, roomTempF));
-    // One decimal: a single unit moves room RH by a fraction of a percent per minute
-    roomRH = Math.max(20, Math.min(95, Math.round(roomRH * 10) / 10));
+    // Unrounded: with the walls buffering moisture, a unit moves room RH by hundredths of a percent per minute
+    roomRH = Math.max(20, Math.min(95, roomRH));
     roomCo2 = Math.max(350, Math.min(5000, roomCo2)); // unrounded: per-minute exchange is a fraction of a ppm
   }
 
@@ -934,6 +945,7 @@ export function simulateEnvironmentTick(
       tRH = Math.min(99, tRH + (addedG / (absoluteHumidityGm3(tTempF, 100) * tentVolM3)) * 100);
     }
     const vaporBeforeGm3 = absoluteHumidityGm3(tTempF, tRH);
+    let tentDehumidifiedG = 0; // condensate the tent's dehumidifiers pulled out this tick
     if (activeHumidifierTarget !== null && activeHumidifierCapacity > 0) {
       // Sonic fogger saturation
       const exhaustDamping = 1 / (1 + fanFraction * 0.12);
@@ -946,11 +958,20 @@ export function simulateEnvironmentTick(
         tRH += (roomRH - tRH) * airExchangeFraction;
       }
     } else if (activeDehumidifierTarget !== null && activeDehumidifierCapacity > 0) {
+      // Room air keeps coming in with the exchange; the units then condense out what they can at the
+      // tent's conditions (rated pints/day, derated for cooler or drier air, within bucket room),
+      // stopping at target. A unit too small for the tent's moisture load can't hold it there.
+      tRH += (roomRH - tRH) * airExchangeFraction;
       if (tRH > activeDehumidifierTarget) {
-        const dehumFraction = 1 - Math.exp(-Math.max(0.25, activeDehumidifierCapacity * 0.4) * elapsedMinutes);
-        tRH = tRH + (activeDehumidifierTarget - tRH) * dehumFraction;
-      } else {
-        tRH += (roomRH - tRH) * airExchangeFraction;
+        const capacityG = arbitratedItems.reduce((sum, item) => {
+          if (item.category !== 'equipment' || item.type !== 'dehumidifier' || !item.powerOn || isBucketFull(item)) return sum;
+          const bucketRoomL = item.drainHoseConnected ? Infinity : getBucketCapacityL(item) - getBucketLevelL(item);
+          return sum + Math.min(bucketRoomL, getDehumidifierExtractionLph(item, item.effectiveSetting ?? 0, tRH, tTempF) * (elapsedMinutes / 60)) * 1000;
+        }, 0);
+        const satGm3 = absoluteHumidityGm3(tTempF, 100);
+        const removedG = Math.min(capacityG, ((tRH - activeDehumidifierTarget) / 100) * satGm3 * tentVolM3);
+        tRH -= (removedG / (satGm3 * tentVolM3)) * 100;
+        tentDehumidifiedG = removedG;
       }
     } else {
       // Passive ventilation only
@@ -967,8 +988,7 @@ export function simulateEnvironmentTick(
       const vaporG = (Math.max(0, vaporAfterGm3 - vaporBeforeGm3) + airExchangeFraction * Math.max(0, vaporAfterGm3 - roomVaporGm3)) * tentVolM3;
       humidifierWaterL = vaporG / 1000 / MIST_EVAPORATION_EFFICIENCY;
     } else if (activeDehumidifierTarget !== null && activeDehumidifierCapacity > 0) {
-      const vaporG = (Math.max(0, vaporBeforeGm3 - vaporAfterGm3) + airExchangeFraction * Math.max(0, roomVaporGm3 - vaporAfterGm3)) * tentVolM3;
-      dehumidifierWaterL = vaporG / 1000;
+      dehumidifierWaterL = tentDehumidifiedG / 1000;
     }
     const enclosureEquipment = [...arbitratedItems, ...allArbitratedItems.filter(item => ductedIds.has(item.id))];
     const watered = shareEnclosureWater(enclosureEquipment, humidifierWaterL, dehumidifierWaterL, { rh: tent.climate.rh, tempF: tent.climate.tempF }, elapsedMinutes)
@@ -1183,7 +1203,7 @@ export function simulateEnvironmentTick(
         tempF: roomTempF,
         tempC: roomTempC,
         // One decimal keeps small per-minute vapour flows (tent exhaust, single units) without long decimals in the UI
-        rh: Math.round(roomRH * 10) / 10,
+        rh: roomRH, // unrounded (see above); displays round it
         lightPPFD: roomLightPPFD,
         vpdKpa: roomVPD,
         // One decimal: per-minute exchange with tents and outdoors is a fraction of a ppm

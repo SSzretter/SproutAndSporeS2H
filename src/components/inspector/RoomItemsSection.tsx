@@ -88,7 +88,7 @@ export const RoomItemsSection: React.FC<InspectorContext & Pick<RoomLocals, 'fil
                         {tent.mylarRating && <span className="text-zinc-500"> · {tent.mylarRating.split(' ')[0]}</span>}
                       </div>
                       <div className="text-[11px] text-zinc-400 mt-1">
-                        {tent.items.length} inside · {tent.climate.tempF.toFixed(1)}°F · {tent.climate.rh}% RH · {tent.climate.co2Ppm || 420} PPM CO₂
+                        {tent.items.length} inside · {tent.climate.tempF.toFixed(1)}°F · {tent.climate.rh.toFixed(1)}% RH · {tent.climate.co2Ppm || 420} PPM CO₂
                       </div>
                     </div>
                   </div>

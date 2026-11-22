@@ -316,7 +316,8 @@ const LITRES_PER_PINT = 0.473;
  */
 export function getDehumidifierExtractionLph(eq: EquipmentItem, outputPercent: number, rh: number, tempF: number): number {
   const pints = eq.name.match(/(\d+)\s*-?\s*pints?\b/i);
-  const ratedLph = pints ? (parseInt(pints[1], 10) * LITRES_PER_PINT) / 24 : (eq.powerWatts || 300) * 0.003;
+  // Without a rating in the name: DOE 2019 integrated energy factors run ~1.8 L/kWh
+  const ratedLph = pints ? (parseInt(pints[1], 10) * LITRES_PER_PINT) / 24 : (eq.powerWatts || 300) * 0.0018;
   const humidityFactor = Math.max(0, Math.min(1.5, (rh - 30) / 30));
   const temperatureFactor = Math.max(0.5, Math.min(1.3, 1 + (tempF - 65) * 0.012));
   return ratedLph * (Math.max(0, Math.min(100, outputPercent)) / 100) * humidityFactor * temperatureFactor;

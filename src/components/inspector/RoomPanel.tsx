@@ -401,7 +401,7 @@ export const RoomPanel: React.FC<InspectorContext> = (props) => {
               </div>
               <div className="flex justify-between py-1 border-b border-zinc-850">
                 <span className="text-zinc-400">Relative Humidity</span>
-                <span className="font-mono font-bold text-zinc-100">{room.climate.rh}% RH</span>
+                <span className="font-mono font-bold text-zinc-100">{room.climate.rh.toFixed(1)}% RH</span>
               </div>
               <div className="flex justify-between py-1 border-b border-zinc-850">
                 <span className="text-zinc-400">Vapor Pressure Deficit</span>

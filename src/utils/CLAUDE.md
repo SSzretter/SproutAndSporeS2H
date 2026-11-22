@@ -40,7 +40,7 @@ Moisture is tracked as absolute humidity, so RH moves with temperature.
 
 Tent exhaust carries its vapour and CO2 into the room. Mushrooms respire CO2 by mass (`getMushroomCo2Lph`), and the tent settles at a level above the room set by production over airflow.
 
-Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-minute changes are tiny. `migrateRoomClimateControl` converts the old `hvacMode` into a visible register once. A/Cs and registers are room-only; the Add form enforces it.
+Room temperature, RH and CO2 are stored unrounded, because per-minute changes are tiny; displays round RH with `toFixed(1)`. `migrateRoomClimateControl` converts the old `hvacMode` into a visible register once. A/Cs and registers are room-only; the Add form enforces it.
 
 **Spatial model** (`spatial.ts`):
 - **Positions** are in feet (`Position3D`), relative to the parent room or tent. For items, `(x, y)` is the footprint center and `z` the base elevation. Tents use their back-left corner.
@@ -66,15 +66,16 @@ Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-m
   - Humidifiers hold `reservoirLevelL`; dehumidifiers hold a collection bucket (`bucketLevelL`).
   - Their capacities (`reservoirCapacityL`, `bucketCapacityL`) are explicit properties and never exceed what fits in the unit's body (`getMaxReservoirLiters` / `getMaxBucketCapacityL`).
 - **Water use and collection** follow a moisture balance, not run time:
-  - In a tent: the vapour the air gained or lost, plus what the air exchange carried through (`absoluteHumidityGm3`), split across running units by `shareEnclosureWater`.
+  - In a tent: humidifiers supply the vapour the air gained plus what the air exchange carried through (`absoluteHumidityGm3`); dehumidifiers collect what they condensed (see below). Both are split across running units by `shareEnclosureWater`.
   - On a room floor: each unit moves real grams of vapour and stops at its target.
 - **Rated output is only a ceiling:**
   - humidifiers: about 0.011 L/h per watt;
-  - dehumidifiers: their pints/day rating (DOE 2019, 65°F / 60% RH), derated for cooler or drier air.
+  - dehumidifiers: their pints/day rating (DOE 2019, 65°F / 60% RH), derated for cooler or drier air (about 1.8 L/kWh from wattage when the name has no rating).
+  - In a tent, a dehumidifier condenses out at most that capacity each tick, after the tent's air exchange; a unit too small for the load can't hold target. A dead band (`dehumidistatCallsForDrying`: on above target + 1.5%, off 2% below) keeps it running at part duty instead of cycling every minute.
 
   Tent exhaust carries its vapour into the room, and that is what a room dehumidifier ends up collecting.
 - **Empty or full:** an empty tank or full bucket stops the unit with a journal alert until it is refilled or emptied (inspector or the in-game Water Can), unless `drainHoseConnected`.
-- **Per-tick status:** every unit's live `waterFlowLph`, `effectiveSetting` and `interlockStatus` are written each tick, room units included. Room RH is stored to one decimal so per-minute vapour flows aren't rounded away.
+- **Per-tick status:** every unit's live `waterFlowLph`, `effectiveSetting` and `interlockStatus` are written each tick, room units included. Room RH is stored unrounded so per-minute vapour flows aren't rounded away.
 - **Sim clock:** at 1x speed, one sim minute passes per real second (60x real time).
 - **Cleanup:** `migrateEquipmentLinks` removes dangling links. It runs on load and after deleting tents or items.
 - **Fans:** inline fan duct sizes and their CFM / watts / dimensions live in `equipmentCatalog.ts`. Tent air exchange scales with fan CFM against tent volume.
@@ -98,7 +99,7 @@ Room temperature, RH and CO2 are kept unrounded or to one decimal, because per-m
 
 **Growth breakdown** (`evaluatePlantStageSuitability`): every condition goes through `flag` (a problem) or `adjust` (a bonus or expected tweak) with its multiplier. The rate is their product. `factors` comes back worst first, and `limitingFactor` is the worst problem, not the first one checked. Add new conditions through those helpers, never with a bare `scoreMultiplier *=`.
 
-**Transpiration and moisture buffering:** `getEnclosureTranspirationLph` (plants, from the container's last climate) adds vapour to tent or room air and cools it by `LATENT_WATTS_PER_LITRE_HOUR`. Indoor rooms convert grams of vapour to RH against `roomVolM3 × ROOM_MOISTURE_BUFFER` (walls and furnishings), and that includes infiltration and register exchange. Tents don't buffer.
+**Transpiration and moisture buffering:** `getEnclosureTranspirationLph` (plants, from the container's last climate) adds vapour to tent or room air and cools it by `LATENT_WATTS_PER_LITRE_HOUR`. Indoor rooms convert grams of vapour to RH against `roomVolM3 × ROOM_MOISTURE_BUFFER` (10: walls and furnishings; measured effective moisture capacitance of homes is 10-20x the air's), and that includes infiltration and register exchange. Tents don't buffer.
 
 **Energy** (`energy.ts`): `stepRoomEnergy` runs at the end of each tick on the post-tick items and fills `room.energy` (today, yesterday, total, by category). Wall draw comes from `getItemElectricWatts`, which is separate from `getItemHeatWatts`: a chiller's heat isn't its electricity, and registers are metered at 0. Cost uses `state.electricityRatePerKWh`.
 

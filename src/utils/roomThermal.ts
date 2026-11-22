@@ -25,8 +25,10 @@ export const LATENT_WATTS_PER_LITRE_HOUR = 628;
 // Moisture buffering: drywall, wood, fabric and furnishings soak up water vapour when the air gets
 // more humid and give it back as it dries. A room's moisture therefore behaves as if its air were this
 // many times larger, so humidity swings (a humidifier, a dehumidifier, an open door) are slower and
-// smaller than for bare air. Tents (coated fabric) don't buffer.
-export const ROOM_MOISTURE_BUFFER = 3;
+// smaller than for bare air. Tents (coated fabric) don't buffer. Measured effective moisture capacitance
+// of furnished homes is roughly 10-20x the air's, so a 50-pint dehumidifier takes hours, not minutes,
+// to pull a damp room down from 75% to the mid 50s.
+export const ROOM_MOISTURE_BUFFER = 10;
 // Longest step the room temperature is integrated in, so thermostats cycle even on time skips
 export const MAX_THERMAL_SUBSTEP_MINUTES = 5;
 

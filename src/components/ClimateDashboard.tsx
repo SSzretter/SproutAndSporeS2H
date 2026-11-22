@@ -399,7 +399,7 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
                   <span>Humidity</span>
                 </div>
                 <div className="text-base font-mono font-bold text-zinc-100">
-                  {room.climate.rh}% RH
+                  {room.climate.rh.toFixed(1)}% RH
                 </div>
               </div>
 
@@ -709,7 +709,7 @@ export const ClimateDashboard: React.FC<ClimateDashboardProps> = ({
                       <span>Humidity</span>
                     </div>
                     <div className="text-base font-mono font-bold text-zinc-100">
-                      {tent.climate.rh}% RH
+                      {tent.climate.rh.toFixed(1)}% RH
                     </div>
                   </div>
 
